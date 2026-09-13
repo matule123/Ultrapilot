@@ -8,6 +8,10 @@ from sdk.base_plugin import BasePlugin
 from core.navigation.route import Route
 from core.steering_calibration import steering_calibration_from_settings
 from core.navigation.lane_trajectory import build_lane_trajectory
+from core.navigation.drivable_surface import lane_path_fingerprint
+from core.navigation.maneuver_reference import (
+    ManeuverReferenceMux, active_reference_payload,
+)
 from core.navigation.route_diagnostics import (
     RouteBuildDiagnostics, classify_failure, dataset_fingerprint,
     export_anonymized_failure, friendly_failure_message,
@@ -109,6 +113,10 @@ class Plugin(BasePlugin):
         # Diagnostic-only sequence. It binds Route inputs, local geometry and
         # output before another map tick can replace shared state.
         self._steering_packet_sequence = 0
+        # Phase 5D owns reference selection only.  Route.steering below remains
+        # the sole geometric controller and Autopilot retains the sole physical
+        # SteeringDynamics/SteeringExecutor.
+        self._maneuver_reference_mux = ManeuverReferenceMux()
         self._steering_frame_gate = FrameGate()
         self._steering_calculation_cadence = CadenceMonitor(60.0)
         self._last_steering_observation_timestamp = None
@@ -162,6 +170,9 @@ class Plugin(BasePlugin):
 
     def on_stop(self):
         logging.info("Map (navigation) plugin stopped.")
+        mux = getattr(self, "_maneuver_reference_mux", None)
+        if mux is not None:
+            mux.close()
         self._roads_job_id += 1
         self._roads_loading = False
         self._live_map_job_id += 1
@@ -1618,6 +1629,7 @@ class Plugin(BasePlugin):
             "source_dataset_fingerprint": self.sdk.get(
                 "active_dataset_fingerprint"),
             "failure_code": None,
+            "lane_path_fingerprint": lane_path_fingerprint(trajectory),
         }
         # One shared-state assignment publishes one coherent geometry revision.
         safe_diagnostic_call(diagnostic, "start_phase", "publish_snapshot", {
@@ -2584,8 +2596,40 @@ class Plugin(BasePlugin):
                     })
                     self.tags.nav_steering = 0.0
                     return
-                live_cte = -float(live_match["lateral_error_m"])
-                if not math.isfinite(live_cte):
+                reference_packet = self.sdk.get(
+                    "maneuver_reference_packet", {}) or {}
+                reference_selection = self._maneuver_reference_mux.select(
+                    route, snapshot, reference_packet, pos, heading,
+                    time.monotonic(), steering_frame_us,
+                    bool(self.sdk.get("autopilot_active", False)))
+                reference_payload = active_reference_payload(
+                    reference_selection, snapshot, steering_frame_us)
+                self.sdk.set(
+                    "maneuver_reference_preparation",
+                    self._maneuver_reference_mux.preparation_payload())
+                if not reference_selection.authority_valid:
+                    rejected_debug = {
+                        "authority_valid": False,
+                        "control_failure": reference_selection.failure_reason,
+                        "reference_mode": reference_selection.mode,
+                    }
+                    self.sdk.shared_state.update_batch({
+                        "nav_active": False, "nav_steering": 0.0,
+                        "nav_steering_debug": rejected_debug,
+                        "active_navigation_reference": reference_payload,
+                        "navigation_unreliable": True,
+                        "navigation_failure_reason": (
+                            reference_selection.failure_reason),
+                        "path_curvature_radius": None,
+                        "path_curve_distance_m": None,
+                        "path_curve_signed_curvature": 0.0,
+                    })
+                    self.tags.nav_steering = 0.0
+                    return
+                route = reference_selection.route
+                live_cte = (None if reference_selection.mode == "local_maneuver"
+                            else -float(live_match["lateral_error_m"]))
+                if live_cte is not None and not math.isfinite(live_cte):
                     self.sdk.shared_state.update_batch({
                         "nav_active": False, "nav_steering": 0.0,
                         "path_curvature_radius": None,
@@ -2716,6 +2760,15 @@ class Plugin(BasePlugin):
                     "source_map_key": snapshot.get("source_map_key"),
                     "source_dataset_fingerprint": snapshot.get(
                         "source_dataset_fingerprint"),
+                    "reference_mode": reference_selection.mode,
+                    "maneuver_reference_sequence": reference_payload.get(
+                        "sequence"),
+                    "maneuver_plan_token": reference_payload.get(
+                        "plan_token"),
+                    "maneuver_reference_binding": reference_payload.get(
+                        "binding"),
+                    "maneuver_reference_valid_until": reference_payload.get(
+                        "valid_until"),
                 })
                 self._steering_packet_sequence = int(getattr(
                     self, "_steering_packet_sequence", 0)) + 1
@@ -2727,6 +2780,7 @@ class Plugin(BasePlugin):
                     self.sdk.shared_state.update_batch({
                         "nav_active": False, "nav_steering": 0.0,
                         "nav_steering_debug": steering_debug,
+                        "active_navigation_reference": reference_payload,
                         "path_curvature_radius": None,
                         "path_curve_distance_m": None,
                         "path_curve_signed_curvature": 0.0,
@@ -2736,6 +2790,7 @@ class Plugin(BasePlugin):
                     steer = 0.0
                     self.sdk.shared_state.update_batch({
                         "nav_active": False, "nav_steering": 0.0,
+                        "active_navigation_reference": reference_payload,
                         "path_curvature_radius": None,
                         "path_curve_distance_m": None,
                         "path_curve_signed_curvature": 0.0,
@@ -2748,6 +2803,7 @@ class Plugin(BasePlugin):
                     self.sdk.shared_state.update_batch({
                         "nav_steering": float(steer), "nav_active": True,
                         "nav_steering_debug": steering_debug,
+                        "active_navigation_reference": reference_payload,
                         "path_curvature_radius": curve_profile["radius_m"],
                         "path_curve_distance_m": curve_profile["distance_m"],
                         "path_curve_signed_curvature": (

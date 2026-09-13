@@ -9,6 +9,9 @@ from core.navigation.runtime_preflight import (
 )
 from core.navigation.navigation_intent import snapshot_matches_navigation_intent
 from core.navigation.route import curve_speed_limit_ms
+from core.navigation.maneuver_reference import (
+    REFERENCE_SCHEMA_VERSION, approach_packet_rejection_reason,
+)
 from core.control_timing import MonotonicSequenceGate
 from core.steering_dynamics import SteeringDynamics
 from core.steering_executor import SteeringExecutor
@@ -193,6 +196,50 @@ def game_gps_navigation_present(state, snapshot=None):
                 or len(snapshot.get("source_gps_uids", []) or []) >= 2)
 
 
+def maneuver_reference_rejection_reason(state, snapshot, packet, now=None):
+    """Cross-check a local-reference command against its atomic Map record."""
+    if (packet or {}).get("reference_mode", "global_lane") != "local_maneuver":
+        return ""
+    now = time.monotonic() if now is None else float(now)
+    reference = state.get("active_navigation_reference", {}) or {}
+    try:
+        if (not isinstance(reference, dict)
+                or reference.get("schema_version") != REFERENCE_SCHEMA_VERSION
+                or reference.get("mode") != "local_maneuver"
+                or not reference.get("authority_valid", False)):
+            return "local maneuver reference authority is missing"
+        checks = (
+            ("sequence", "maneuver_reference_sequence"),
+            ("plan_token", "maneuver_plan_token"),
+            ("binding", "maneuver_reference_binding"),
+            ("valid_until", "maneuver_reference_valid_until"),
+            ("sdk_frame_us", "sdk_frame_us"),
+        )
+        for reference_key, packet_key in checks:
+            if reference.get(reference_key) != packet.get(packet_key):
+                return f"local maneuver reference {reference_key} is stale"
+        for key in (
+                "navigation_intent_id", "route_build_id", "revision",
+                "source_game_session_id", "source_map_key",
+                "source_dataset_fingerprint"):
+            if (not snapshot.get(key)
+                    or reference.get(key) != snapshot.get(key)
+                    or packet.get(key) != snapshot.get(key)):
+                return f"local maneuver reference {key} is stale"
+        computed = float(reference.get("computed_at"))
+        valid_until = float(reference.get("valid_until"))
+        if (not all(math.isfinite(value) for value in
+                    (computed, valid_until, now))
+                or computed > now or now >= valid_until
+                or valid_until - computed > .1 + 1e-12):
+            return "local maneuver reference lease is stale"
+        if not reference.get("plan_token") or not reference.get("binding"):
+            return "local maneuver reference binding is missing"
+    except (TypeError, ValueError, OverflowError, KeyError, AttributeError):
+        return "local maneuver reference metadata is malformed"
+    return ""
+
+
 def navigation_command(state, snapshot, *, gps_active, now=None, packet=None):
     """Read one finished command, with its existing trajectory identity.
 
@@ -258,6 +305,10 @@ def navigation_command(state, snapshot, *, gps_active, now=None, packet=None):
                 age = now - float(packet[key])
                 if not math.isfinite(age) or not 0.0 <= age <= 0.5:
                     return 0.0, 0.0, f"steering command {key} is stale"
+            reference_reason = maneuver_reference_rejection_reason(
+                state, snapshot, packet, now)
+            if reference_reason:
+                return 0.0, 0.0, reference_reason
             target, curvature = float(packet["output"]), float(packet["local_curvature"])
         else:
             # Compatibility for legacy/recorded producers and old diagnostic
@@ -759,6 +810,13 @@ class Plugin(BasePlugin):
         nav_command, nav_command_curvature, command_reason = navigation_command(
             self.sdk.shared_state, snapshot, gps_active=gps_navigation_present,
             packet=accepted_packet)
+        maneuver_approach = self.sdk.shared_state.get(
+            "maneuver_approach_packet", {}) or {}
+        vehicle_snapshot = self.sdk.shared_state.get(
+            "vehicle_envelope_snapshot", {}) or {}
+        approach_reason = approach_packet_rejection_reason(
+            maneuver_approach, snapshot, time.monotonic(),
+            vehicle_snapshot.get("sdk_frame_us", 0))
         if (not command_reason
                 and accepted_packet.get("controller") == "frenet_bicycle"
                 and accepted_packet.get(
@@ -805,6 +863,8 @@ class Plugin(BasePlugin):
         if (not authority_reason and command_reason
                 and self.sdk.shared_state.get("nav_active", False)):
             authority_reason = command_reason
+        if not authority_reason and approach_reason:
+            authority_reason = "maneuver approach rejected: " + approach_reason
         active_requested = bool(self.sdk.shared_state.get(
             "autopilot_active", False))
         # Starting steering on a boundary or while facing a neighbouring arm
@@ -1121,13 +1181,16 @@ class Plugin(BasePlugin):
                 and 0.0 <= traffic_age <= 0.5) else 0.0)
         light_brake = float(self.sdk.shared_state.get("light_brake", 0.0) or 0.0)
         aux_brake = float(self.sdk.shared_state.get("aux_brake_request", 0.0) or 0.0)
+        maneuver_brake = (float(maneuver_approach.get(
+            "brake_request", 0.0) or 0.0)
+            if not approach_reason else 0.0)
         # Raw screenshot danger is diagnostic only. ``danger_level`` now
         # represents lane-aligned SCS traffic, already covered by
         # traffic_brake/collision_brake, so it must not become a duplicate
         # braking channel.
         vision_brake = 0.0
         requested_brake = max(collision_brake, traffic_brake, light_brake,
-                              aux_brake, vision_brake)
+                              aux_brake, maneuver_brake, vision_brake)
         if navigation_unreliable:
             # A GPS route with a mismatched map must never fall through to
             # camera lane detection at an intersection. Stop predictably.
@@ -1201,6 +1264,10 @@ class Plugin(BasePlugin):
                     requested_brake,
                     float(np.clip(
                         (turn - 0.45) * 0.6, 0.0, 0.35)))
+
+        if (not approach_reason
+                and bool(maneuver_approach.get("release_throttle", False))):
+            curve_factor = 0.0
 
         # 3. Apply braking THROUGH THE RAMP (anti-jerk). This is the key change:
         #    the truck brakes firmly but progressively, never a step to 1.0.

@@ -16,6 +16,7 @@ from core.modules.traffic_analysis import TrafficAnalysis
 from core.planner import UltraPilotPlanner
 from core.camera import CameraSnapshotProducer
 from core.navigation.runtime_preflight import build_runtime_preflight
+from core.navigation.maneuver_availability import production_data_availability
 from core.control_timing import CadenceMonitor, FrameGate, wait_for_next_tick
 from core.navigation.navigation_intent import (
     NavigationBufferClass, NavigationIntentTracker,
@@ -109,6 +110,13 @@ def _telemetry_loss_navigation_payload(state):
         "lane_trajectory": old_lane,
         "lane_trajectory_heartbeat": 0.0,
         "nav_active": False, "nav_steering": 0.0,
+        "maneuver_reference_packet": {},
+        "maneuver_approach_packet": {},
+        "active_navigation_reference": {
+            "schema_version": 1, "mode": "revoked",
+            "authority_valid": False,
+            "failure_reason": "vehicle telemetry is invalid",
+        },
         "navigation_source": "gps_lane" if gps_owns_navigation else "none",
         "recorded_route_active": False,
         "navigation_unreliable": True,
@@ -148,6 +156,10 @@ class UltraPilotEngine:
         # Surrounding traffic + traffic lights from the ETS2LA game plugin (if installed).
         from core.sdk.ets2la_data import ETS2LAData
         self.ets2la = ETS2LAData()
+        self.shared_state.set(
+            "stage5d_runtime_data_availability",
+            production_data_availability(
+                self.shared_state, self.ets2la, self.settings.settings))
         from core.sdk.ets2la_route import ETS2LARouteReader
         self.ets2la_route = ETS2LARouteReader()
         # Converts the game plugin's exact CameraProps buffer into one atomic,
@@ -824,6 +836,9 @@ class UltraPilotEngine:
                 "autopilot_engagement_confirmed": None,
                 "tts_message": msg,
                 **({"safety_hazard_active": False} if new_state else {}),
+                **({"maneuver_reference_packet": {},
+                    "maneuver_approach_packet": {}}
+                   if not new_state else {}),
             })
             logging.info("Hotkey N -> %s", msg)
             if not new_state:
@@ -877,6 +892,9 @@ class UltraPilotEngine:
             "autopilot_engagement_request": seq if desired else None,
             "autopilot_engagement_confirmed": None,
             **({"safety_hazard_active": False} if desired else {}),
+            **({"maneuver_reference_packet": {},
+                "maneuver_approach_packet": {}}
+               if not desired else {}),
         })
         if not desired:
             self._release_controller()
@@ -1429,6 +1447,14 @@ class UltraPilotEngine:
                         "lane_trajectory": invalid_lane,
                         "map_path": [], "nav_path": [],
                         "nav_active": False, "nav_steering": 0.0,
+                        "maneuver_reference_packet": {},
+                        "maneuver_approach_packet": {},
+                        "active_navigation_reference": {
+                            "schema_version": 1, "mode": "revoked",
+                            "authority_valid": False,
+                            "failure_reason": (
+                                "navigation intent or dataset changed"),
+                        },
                         "nav_trajectory_revision": -1,
                         "navigation_source": "gps_lane",
                         "recorded_route_active": False,
@@ -1472,10 +1498,11 @@ class UltraPilotEngine:
                     "game_route_time": float(truck.get("routeTime", 0.0) or 0.0),
                 })
 
-                # Surrounding traffic + the traffic light controlling us
-                # (ETS2LA game plugin). A successful empty list is still an
-                # authoritative "road is clear" snapshot; it is not the same
-                # thing as an unavailable reader.
+                # Surrounding traffic + the traffic light controlling us.
+                # This legacy list remains useful for lane-aligned ACC. Its ABI
+                # cannot distinguish every unavailable/empty case and supplies
+                # neither complete coverage/history nor confirmed dimensions,
+                # so it is never promoted to Phase 5D maneuver evidence.
                 try:
                     from core.sdk.ets2la_data import nearest_light_ahead
                     traffic = self.ets2la.read_traffic()
@@ -1485,14 +1512,17 @@ class UltraPilotEngine:
                     light = nearest_light_ahead(lights, pos, hdg)
                     # Lead-vehicle following: brake for the nearest car ahead in our lane.
                     traffic_brake = self._lead_brake(traffic, pos, hdg)
+                    traffic_available = bool(self.ets2la.traffic_available)
                     # Stop on red / go on green.
                     self.shared_state.update_batch({
                         "traffic": traffic,
                         "traffic_light": light,
                         "traffic_brake": traffic_brake,
                         "light_brake": self._light_brake(light),
-                        "traffic_snapshot_valid": True,
+                        "traffic_snapshot_valid": traffic_available,
                         "traffic_snapshot_timestamp": telemetry_timestamp,
+                        "traffic_snapshot_failure": ("" if traffic_available
+                            else "ETS2LA traffic shared-memory buffer unavailable"),
                     })
                 except Exception as error:
                     # Never retain actuator-facing values from an older frame.
@@ -1504,6 +1534,11 @@ class UltraPilotEngine:
                         "traffic_snapshot_timestamp": telemetry_timestamp,
                         "traffic_snapshot_failure": str(error),
                     })
+                self.shared_state.set(
+                    "stage5d_runtime_data_availability",
+                    production_data_availability(
+                        self.shared_state, self.ets2la,
+                        self.settings.settings, telemetry_timestamp))
             else:
                 telemetry_timestamp = time.monotonic()
                 camera_snapshot = self.camera_snapshot_producer.read(

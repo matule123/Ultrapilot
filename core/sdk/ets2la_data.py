@@ -157,6 +157,16 @@ class ETS2LAData:
                 self._parked_buf = None
         return out
 
+    @property
+    def traffic_available(self) -> bool:
+        """Whether the last traffic read had a connected, readable buffer.
+
+        ``read_traffic`` keeps its list API for existing display consumers.
+        This bit prevents an unavailable buffer from being described as an
+        authoritative empty observation by safety consumers.
+        """
+        return self._traffic_buf is not None
+
     def read_traffic_lights(self) -> list:
         """Traffic lights in absolute ETS2 world coordinates.
 
