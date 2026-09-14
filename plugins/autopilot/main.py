@@ -481,6 +481,12 @@ class Plugin(BasePlugin):
         source = debug.get("source_packet") or {}
         if source.get("reference_mode") == "local_maneuver":
             self.sdk.shared_state.set("maneuver_applied_target", dict(debug))
+        if self.sdk.shared_state.get(
+                "maneuver_evidence_diagnostic_active", False):
+            # Engine binds this exact executor output to the physical backend
+            # call. It is observation only and never becomes a controller input.
+            self.sdk.shared_state.set(
+                "maneuver_diagnostic_applied_target", dict(debug))
         replay = getattr(self, "_steering_replay", None)
         accepted = getattr(self, "_accepted_navigation_command", {}) or {}
         if replay is not None:
@@ -1799,8 +1805,10 @@ class Plugin(BasePlugin):
                 target, speed_ms=speed_ms,
                 curvature_per_m=curvature_per_m or 0.0, active=True,
                 source_packet=(dict(self._accepted_navigation_command)
-                    if (getattr(self, "_accepted_navigation_command", {}) or {}).get(
-                        "reference_mode") == "local_maneuver" else None))
+                    if ((getattr(self, "_accepted_navigation_command", {}) or {}).get(
+                        "reference_mode") == "local_maneuver"
+                        or self.sdk.shared_state.get(
+                            "maneuver_evidence_diagnostic_active", False)) else None))
             output = executor.output
             self._steering_dynamics_debug = executor.last_debug
         else:

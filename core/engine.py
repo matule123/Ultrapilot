@@ -152,10 +152,28 @@ class UltraPilotEngine:
         from core.navigation.tracking_evidence import TrackingRecorder
         self._maneuver_tracking_recorder = TrackingRecorder()
         self._maneuver_application_sequence = 0
+        self._maneuver_diagnostic_collector = None
+        self._maneuver_diagnostic_sequence = 0
+        diagnostic_config = self.settings.get(
+            "maneuver_evidence_diagnostics", {}) or {}
+        if diagnostic_config.get("enabled") is True:
+            output_directory = diagnostic_config.get("output_directory")
+            try:
+                if not output_directory:
+                    raise ValueError("MISSING_DIAGNOSTIC_OUTPUT_DIRECTORY")
+                from core.navigation.evidence_diagnostics import EvidenceDiagnosticCollector
+                self._maneuver_diagnostic_collector = EvidenceDiagnosticCollector(
+                    output_directory,
+                    capacity=int(diagnostic_config.get("capacity", 1800)),
+                    max_sessions=int(diagnostic_config.get("max_sessions", 8)),
+                    status_callback=self._publish_maneuver_diagnostic_status)
+            except (OSError, TypeError, ValueError):
+                logging.exception("Maneuver evidence diagnostics could not be configured")
         self.shared_state.update_batch({
             "maneuver_production_guard_required": True,
             "maneuver_evidence_config": self.settings.get("maneuver_evidence", {}) or {},
             "maneuver_production_evidence": None,
+            "maneuver_evidence_diagnostic_active": False,
         })
         # Route voice alerts through shared state to the single tts plugin speaker.
         self.voice = VoiceAssistant(self.shared_state)
@@ -260,6 +278,9 @@ class UltraPilotEngine:
         self._stopped = False
         self._realtime_stop.clear()
         try:
+            diagnostic = getattr(self, "_maneuver_diagnostic_collector", None)
+            if diagnostic is not None:
+                diagnostic.start()
             self._start_realtime_workers(telemetry=True, controls=False)
             self.plugin_manager.discover_and_load()
             self._start_realtime_workers(telemetry=False, controls=True)
@@ -281,6 +302,9 @@ class UltraPilotEngine:
         self.module_manager.stop_all()
         self.plugin_manager.stop_all()
         self.voice.stop()
+        diagnostic = getattr(self, "_maneuver_diagnostic_collector", None)
+        if diagnostic is not None:
+            diagnostic.close()
         recorder = getattr(self, "_maneuver_tracking_recorder", None)
         if recorder is not None and self._maneuver_application_sequence:
             try:
@@ -290,6 +314,31 @@ class UltraPilotEngine:
             except Exception:
                 logging.exception("Cannot export unqualified maneuver tracking measurements")
         logging.info("ETS2-UltraPilot Engine stopped.")
+
+    def _publish_maneuver_diagnostic_status(self, status):
+        """Expose diagnostics without touching any maneuver authority field."""
+        self.shared_state.update_batch({
+            "maneuver_evidence_diagnostic_status": dict(status),
+            "maneuver_evidence_diagnostic_active": bool(
+                status.get("accepting_samples", False)),
+        })
+
+    def _offer_maneuver_evidence_diagnostic(self, steering, now):
+        """Non-blocking capture; serialization and parsing stay on its worker."""
+        diagnostic = getattr(self, "_maneuver_diagnostic_collector", None)
+        if diagnostic is None or not diagnostic.should_sample(now):
+            return
+        from core.navigation.evidence_diagnostics import capture_diagnostic_application
+        self._maneuver_diagnostic_sequence = int(getattr(
+            self, "_maneuver_diagnostic_sequence", 0)) + 1
+        try:
+            diagnostic.offer(capture_diagnostic_application(
+                self.shared_state, steering, now,
+                self._maneuver_diagnostic_sequence))
+        except (AttributeError, TypeError, ValueError):
+            self.shared_state.set(
+                "maneuver_evidence_diagnostic_failure",
+                "INCOMPLETE_DIAGNOSTIC_CAPTURE")
 
     def _start_realtime_workers(self, *, telemetry, controls):
         """Start independent I/O clocks without creating control authority."""
@@ -1061,6 +1110,11 @@ class UltraPilotEngine:
             self._last_output_steering = 0.0
             self._last_output_brake = 0.0
             self._last_control_flush = time.monotonic()
+            # Profile/ground/traffic/survey observations remain useful while
+            # the driver owns the vehicle. A missing backend command is stored
+            # explicitly and can never qualify tracking.
+            self._offer_maneuver_evidence_diagnostic(
+                None, self._last_control_flush)
             return
         if self.shared_state.get("telemetry_valid", True) is False:
             # Never keep flushing the last acceleration/steering intent after
@@ -1153,6 +1207,10 @@ class UltraPilotEngine:
         self.controller.set_throttle(throttle)
         self.controller.set_brake(brake)
         self._last_control_flush = time.monotonic()
+        # O(1), non-blocking offer after the physical backend call. The
+        # diagnostics worker owns parsing, hashing and every disk write.
+        self._offer_maneuver_evidence_diagnostic(
+            steering, self._last_control_flush)
         recorder = getattr(self, "_maneuver_tracking_recorder", None)
         if recorder is not None and active_reference.get("mode") == "local_maneuver":
             from core.navigation.tracking_evidence import capture_application

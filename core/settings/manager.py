@@ -103,6 +103,13 @@ class SettingsManager:
                 "configuration_frame_file": None, "traffic_frame_file": None,
                 "tracking_samples_file": None,
             },
+            # Raw evidence collection is a separate, explicit operator mode.
+            # Absence/False starts no collector and cannot affect maneuver
+            # authority. The management CLI supplies a dedicated output path.
+            "maneuver_evidence_diagnostics": {
+                "enabled": False, "output_directory": None,
+                "capacity": 1800, "max_sessions": 8,
+            },
             "general": {
                 "target_speed": 80.0,
                 "fps": 60,
