@@ -20,10 +20,14 @@ routes/
 settings.json
 *.log
 tests/.tmp-map-compat/
+.pytest-*/
+pytest-*/
+.tmp-stage5e-*/
 
 # Local-only / agent artifacts
 docs/
 *_AUDIT.md
+STAGE5E_REAL_EVIDENCE_PREPARATION.md
 .zcode/
 .codex/
 
