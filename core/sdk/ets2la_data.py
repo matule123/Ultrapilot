@@ -16,10 +16,7 @@ import math
 import struct
 import logging
 
-try:
-    import mmap
-except Exception:
-    mmap = None
+from core.sdk.existing_mapping import ExistingMapping
 
 # --- struct layouts (must match the plugin, copied from ETS2LA) ---------------
 _VEH = "ffffffffffffhhbb"          # 12 floats + 2 shorts + 2 bytes
@@ -76,22 +73,19 @@ class ETS2LAData:
         self._retry = 0
 
     def _connect(self):
-        if mmap is None:
-            return
         try:
             if self._traffic_buf is None:
-                self._traffic_buf = mmap.mmap(0, _TRAFFIC_SIZE, r"Local\ETS2LATraffic")
+                self._traffic_buf = ExistingMapping(r"Local\ETS2LATraffic", _TRAFFIC_SIZE)
         except Exception:
             self._traffic_buf = None
         try:
             if self._parked_buf is None:
-                self._parked_buf = mmap.mmap(
-                    0, _PARKED_SIZE, r"Local\ETS2LAParkedVehicles")
+                self._parked_buf = ExistingMapping(r"Local\ETS2LAParkedVehicles", _PARKED_SIZE)
         except Exception:
             self._parked_buf = None
         try:
             if self._sem_buf is None:
-                self._sem_buf = mmap.mmap(0, _SEM_SIZE, r"Local\ETS2LASemaphore")
+                self._sem_buf = ExistingMapping(r"Local\ETS2LASemaphore", _SEM_SIZE)
         except Exception:
             self._sem_buf = None
 

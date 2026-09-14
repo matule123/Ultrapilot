@@ -201,6 +201,12 @@ def maneuver_reference_rejection_reason(state, snapshot, packet, now=None):
     if (packet or {}).get("reference_mode", "global_lane") != "local_maneuver":
         return ""
     now = time.monotonic() if now is None else float(now)
+    if state.get("maneuver_production_guard_required", False):
+        from core.navigation.evidence_worker import production_reference_rejection
+        reason = production_reference_rejection(
+            state, snapshot, packet, packet.get("sdk_frame_us"), now)
+        if reason:
+            return reason
     reference = state.get("active_navigation_reference", {}) or {}
     try:
         if (not isinstance(reference, dict)
@@ -472,6 +478,9 @@ class Plugin(BasePlugin):
         """Publish bounded high-rate evidence without influencing control."""
         self._last_steering = float(debug.get("output", 0.0) or 0.0)
         self._steering_dynamics_debug = dict(debug)
+        source = debug.get("source_packet") or {}
+        if source.get("reference_mode") == "local_maneuver":
+            self.sdk.shared_state.set("maneuver_applied_target", dict(debug))
         replay = getattr(self, "_steering_replay", None)
         accepted = getattr(self, "_accepted_navigation_command", {}) or {}
         if replay is not None:
@@ -817,6 +826,11 @@ class Plugin(BasePlugin):
         approach_reason = approach_packet_rejection_reason(
             maneuver_approach, snapshot, time.monotonic(),
             vehicle_snapshot.get("sdk_frame_us", 0))
+        if maneuver_approach and self.sdk.shared_state.get("maneuver_production_guard_required", False):
+            from core.navigation.evidence_worker import production_reference_rejection
+            approach_reason = approach_reason or production_reference_rejection(
+                self.sdk.shared_state, snapshot, maneuver_approach,
+                vehicle_snapshot.get("sdk_frame_us", 0), time.monotonic())
         if (not command_reason
                 and accepted_packet.get("controller") == "frenet_bicycle"
                 and accepted_packet.get(
@@ -1783,7 +1797,10 @@ class Plugin(BasePlugin):
             # physical trajectory and recreate the visible micro-pulses.
             executor.submit(
                 target, speed_ms=speed_ms,
-                curvature_per_m=curvature_per_m or 0.0, active=True)
+                curvature_per_m=curvature_per_m or 0.0, active=True,
+                source_packet=(dict(self._accepted_navigation_command)
+                    if (getattr(self, "_accepted_navigation_command", {}) or {}).get(
+                        "reference_mode") == "local_maneuver" else None))
             output = executor.output
             self._steering_dynamics_debug = executor.last_debug
         else:

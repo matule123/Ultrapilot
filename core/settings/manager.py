@@ -97,6 +97,12 @@ class SettingsManager:
             # here automatically. An empty catalog intentionally keeps future
             # swept-envelope maneuver planning fail-closed.
             "drivable_surfaces": {"schema_version": 1, "surfaces": []},
+            # Trusted imports are opt-in. No fixture or built-in key is trusted.
+            "maneuver_evidence": {
+                "trust_file": None, "artifacts": {},
+                "configuration_frame_file": None, "traffic_frame_file": None,
+                "tracking_samples_file": None,
+            },
             "general": {
                 "target_speed": 80.0,
                 "fps": 60,

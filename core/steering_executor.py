@@ -41,6 +41,7 @@ class SteeringExecutor:
         self._curvature_per_m = 0.0
         self._submitted_at = 0.0
         self._submission_sequence = 0
+        self._source_packet = None  # measurement binding, never a control input
         self._output = float(self.dynamics.command)
         self._last_debug = dict(self.dynamics.last_debug)
         self._cadence = CadenceMonitor(STEERING_EXECUTION_HZ)
@@ -79,10 +80,11 @@ class SteeringExecutor:
             self._curvature_per_m = 0.0
             self._submitted_at = now
             self._submission_sequence += 1
+            self._source_packet = None
             return float(self._output)
 
     def submit(self, target, *, speed_ms=0.0, curvature_per_m=0.0,
-               active=True, submitted_at=None) -> int:
+               active=True, submitted_at=None, source_packet=None) -> int:
         now = self._clock() if submitted_at is None else float(submitted_at)
         target = max(-1.0, min(1.0, self._finite(target)))
         speed = abs(self._finite(speed_ms))
@@ -94,6 +96,7 @@ class SteeringExecutor:
             self._active = bool(active)
             self._submitted_at = now
             self._submission_sequence += 1
+            self._source_packet = dict(source_packet) if source_packet is not None else None
             return self._submission_sequence
 
     def step(self, dt, *, now=None) -> float:
@@ -113,6 +116,7 @@ class SteeringExecutor:
                 "target_age_s": age,
                 "submission_sequence": self._submission_sequence,
                 "execution_monotonic_s": now,
+                "source_packet": dict(self._source_packet) if self._source_packet is not None else None,
             })
             self._output = float(output)
             self._last_debug = debug

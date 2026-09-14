@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "source": "UltraPilot Engine applied controls",
+  "measurement_domain": "ets2_backend_observation",
+  "qualification": "UNQUALIFIED_RAW_MEASUREMENT",
+  "dropped_samples": 1,
+  "samples": [
+    {
+      "application_sequence": 1
+    },
+    {
+      "application_sequence": 2
+    }
+  ]
+}

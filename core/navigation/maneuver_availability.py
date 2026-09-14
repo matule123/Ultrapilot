@@ -78,6 +78,16 @@ def production_data_availability(state, traffic_reader=None, settings=None,
     }
     blockers = [row["failure_reason"] for row in rows.values()
                 if row["failure_reason"]]
+    if state.get("maneuver_production_guard_required", False):
+        from core.navigation.evidence_worker import EvidenceLease
+        bundle = state.get("maneuver_production_evidence")
+        truck = ((state.get("telemetry", {}) or {}).get("truck", {}) or {})
+        reason = (bundle.rejection(state.get("lane_trajectory", {}) or {},
+                                   truck.get("sdkFrameTimeUs"), now)
+                  if isinstance(bundle, EvidenceLease)
+                  else "MISSING_PRODUCTION_MANEUVER_EVIDENCE")
+        if reason:
+            blockers.append(reason)
     return {
         "schema_version": 1,
         "computed_at": now,

@@ -1,6 +1,7 @@
 import time
 import logging
 import threading
+import os
 
 from core.telemetry import Telemetry
 from core.controller import Controller
@@ -148,6 +149,14 @@ class UltraPilotEngine:
         self.settings = SettingsManager()
         # Wrap the shared dict handed down by the bootloader (or create one).
         self.shared_state = SharedState(shared_dict)
+        from core.navigation.tracking_evidence import TrackingRecorder
+        self._maneuver_tracking_recorder = TrackingRecorder()
+        self._maneuver_application_sequence = 0
+        self.shared_state.update_batch({
+            "maneuver_production_guard_required": True,
+            "maneuver_evidence_config": self.settings.get("maneuver_evidence", {}) or {},
+            "maneuver_production_evidence": None,
+        })
         # Route voice alerts through shared state to the single tts plugin speaker.
         self.voice = VoiceAssistant(self.shared_state)
 
@@ -272,6 +281,14 @@ class UltraPilotEngine:
         self.module_manager.stop_all()
         self.plugin_manager.stop_all()
         self.voice.stop()
+        recorder = getattr(self, "_maneuver_tracking_recorder", None)
+        if recorder is not None and self._maneuver_application_sequence:
+            try:
+                from core.paths import app_dir
+                recorder.export(os.path.join(app_dir(), "route-diagnostics",
+                    f"maneuver-tracking-{time.time_ns()}.json"))
+            except Exception:
+                logging.exception("Cannot export unqualified maneuver tracking measurements")
         logging.info("ETS2-UltraPilot Engine stopped.")
 
     def _start_realtime_workers(self, *, telemetry, controls):
@@ -1038,6 +1055,9 @@ class UltraPilotEngine:
                 self.controller, "release_blinker_pulse", None)
             if callable(release_blinker):
                 release_blinker()
+            if self.shared_state.get("maneuver_production_evidence") is not None:
+                self.shared_state.update_batch({"maneuver_production_evidence": None,
+                    "maneuver_reference_packet": {}, "maneuver_approach_packet": {}})
             self._last_output_steering = 0.0
             self._last_output_brake = 0.0
             self._last_control_flush = time.monotonic()
@@ -1050,6 +1070,18 @@ class UltraPilotEngine:
             self._was_active = True
             self._automatic_safety_stop("vehicle telemetry is invalid")
             return
+        active_reference = self.shared_state.get("active_navigation_reference", {}) or {}
+        if active_reference.get("mode") in ("local_maneuver", "revoked"):
+            from core.navigation.evidence_worker import production_reference_rejection
+            reason = production_reference_rejection(
+                self.shared_state, self.shared_state.get("lane_trajectory", {}) or {},
+                active_reference, truck_telemetry.get("sdkFrameTimeUs"), time.monotonic())
+            if reason or not active_reference.get("authority_valid"):
+                self.shared_state.update_batch({"maneuver_production_evidence": None,
+                    "maneuver_reference_packet": {}, "maneuver_approach_packet": {}})
+                self._was_active = True
+                self._automatic_safety_stop(reason or "local maneuver authority revoked")
+                return
         control_heartbeat = float(self.shared_state.get(
             "autopilot_control_heartbeat", 0.0) or 0.0)
         if (control_heartbeat <= 0.0
@@ -1121,6 +1153,16 @@ class UltraPilotEngine:
         self.controller.set_throttle(throttle)
         self.controller.set_brake(brake)
         self._last_control_flush = time.monotonic()
+        recorder = getattr(self, "_maneuver_tracking_recorder", None)
+        if recorder is not None and active_reference.get("mode") == "local_maneuver":
+            from core.navigation.tracking_evidence import capture_application
+            self._maneuver_application_sequence += 1
+            try:
+                recorder.append(capture_application(self.shared_state, steering,
+                    self._last_control_flush, self._maneuver_application_sequence))
+            except (AttributeError, TypeError, ValueError):
+                # Lost diagnostic channels cannot alter the physical command.
+                self.shared_state.set("maneuver_tracking_failure", "INCOMPLETE_APPLIED_TRACKING_CHANNELS")
         self._last_output_steering = steering
         self._last_output_brake = brake
 
@@ -1513,9 +1555,13 @@ class UltraPilotEngine:
                     # Lead-vehicle following: brake for the nearest car ahead in our lane.
                     traffic_brake = self._lead_brake(traffic, pos, hdg)
                     traffic_available = bool(self.ets2la.traffic_available)
+                    from core.navigation.traffic_producer import capture_traffic
+                    maneuver_capture = capture_traffic(self.ets2la,
+                        self.shared_state.get("game_session_id"), time.monotonic())
                     # Stop on red / go on green.
                     self.shared_state.update_batch({
                         "traffic": traffic,
+                        "maneuver_traffic_capture": maneuver_capture,
                         "traffic_light": light,
                         "traffic_brake": traffic_brake,
                         "light_brake": self._light_brake(light),
@@ -1528,6 +1574,7 @@ class UltraPilotEngine:
                     # Never retain actuator-facing values from an older frame.
                     self.shared_state.update_batch({
                         "traffic": [], "traffic_light": None,
+                        "maneuver_traffic_capture": None,
                         "traffic_brake": 0.0, "light_brake": 0.0,
                         "lead_distance": None,
                         "traffic_snapshot_valid": False,

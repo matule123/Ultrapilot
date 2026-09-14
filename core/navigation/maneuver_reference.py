@@ -76,6 +76,8 @@ def _packet_base(runtime, live, sequence, state):
         "plan_token": result.plan.token,
         "lane_path_fingerprint": context.full_lane_path_fingerprint,
         "request_id": context.request_id,
+        "execution_start_s": getattr(runtime.timing, "start_s", None),
+        "initial_speed_mps": getattr(runtime.timing, "initial_speed_mps", None),
         **{key: snapshot.get(key) for key in IDENTITY_FIELDS},
     }
 
@@ -445,7 +447,11 @@ class ManeuverReferencePublisher:
     with an approach request left over from an older decision.
     """
     def __init__(self, shared_state):
-        self._state = shared_state
+        if getattr(shared_state, "get", lambda *_: False)("maneuver_production_guard_required", False):
+            from core.navigation.evidence_worker import ProductionPublicationSink
+            self._state = ProductionPublicationSink(shared_state)
+        else:
+            self._state = shared_state
         self._lock = threading.RLock()
         self._sequence = 0
         self._prepared = None
@@ -453,6 +459,14 @@ class ManeuverReferencePublisher:
     def _next_sequence(self):
         self._sequence += 1
         return self._sequence
+
+    def bind_production_evidence(self, bundle):
+        """Bind a worker-verified 5E bundle before publishing any 5D authority."""
+        from core.navigation.evidence_worker import ProductionPublicationSink
+        require(isinstance(self._state, ProductionPublicationSink),
+                "PRODUCTION_PUBLICATION_GUARD_NOT_CONFIGURED")
+        with self._lock:
+            self._state.bind(bundle)
 
     def _publish(self, reference, approach, runtime_state, reason=""):
         status = {
@@ -554,6 +568,12 @@ class ManeuverReferenceMux:
 
     def close(self):
         self._executor.shutdown(wait=False, cancel_futures=True)
+
+    def reject_production_evidence(self, reason):
+        """Latch loss during execution; never jump back to the global curve."""
+        if self._active_token is not None:
+            self._faulted = True
+        return ReferenceSelection(None, "revoked", False, reason)
 
     def offer(self, packet, snapshot):
         """Queue only the newest bounded local reference for worker validation."""
@@ -702,6 +722,9 @@ def active_reference_payload(selection, snapshot, sdk_frame_us, now=None):
         "sequence": packet.get("sequence", 0),
         "plan_token": packet.get("plan_token", ""),
         "binding": packet.get("binding", ""),
+        "production_evidence_receipt": packet.get("production_evidence_receipt", ""),
+        "execution_start_s": packet.get("execution_start_s"),
+        "initial_speed_mps": packet.get("initial_speed_mps"),
         "computed_at": now,
         "valid_until": packet.get("valid_until") if selection.packet else None,
         "sdk_frame_us": int(sdk_frame_us or 0),

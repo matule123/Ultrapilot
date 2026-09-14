@@ -12,6 +12,9 @@ from core.navigation.drivable_surface import lane_path_fingerprint
 from core.navigation.maneuver_reference import (
     ManeuverReferenceMux, active_reference_payload,
 )
+from core.navigation.evidence_worker import (
+    ProductionEvidenceWorker, production_reference_rejection,
+)
 from core.navigation.route_diagnostics import (
     RouteBuildDiagnostics, classify_failure, dataset_fingerprint,
     export_anonymized_failure, friendly_failure_message,
@@ -117,6 +120,8 @@ class Plugin(BasePlugin):
         # the sole geometric controller and Autopilot retains the sole physical
         # SteeringDynamics/SteeringExecutor.
         self._maneuver_reference_mux = ManeuverReferenceMux()
+        self._maneuver_evidence_worker = ProductionEvidenceWorker(
+            self.sdk.get("maneuver_evidence_config", {}) or {})
         self._steering_frame_gate = FrameGate()
         self._steering_calculation_cadence = CadenceMonitor(60.0)
         self._last_steering_observation_timestamp = None
@@ -173,6 +178,13 @@ class Plugin(BasePlugin):
         mux = getattr(self, "_maneuver_reference_mux", None)
         if mux is not None:
             mux.close()
+        worker = getattr(self, "_maneuver_evidence_worker", None)
+        if worker is not None:
+            worker.close()
+        self.sdk.shared_state.update_batch({
+            "maneuver_production_evidence": None,
+            "maneuver_reference_packet": {}, "maneuver_approach_packet": {},
+        })
         self._roads_job_id += 1
         self._roads_loading = False
         self._live_map_job_id += 1
@@ -2598,10 +2610,34 @@ class Plugin(BasePlugin):
                     return
                 reference_packet = self.sdk.get(
                     "maneuver_reference_packet", {}) or {}
-                reference_selection = self._maneuver_reference_mux.select(
-                    route, snapshot, reference_packet, pos, heading,
-                    time.monotonic(), steering_frame_us,
-                    bool(self.sdk.get("autopilot_active", False)))
+                evidence_worker = self._maneuver_evidence_worker
+                evidence = evidence_worker.harvest(
+                    snapshot, steering_frame_us, time.monotonic())
+                if evidence is not None:
+                    # Diagnostic production results are never authority by
+                    # themselves. The 5D publisher must bind an execution plan.
+                    self.sdk.shared_state.update_batch({
+                        "stage5e_evidence_diagnostic": evidence.diagnostic(),
+                        "stage5e_observed_traffic": evidence.legacy_traffic,
+                    })
+                    self._maneuver_evidence_candidate = evidence
+                evidence_worker.offer(
+                    self.road_net, self._lane_path, snapshot,
+                    self.sdk.get("vehicle_profile_snapshot"),
+                    self.sdk.get("maneuver_traffic_capture"))
+                evidence_reason = ""
+                if (reference_packet.get("state") in ("LOCAL_EXECUTING", "RETURN_TO_GLOBAL")
+                        or self.sdk.get("active_navigation_reference", {}).get("mode")
+                            == "local_maneuver"):
+                    evidence_reason = production_reference_rejection(
+                        self.sdk, snapshot, reference_packet, steering_frame_us, time.monotonic())
+                if evidence_reason:
+                    reference_selection = self._maneuver_reference_mux.reject_production_evidence(evidence_reason)
+                else:
+                    reference_selection = self._maneuver_reference_mux.select(
+                        route, snapshot, reference_packet, pos, heading,
+                        time.monotonic(), steering_frame_us,
+                        bool(self.sdk.get("autopilot_active", False)))
                 reference_payload = active_reference_payload(
                     reference_selection, snapshot, steering_frame_us)
                 self.sdk.set(
@@ -2769,6 +2805,8 @@ class Plugin(BasePlugin):
                         "binding"),
                     "maneuver_reference_valid_until": reference_payload.get(
                         "valid_until"),
+                    "production_evidence_receipt": reference_payload.get(
+                        "production_evidence_receipt"),
                 })
                 self._steering_packet_sequence = int(getattr(
                     self, "_steering_packet_sequence", 0)) + 1
