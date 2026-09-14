@@ -25,8 +25,8 @@ from core.navigation.evidence_diagnostics import (
 
 def _output_root(value):
     root = Path(value).resolve()
-    if root.name != "maneuver-evidence" or root.parent.name != "route-diagnostics":
-        raise ValueError("OUTPUT_MUST_BE_ROUTE_DIAGNOSTICS_MANEUVER_EVIDENCE")
+    if root.name != "evidence-diagnostics":
+        raise ValueError("OUTPUT_MUST_BE_DEDICATED_EVIDENCE_DIAGNOSTICS_DIRECTORY")
     return root
 
 

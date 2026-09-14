@@ -14,7 +14,7 @@ from tools.manage_maneuver_diagnostics import main as diagnostic_cli
 
 
 def root(tmp_path):
-    return tmp_path / "route-diagnostics" / "maneuver-evidence"
+    return tmp_path / "evidence-diagnostics"
 
 
 def command(sequence, action="arm", collection_id="cab-01", **values):
@@ -175,6 +175,9 @@ def test_cli_requires_explicit_arm_and_writes_no_authority(tmp_path, capsys):
 def test_manifest_tampering_and_wrong_output_are_rejected(tmp_path):
     with pytest.raises(ValueError, match="OUTPUT"):
         EvidenceDiagnosticCollector(tmp_path / "other", capacity=30)
+    with pytest.raises(ValueError, match="OUTPUT"):
+        EvidenceDiagnosticCollector(
+            tmp_path / "route-diagnostics" / "maneuver-evidence", capacity=30)
     collector = EvidenceDiagnosticCollector(root(tmp_path), capacity=30)
     collector.apply_command(command(1))
     for index in range(30):

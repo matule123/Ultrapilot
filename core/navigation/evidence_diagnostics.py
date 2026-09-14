@@ -237,8 +237,7 @@ class EvidenceDiagnosticCollector:
         if type(max_sessions) is not int or not 1 <= max_sessions <= 32:
             raise ValueError("INVALID_DIAGNOSTIC_SESSION_LIMIT")
         self.output_root = Path(output_root).resolve()
-        if (self.output_root.name != "maneuver-evidence"
-                or self.output_root.parent.name != "route-diagnostics"):
+        if self.output_root.name != "evidence-diagnostics":
             raise ValueError("INVALID_DIAGNOSTIC_OUTPUT_DIRECTORY")
         self.capacity = capacity
         self.max_sessions = max_sessions
