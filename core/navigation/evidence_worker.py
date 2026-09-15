@@ -11,8 +11,8 @@ import time
 from core.navigation.drivable_surface import digest
 from core.navigation.maneuver_integration import build_maneuver_route_context, _sensitive
 from core.navigation.production_evidence import (
-    EvidenceTrust, GroundReferenceProducer, bind_survey, compile_measured_profile,
-    read_document,
+    BodyProfileCatalog, EvidenceTrust, GroundReferenceProducer, bind_survey,
+    compile_measured_profile, read_document,
 )
 from core.navigation.traffic_producer import CompleteTrafficProducer, LegacyTrafficProducer
 from core.navigation.tracking_evidence import qualify_tracking, calibration_binding
@@ -121,6 +121,8 @@ class ProductionEvidenceWorker:
         self._traffic = CompleteTrafficProducer()
         self._legacy = LegacyTrafficProducer()
         self._profile_provider = None
+        self._profile_catalog = None
+        self._active_profile_artifact = None
         self._profile_key = None
         self._artifacts = {}
         self._loaded = False
@@ -149,6 +151,8 @@ class ProductionEvidenceWorker:
             self._loaded = True
             self._trust_fingerprint = fingerprint
             self._artifacts = {}
+            self._profile_catalog = None
+            self._active_profile_artifact = None
             self._load_failure = ''
             self._profile_key = self._surface_cache = self._tracking_cache = None
             self._trust = EvidenceTrust(keys)
@@ -156,6 +160,17 @@ class ProductionEvidenceWorker:
             require(type(files) is dict and len(files) <= 16, 'INVALID_EVIDENCE_ARTIFACT_CONFIG')
             for kind, path in files.items():
                 self._artifacts[kind] = self._trust.load(path, kind, deadline=import_deadline, clock=self.clock)
+            catalog_paths = self.config.get('body_profile_catalog_files', []) or []
+            require(type(catalog_paths) is list and len(catalog_paths) <= 128,
+                    'INVALID_BODY_PROFILE_CATALOG_CONFIG')
+            catalog_artifacts = ([self._artifacts['body_profile']]
+                if 'body_profile' in self._artifacts else [])
+            for profile_path in catalog_paths:
+                catalog_artifacts.append(self._trust.load(
+                    profile_path, 'body_profile', deadline=import_deadline,
+                    clock=self.clock))
+            if catalog_artifacts:
+                self._profile_catalog = BodyProfileCatalog(catalog_artifacts)
         except (EnvelopeError, OSError, ValueError, TypeError, KeyError) as error:
             self._artifacts = {}
             self._loaded = False
@@ -223,10 +238,25 @@ class ProductionEvidenceWorker:
         if self._load_failure:
             blockers.append('EVIDENCE_IMPORT_FAILED:'+self._load_failure)
 
+        def load_configuration_artifact():
+            path = self.config.get('configuration_frame_file')
+            require(path and self._trust is not None,
+                    'UNPROVEN_FULL_ACCESSORY_CONFIGURATION')
+            return self._trust.load(path, 'configuration_frame',
+                                    deadline=self._deadline, clock=self.clock)
+        configuration_artifact = run('configuration_frame_load',
+                                     load_configuration_artifact)
+        configuration_payload = (configuration_artifact.payload()
+                                 if configuration_artifact is not None else None)
+
         def load_profile():
-            artifact = self._artifacts.get('body_profile')
-            require(artifact is not None and observation is not None,
+            require(self._profile_catalog is not None and observation is not None,
                     'MISSING_CONFIRMED_BODY_PROFILE')
+            require(configuration_payload is not None,
+                    'UNPROVEN_FULL_ACCESSORY_CONFIGURATION')
+            artifact = self._profile_catalog.select(observation,
+                                                    configuration_payload)
+            self._active_profile_artifact = artifact
             key = (artifact.sha256, getattr(observed.token, 'configuration', None))
             if self._profile_key != key:
                 self._profile_provider = compile_measured_profile(artifact, observation)
@@ -260,9 +290,9 @@ class ProductionEvidenceWorker:
 
         def live_configuration():
             nonlocal operating_conditions
-            path = self.config.get('configuration_frame_file')
-            require(path and profile, 'UNPROVEN_FULL_ACCESSORY_CONFIGURATION')
-            artifact = self._trust.load(path, 'configuration_frame', deadline=self._deadline, clock=self.clock)
+            require(configuration_artifact is not None and profile,
+                    'UNPROVEN_FULL_ACCESSORY_CONFIGURATION')
+            artifact = configuration_artifact
             p = artifact.payload()
             conditions = p.get('operating_conditions_fingerprint')
             require(type(conditions) is str and len(conditions) == 64
@@ -272,8 +302,11 @@ class ProductionEvidenceWorker:
             require(context is not None and p.get('session') == context.identity.session
                     and p.get('sdk_frame_us') == frame
                     and p.get('configuration_fingerprint') == profile.token.configuration
-                    and p.get('accessory_fingerprint') == self._artifacts['body_profile'].payload()['accessory_fingerprint']
-                    and p.get('chassis_configuration') == self._artifacts['body_profile'].payload()['chassis_configuration']
+                    and self._active_profile_artifact is not None
+                    and p.get('accessory_fingerprint') == self._active_profile_artifact.payload()['accessory_fingerprint']
+                    and p.get('chassis_configuration') == self._active_profile_artifact.payload()['chassis_configuration']
+                    and p.get('cabin_configuration') == self._active_profile_artifact.payload()['cabin_configuration']
+                    and p.get('mod_fingerprint') == self._active_profile_artifact.payload()['mod_fingerprint']
                     and p.get('inventory_complete') is True
                     and finite(p.get('observed_at_s')) and 0 <= now-p['observed_at_s'] < .1,
                     'STALE_FULL_CONFIGURATION_EVIDENCE')
@@ -324,6 +357,7 @@ class ProductionEvidenceWorker:
         receipt = digest({'sequence': sequence, 'identity': state_identity(snapshot),
                           'frame': frame, 'observed_at': observed_at,
                           'artifacts': {k: v.sha256 for k, v in self._artifacts.items()},
+                          'selected_body_profile': getattr(self._active_profile_artifact, 'sha256', None),
                           'configuration_frame': confirmation_source,
                           'traffic': getattr(traffic, 'evidence_sha256', None),
                           'ground': getattr(ground, 'evidence_sha256', None),

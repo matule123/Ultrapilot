@@ -11,9 +11,11 @@ from unittest.mock import patch
 import pytest
 
 from core.navigation.production_evidence import (
-    DIMENSIONS, EvidenceTrust, GroundReferenceProducer, bind_survey, canonical,
+    BODY_PROFILE_FRAME, BODY_PROFILE_UNITS, DIMENSIONS, EvidenceTrust,
+    GroundReferenceProducer, bind_survey, canonical,
     compile_measured_profile, read_document, survey_scope, wheel_fingerprint,
 )
+from core.navigation.profile_catalog import GROUND_CHANNEL_CONTRACT
 from core.navigation.evidence_worker import (
     EvidenceBundle, IDENTITY_KEYS, ProductionEvidenceWorker, ProductionPublicationSink,
     production_reference_rejection, state_identity,
@@ -38,7 +40,8 @@ TEST_KEYS = {'test-only-never-installed': {'key_hex': '12'*32, 'enabled': True, 
 
 def artifact(kind, **fields):
     p = dict(schema_version=1, kind=kind, artifact_id='unit-test-only', revision=1,
-             measurement_domain='ets2_measured', reviewed=True, source='contract test, not real measurement',
+             measurement_domain='ets2_measured', reviewed=True, confirmed=False,
+             runtime_authorized=False, source='contract test, not real measurement',
              tool_version='test-v1', measured_at_utc='2026-09-14T00:00:00Z', confidence=1.,
              measurements=[{'name': 'measurement.txt', 'sha256': hashlib.sha256(b'test-only').hexdigest()}])
     p.update(fields)
@@ -47,13 +50,33 @@ def artifact(kind, **fields):
 
 def measured_profile(o):
     row = entry(o)
+    source_hash = hashlib.sha256(b'test-only').hexdigest()
+    attached = tuple(a for a in o.articles if a.attached)
     for body, article in zip(row['bodies'], (a for a in o.articles if a.attached)):
         body.update(fixed_axle_local_m=list(fixed_axle_geometry(article).axle_local_m),
-            dimension_uncertainty_m={k: .0001 for k in DIMENSIONS}, axle_position_uncertainty_m=.0001)
-    return artifact('body_profile', configuration_fingerprint=configuration_fingerprint(o),
-        wheel_fingerprint=wheel_fingerprint(o), article_ids=[a.vehicle_id for a in o.articles if a.attached],
-        article_slots=[a.slot for a in o.articles if a.attached], chassis_configuration='measured-test-only',
-        accessory_fingerprint='a'*64, accessory_inventory_complete=True, catalog_entry=row)
+            dimension_uncertainty_m={k: .0001 for k in DIMENSIONS},
+            dimension_provenance={k: {'method': 'physical_measurement',
+                                      'source_sha256': source_hash} for k in DIMENSIONS},
+            axle_position_uncertainty_m=.0001,
+            body_width_without_mirrors_m=2.4,
+            collision_width_components_complete=True,
+            body_height_m=None)
+    axles = [fixed_axle_geometry(a) for a in attached]
+    return artifact('body_profile', status='confirmed', confirmed=True,
+        units=BODY_PROFILE_UNITS,
+        coordinate_frame=BODY_PROFILE_FRAME,
+        configuration_fingerprint=configuration_fingerprint(o),
+        wheel_fingerprint=wheel_fingerprint(o), article_ids=[a.vehicle_id for a in attached],
+        article_slots=[a.slot for a in attached], chassis_configuration='measured-test-only',
+        cabin_configuration='measured-cabin-test-only', mod_fingerprint='b'*64,
+        accessory_fingerprint='a'*64, accessory_inventory_complete=True,
+        compatibility={'game_id':'ets2','sdk_game_version':list(o.game_version),
+                       'compatible_game_builds':['test-build-only']},
+        provenance={'source_kind':'physical_measurement','source_sha256':source_hash,
+                    'license':'test fixture','distribution':'measurement_metadata_only'},
+        sdk_geometry={'wheelbase_m':axles[0].wheelbase_m,
+                      'hitch_forward_m':[a.hook_forward_m for a in axles],
+                      'comparison_uncertainty_m':.0001}, catalog_entry=row)
 
 
 @pytest.fixture(scope='module')
@@ -151,11 +174,19 @@ def test_calibrated_ground_transform_and_loss(request5d, fault):
     cab=replace(o.articles[0],position_m=(pose.x,pose.y-axle[1],pose.z-axle[2]),rotation_rad=(0.,0.,0.))
     o=replace(o,atomic=True,articles=(cab,)+o.articles[1:])
     prof=provider(o).update(o,10.)
-    a=artifact('ground_calibration', configuration_fingerprint=prof.token.configuration,
-        coordinate_frame=GROUND_REFERENCE_FRAME,channel_contract='atomic_pose_contact_frame_v1',
+    surface=bundle(request5d).surface
+    a=artifact('ground_calibration', status='confirmed', confirmed=True,
+        units=BODY_PROFILE_UNITS,
+        configuration_fingerprint=prof.token.configuration,
+        coordinate_frame=GROUND_REFERENCE_FRAME,channel_contract=GROUND_CHANNEL_CONTRACT,
+        profile_artifact_sha256='a'*64, support_surface_sha256=surface.evidence_sha256,
         articles=[{'slot':-1,'axle_local_m':list(axle),'position_uncertainty_m':.001,
-                   'support_height_tolerance_m':.001,'ground_y_offset_m':0.}])
-    g=GroundReferenceProducer(); surface=bundle(request5d).surface; ident=request5d.result.context.identity
+                   'support_height_tolerance_m':.001,'ground_y_offset_m':0.,
+                   'reference_pitch_rad':0.,'reference_roll_rad':0.,
+                   'pitch_residual_bound_rad':0.,'roll_residual_bound_rad':0.,
+                   'calibration_residual_m':0.,'sample_count':30,
+                   'independent_sample_count':30,'sdk_frame_us_range':[1,30]}])
+    g=GroundReferenceProducer(); ident=request5d.result.context.identity
     result=g.produce(prof,ident,surface,a,10.)
     assert result.sdk_frame_us==o.sdk_frame_us and result.frame.poses[0].y==surface.surface.y_m
     if fault is None: return

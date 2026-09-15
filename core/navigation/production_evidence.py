@@ -21,6 +21,12 @@ from core.navigation.drivable_surface import (
 from core.navigation.maneuver_integration import (
     GROUND_REFERENCE_FRAME, GroundReferenceEvidence,
 )
+from core.navigation.profile_catalog import (
+    BODY_PROFILE_FRAME, BODY_PROFILE_UNITS, DIMENSIONS,
+    GROUND_CHANNEL_CONTRACT, BodyProfileCatalog,
+    validate_ground_calibration_payload, validate_profile_payload,
+    wheel_fingerprint,
+)
 from core.swept_envelope import EnvelopeError, Frame, Pose, finite, require, clearance
 from core.vehicle_profile import (
     VehicleProfileProvider, configuration_fingerprint, fixed_axle_geometry,
@@ -28,7 +34,6 @@ from core.vehicle_profile import (
 
 MAX_ARTIFACT_BYTES = 4 * 1024 * 1024
 MAX_CATALOG_RECORDS = 128
-DIMENSIONS = ('width_m', 'front_m', 'rear_m', 'hitch_front_m', 'hitch_rear_m')
 
 
 def canonical(value):
@@ -156,17 +161,11 @@ class EvidenceTrust:
         return artifact
 
 
-def wheel_fingerprint(observation):
-    return digest([{'slot': a.slot, 'id': a.vehicle_id,
-                    'wheels': [(w.index, w.position_m, w.radius_m, w.steerable,
-                                w.simulated, w.powered, w.liftable) for w in a.wheels]}
-                   for a in observation.articles if a.attached])
-
-
 def compile_measured_profile(artifact, observation):
     """Adapter into the existing 5B1 model, with per-dimension error bounds."""
     require(artifact.kind == 'body_profile', 'WRONG_PROFILE_ARTIFACT_KIND')
     p = artifact.payload()
+    validate_profile_payload(p, observation, usable=True)
     articles = tuple(a for a in observation.articles if a.attached)
     require(p.get('configuration_fingerprint') == configuration_fingerprint(observation)
             and p.get('wheel_fingerprint') == wheel_fingerprint(observation)
@@ -262,10 +261,16 @@ class GroundReferenceProducer:
                 'MISSING_CONFIRMED_BODY_PROFILE')
         require(o.atomic is True and o.stable_read is True,
                 'SDK_FRAME_NOT_ATOMIC_OR_CHANNEL_VALIDATED')
+        validate_ground_calibration_payload(p, usable=True)
         require(p.get('configuration_fingerprint') == profile.token.configuration
                 and p.get('coordinate_frame') == GROUND_REFERENCE_FRAME
-                and p.get('channel_contract') == 'atomic_pose_contact_frame_v1',
+                and p.get('channel_contract') == GROUND_CHANNEL_CONTRACT,
                 'GROUND_CALIBRATION_CONFIGURATION_MISMATCH')
+        source_hash = profile.model.bodies[0].source.rsplit(':', 1)[-1]
+        require(p.get('profile_artifact_sha256') == source_hash,
+                'GROUND_CALIBRATION_PROFILE_MISMATCH')
+        require(p.get('support_surface_sha256') == surface.evidence_sha256,
+                'GROUND_CALIBRATION_SURFACE_MISMATCH')
         require(finite(now) and 0 <= now-profile.observed_at < .1,
                 'STALE_LIVE_GROUND_REFERENCE')
         require(surface.surface is not None and surface.surface.identity == identity,
@@ -291,7 +296,11 @@ class GroundReferenceProducer:
             require(finite(error, tolerance) and .0001 <= tolerance <= error <= .25,
                     'INVALID_GROUND_REFERENCE_UNCERTAINTY')
             h, pitch, roll = a.rotation_rad
-            require(pitch == 0. and roll == 0., 'UNSUPPORTED_BODY_TILT')
+            require(abs(pitch-row['reference_pitch_rad'])
+                    <= row['pitch_residual_bound_rad']+1e-12
+                    and abs(roll-row['reference_roll_rad'])
+                    <= row['roll_residual_bound_rad']+1e-12,
+                    'GROUND_ATTITUDE_OUTSIDE_CALIBRATION')
             x, y, z = axle.axle_local_m
             c, s = math.cos(h), math.sin(h)
             wx, wz = a.position_m[0]+x*c+z*s, a.position_m[2]-x*s+z*c
@@ -303,8 +312,9 @@ class GroundReferenceProducer:
             require(clearance(((wx-error,wz-error),(wx+error,wz-error),
                                (wx+error,wz+error),(wx-error,wz+error)), surface.surface) > 0,
                     'GROUND_SUPPORT_OUTSIDE_CONFIRMED_SURFACE')
-            # Projection onto a measured horizontal deck is explicit and its
-            # measured residual is bounded; no chassis Y is called ground Y.
+            # Projection onto a measured horizontal deck is explicit. Static
+            # pitch/roll bias and its residual are calibration inputs; their
+            # worst-case displacement is already included in ``error``.
             poses.append(Pose(wx, surface.surface.y_m, wz, h))
             uncertainty = max(uncertainty, error)
         frame = Frame(profile.observed_at, identity, tuple(poses))
