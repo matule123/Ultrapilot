@@ -5,19 +5,25 @@ to an operator-pinned official SCS extractor; this is not a HashFS/PMC parser.
 Package order is explicit, low to high priority, never inferred from a log.
 """
 from dataclasses import dataclass
+from contextlib import contextmanager
+import ctypes
 import hashlib
 import json
+import os
 from pathlib import Path, PurePosixPath
 import re
+import shutil
 import stat
 import subprocess
 import time
+import uuid
 import zipfile
 
 from core.swept_envelope import require
 
 MAX_ASSET = 32 * 1024 * 1024
 MAX_ENTRIES = 200000
+MAX_EXTRACTED_BYTES = 128 * 1024 * 1024 * 1024
 
 
 def asset_path(value):
@@ -196,7 +202,10 @@ class AssetResolver:
             for link in includes:
                 target = link if link.startswith('/') else str(PurePosixPath(path).parent / link)
                 visit(target, depth + 1)
-            for link in re.findall(r'\bcollision\s*:\s*"([^"\n]+)"', text):
+            # Cab/chassis definitions use ``collision`` while addon
+            # accessories use ``coll``.  Both are physical-model references;
+            # neither is decoded or promoted merely because it was found.
+            for link in re.findall(r'\b(?:collision|coll)\s*:\s*"([^"\n]+)"', text):
                 collisions.add(asset_path(link))
             for link in re.findall(r'"([^"\n]+\.(?:pmd|pmg|pmc|pma|tobj))"', text):
                 models.add(asset_path(link))
@@ -210,30 +219,296 @@ class AssetResolver:
                 'unit_semantics_verified': False}
 
 
-def extractor_command(executable, expected_sha256, archive, output):
+def _windows_file_version(path):
+    """Read a PE fixed file version without executing the candidate binary."""
+    if os.name != 'nt':
+        return None
+    try:
+        version = ctypes.WinDLL('version', use_last_error=True)
+        size = version.GetFileVersionInfoSizeW(str(path), None)
+        if not size:
+            return None
+        blob = ctypes.create_string_buffer(size)
+        if not version.GetFileVersionInfoW(str(path), 0, size, blob):
+            return None
+        pointer, length = ctypes.c_void_p(), ctypes.c_uint()
+        if not version.VerQueryValueW(blob, '\\', ctypes.byref(pointer),
+                                      ctypes.byref(length)) or length.value < 52:
+            return None
+        # VS_FIXEDFILEINFO: signature, structure/file/product versions, flags,
+        # OS/type/subtype and two timestamps. Only the file version is needed.
+        values = ctypes.cast(pointer, ctypes.POINTER(ctypes.c_uint32 * 13)).contents
+        if values[0] != 0xFEEF04BD:
+            return None
+        ms, ls = values[2], values[3]
+        return '.'.join(str(value) for value in
+                        (ms >> 16, ms & 0xffff, ls >> 16, ls & 0xffff))
+    except (AttributeError, OSError, ValueError):
+        return None
+
+
+def extractor_identity(executable, expected_sha256, expected_version=None):
+    """Pin the official-tool candidate by exact filename and content hash."""
+    supplied = Path(executable)
+    require(not supplied.is_symlink(), 'INVALID_SCS_EXTRACTOR')
+    require(supplied.is_file(), 'MISSING_OFFICIAL_SCS_EXTRACTOR')
+    exe = supplied.resolve()
+    require(exe.name.casefold() == 'scs_extractor.exe' and exe.is_file()
+            and not exe.is_symlink(), 'INVALID_SCS_EXTRACTOR')
+    require(isinstance(expected_sha256, str)
+            and re.fullmatch(r'[0-9a-f]{64}', expected_sha256),
+            'INVALID_EXTRACTOR_SHA256')
+    actual_sha = file_sha(exe)
+    require(actual_sha == expected_sha256, 'UNPINNED_EXTRACTOR')
+    actual_version = _windows_file_version(exe)
+    if expected_version is not None:
+        require(isinstance(expected_version, str) and expected_version,
+                'INVALID_EXTRACTOR_VERSION')
+        require(actual_version == expected_version, 'EXTRACTOR_VERSION_MISMATCH')
+    return {'name': exe.name, 'path': str(exe), 'sha256': actual_sha,
+            'file_version': actual_version, 'version_verified': expected_version is not None,
+            'size_bytes': exe.stat().st_size}
+
+
+def extractor_command(executable, expected_sha256, archive, output,
+                      *, expected_version=None):
     exe, src, dst = Path(executable).resolve(), Path(archive).resolve(), Path(output).resolve()
-    require(exe.is_file() and file_sha(exe) == expected_sha256, 'UNPINNED_EXTRACTOR')
+    extractor_identity(executable, expected_sha256, expected_version)
     require(archive_format(src).startswith('HashFS-'), 'NOT_HASHFS_ARCHIVE')
     require(not dst.exists() and not src.is_relative_to(dst)
             and not exe.is_relative_to(dst), 'UNSAFE_EXTRACTION_TARGET')
     return [str(exe), str(src), str(dst)]
 
 
-def extract_hashfs(executable, expected_sha256, archive, output, *, timeout_s=120.):
+def _extracted_tree_receipt(root, deadline):
+    root = Path(root).resolve()
+    rows, total = [], 0
+    for path in sorted(root.rglob('*')):
+        require(time.monotonic() < deadline, 'ASSET_DEADLINE_EXCEEDED')
+        mode = path.lstat()
+        require(not path.is_symlink()
+                and not getattr(mode, 'st_file_attributes', 0) & 0x400,
+                'EXTRACTOR_OUTPUT_LINK')
+        if not path.is_file():
+            continue
+        require(path.resolve().is_relative_to(root), 'EXTRACTOR_OUTPUT_TRAVERSAL')
+        name = asset_path(path.relative_to(root).as_posix())
+        size = path.stat().st_size
+        total += size
+        require(len(rows) < MAX_ENTRIES, 'EXTRACTOR_OUTPUT_TOO_MANY_FILES')
+        require(total <= MAX_EXTRACTED_BYTES, 'EXTRACTOR_OUTPUT_TOO_LARGE')
+        rows.append((name, size))
+    require(rows, 'EMPTY_EXTRACTOR_OUTPUT')
+    return {'file_count': len(rows), 'total_bytes': total,
+            'metadata_sha256': hashlib.sha256(json.dumps(
+                rows, ensure_ascii=False, separators=(',', ':')).encode()).hexdigest()}
+
+
+def collision_asset_receipt(asset):
+    """Record binary collision evidence without pretending to decode PMC.
+
+    SCS documents PMC as binary dynamic collision data but does not publish a
+    stable binary layout.  The receipt intentionally remains non-authorizing.
+    """
+    require(isinstance(asset, Asset), 'INVALID_COLLISION_ASSET')
+    suffix = PurePosixPath(asset.path).suffix.casefold()
+    require(suffix in ('.pmc', '.pic'), 'RENDER_ASSET_NOT_COLLISION')
+    require(0 < len(asset.data) <= MAX_ASSET, 'INVALID_COLLISION_ASSET_SIZE')
+    if suffix == '.pmc':
+        require(len(asset.data) >= 16, 'TRUNCATED_PMC_ASSET')
+        kind, representation = 'prism_model_collision', 'binary'
+        reason = 'MISSING_VERIFIED_PMC_COLLISION_DECODER'
+        first_u32 = int.from_bytes(asset.data[:4], 'little')
+    else:
+        require(b'\x00' not in asset.data, 'INVALID_PIC_TEXT')
+        asset.data.decode('utf-8-sig', errors='strict')
+        kind, representation = 'prism_intermediate_collision', 'text'
+        reason, first_u32 = 'MISSING_VERIFIED_PIC_PARSER_AND_TRANSFORM', None
+    return {'asset_path': asset.path, 'source_package': asset.package,
+            'source_chain': list(asset.chain), 'sha256': asset.sha256,
+            'size_bytes': len(asset.data), 'format': kind,
+            'representation': representation,
+            'header_hex': asset.data[:64].hex(),
+            'unverified_first_u32_le': first_u32,
+            'format_version_verified': False, 'collision_geometry_decoded': False,
+            'collision_authority': False, 'confirmed': False,
+            'runtime_authorized': False, 'failure_reason': reason}
+
+
+@contextmanager
+def _extraction_lock(directory):
+    """Serialize exports in this cache; OS releases the lock if we die."""
+    path = directory / '.scs-extract.lock'
+    with path.open('a+b') as lock:
+        if lock.seek(0, os.SEEK_END) == 0:
+            lock.write(b'\0')
+            lock.flush()
+        lock.seek(0)
+        if os.name == 'nt':
+            import msvcrt
+            try:
+                msvcrt.locking(lock.fileno(), msvcrt.LK_NBLCK, 1)
+            except OSError:
+                require(False, 'SCS_EXTRACTOR_ALREADY_RUNNING')
+            try:
+                yield
+            finally:
+                lock.seek(0)
+                msvcrt.locking(lock.fileno(), msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError:
+                require(False, 'SCS_EXTRACTOR_ALREADY_RUNNING')
+            try:
+                yield
+            finally:
+                fcntl.flock(lock, fcntl.LOCK_UN)
+
+
+def _windows_kill_on_close_job(process):
+    """Attach the extractor to a Windows job owned only by this Python process."""
+    if os.name != 'nt':
+        return None
+    from ctypes import wintypes
+
+    class BasicLimits(ctypes.Structure):
+        _fields_ = [('per_process_time', ctypes.c_longlong),
+                    ('per_job_time', ctypes.c_longlong),
+                    ('flags', wintypes.DWORD),
+                    ('min_working_set', ctypes.c_size_t),
+                    ('max_working_set', ctypes.c_size_t),
+                    ('active_process_limit', wintypes.DWORD),
+                    ('affinity', ctypes.c_size_t),
+                    ('priority_class', wintypes.DWORD),
+                    ('scheduling_class', wintypes.DWORD)]
+
+    class IoCounters(ctypes.Structure):
+        _fields_ = [(name, ctypes.c_ulonglong) for name in
+                    ('read_operations', 'write_operations', 'other_operations',
+                     'read_bytes', 'write_bytes', 'other_bytes')]
+
+    class ExtendedLimits(ctypes.Structure):
+        _fields_ = [('basic', BasicLimits), ('io', IoCounters),
+                    ('process_memory_limit', ctypes.c_size_t),
+                    ('job_memory_limit', ctypes.c_size_t),
+                    ('peak_process_memory', ctypes.c_size_t),
+                    ('peak_job_memory', ctypes.c_size_t)]
+
+    api = ctypes.WinDLL('kernel32', use_last_error=True)
+    api.CreateJobObjectW.argtypes = [ctypes.c_void_p, wintypes.LPCWSTR]
+    api.CreateJobObjectW.restype = wintypes.HANDLE
+    api.SetInformationJobObject.argtypes = [wintypes.HANDLE, ctypes.c_int,
+                                            ctypes.c_void_p, wintypes.DWORD]
+    api.SetInformationJobObject.restype = wintypes.BOOL
+    api.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
+    api.AssignProcessToJobObject.restype = wintypes.BOOL
+    api.CloseHandle.argtypes = [wintypes.HANDLE]
+    api.CloseHandle.restype = wintypes.BOOL
+    job = api.CreateJobObjectW(None, None)
+    require(bool(job), 'SCS_EXTRACTOR_JOB_FAILED')
+    try:
+        limits = ExtendedLimits()
+        limits.basic.flags = 0x2000  # JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+        require(bool(api.SetInformationJobObject(job, 9, ctypes.byref(limits),
+                                                 ctypes.sizeof(limits))),
+                'SCS_EXTRACTOR_JOB_FAILED')
+        require(bool(api.AssignProcessToJobObject(job, int(process._handle))),
+                'SCS_EXTRACTOR_JOB_FAILED')
+        return api, job
+    except BaseException:
+        api.CloseHandle(job)
+        raise
+
+
+def _run_extractor(command, stage, directory, deadline):
+    """Bound one real extractor process and report its staged output growth."""
+    process = None
+    job = None
+    started = time.monotonic()
+    next_report = started
+    try:
+        process = subprocess.Popen(command, shell=False,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+        job = _windows_kill_on_close_job(process)
+        print(json.dumps({'extractor_pid': process.pid, 'state': 'running'}),
+              flush=True)
+        while True:
+            remaining = deadline - time.monotonic()
+            require(remaining > 0, 'SCS_EXTRACTOR_TIMEOUT')
+            try:
+                code = process.wait(timeout=min(10., remaining))
+                require(code == 0, 'SCS_EXTRACTOR_FAILED')
+                return
+            except subprocess.TimeoutExpired:
+                pass
+            require(shutil.disk_usage(directory).free >= 2 * 1024**3,
+                    'SCS_EXTRACTOR_DISK_RESERVE_EXHAUSTED')
+            if time.monotonic() >= next_report:
+                files = size = 0
+                for root, _, names in os.walk(stage):
+                    for name in names:
+                        try:
+                            size += (Path(root) / name).stat().st_size
+                            files += 1
+                        except FileNotFoundError:
+                            pass
+                print(json.dumps({'extractor_pid': process.pid,
+                    'elapsed_s': round(time.monotonic() - started, 1),
+                    'staged_files': files, 'staged_bytes': size,
+                    'free_bytes': shutil.disk_usage(directory).free}), flush=True)
+                next_report = time.monotonic() + 30.
+    except OSError:
+        require(False, 'SCS_EXTRACTOR_LAUNCH_FAILED')
+    finally:
+        if process is not None:
+            if process.poll() is None:
+                process.kill()
+            process.wait()
+        if job is not None:
+            job[0].CloseHandle(job[1])
+
+
+def extract_hashfs(executable, expected_sha256, archive, output, *, timeout_s=120.,
+                   expected_version=None):
     """Explicit offline operation, shell-free and timed; never run by Engine.
 
     The pinned binary must be acquired from SCS by the operator. Outputs are
     untrusted local assets, NOT certified collision evidence. No binary ships.
     """
-    command = extractor_command(executable, expected_sha256, archive, output)
-    require(0 < timeout_s <= 600, 'INVALID_EXTRACTION_TIMEOUT')
-    source_sha = file_sha(archive, time.monotonic() + timeout_s)
-    Path(output).mkdir(parents=True, exist_ok=False)
-    result = subprocess.run(command, shell=False, timeout=timeout_s,
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-        creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
-    require(result.returncode == 0, 'SCS_EXTRACTOR_FAILED')
-    require(file_sha(archive, time.monotonic() + timeout_s) == source_sha,
-            'ARCHIVE_CHANGED_DURING_EXTRACTION')
-    return {'archive_sha256': source_sha, 'extractor_sha256': expected_sha256,
-            'collision_verified': False, 'runtime_authorized': False}
+    require(0 < timeout_s <= 7200, 'INVALID_EXTRACTION_TIMEOUT')
+    dst, src = Path(output).resolve(), Path(archive).resolve()
+    require(not dst.exists(), 'UNSAFE_EXTRACTION_TARGET')
+    stage = dst.parent / ('.' + dst.name + '.partial-' + uuid.uuid4().hex)
+    command = extractor_command(executable, expected_sha256, src, stage,
+                                expected_version=expected_version)
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    deadline = time.monotonic() + timeout_s
+    started = time.monotonic()
+    with _extraction_lock(dst.parent):
+        require(shutil.disk_usage(dst.parent).free >=
+                max(12 * 1024**3, src.stat().st_size * 4),
+                'INSUFFICIENT_EXTRACTION_DISK_SPACE')
+        source_sha = file_sha(src, deadline)
+        identity = extractor_identity(executable, expected_sha256, expected_version)
+        require(not dst.exists(), 'UNSAFE_EXTRACTION_TARGET')
+        try:
+            stage.mkdir(exist_ok=False)
+            _run_extractor(command, stage, dst.parent, deadline)
+            tree = _extracted_tree_receipt(stage, deadline)
+            require(file_sha(src, deadline) == source_sha,
+                    'ARCHIVE_CHANGED_DURING_EXTRACTION')
+            os.replace(stage, dst)
+        finally:
+            require(stage.resolve().is_relative_to(dst.parent),
+                    'UNSAFE_EXTRACTION_CLEANUP')
+            if stage.exists():
+                shutil.rmtree(stage)
+    return {'archive_path': str(src), 'archive_format': archive_format(src),
+            'archive_sha256': source_sha, 'extractor': identity,
+            'output_path': str(dst), 'output_tree': tree,
+            'elapsed_s': time.monotonic() - started,
+            'collision_verified': False, 'confirmed': False,
+            'runtime_authorized': False}

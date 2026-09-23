@@ -104,15 +104,24 @@ def test_arm_collect_finish_exports_only_unconfirmed_candidates(tmp_path):
     collector.apply_command(command(2, "finish"))
     assert collector.state == "READY_FOR_OFFLINE_REVIEW"
     result = inspect_collection(root(tmp_path) / "cab-01")
-    assert result == {"integrity_valid": True, "file_count": 7,
+    assert result == {"integrity_valid": True, "file_count": 8,
                       "sample_count": 30, "confirmed": False,
                       "runtime_authorized": False,
                       "qualification": "READY_FOR_OFFLINE_REVIEW"}
     profile = read_json(root(tmp_path) / "cab-01" / "body-profile-candidate.json")
+    configuration = read_json(
+        root(tmp_path) / "cab-01" / "configuration-identity-candidate.json")
     traffic = read_json(root(tmp_path) / "cab-01" / "traffic-coverage-observations.json")
     survey = read_json(root(tmp_path) / "cab-01" / "surface-survey-candidate.json")
     tracking = read_json(root(tmp_path) / "cab-01" / "tracking-samples-candidate.json")
     assert profile["qualification"] == "MISSING_CONFIRMED_BODY_PROFILE"
+    assert configuration["truck_model_identifier"] == "truck.a"
+    assert configuration["cabin_identifier"] is None
+    assert configuration["chassis_identifier"] is None
+    assert configuration["accessory_inventory_complete"] is False
+    assert configuration["qualification"] == "MISSING_COMPLETE_ACTIVE_CONFIGURATION"
+    assert configuration["confirmed"] is False
+    assert configuration["runtime_authorized"] is False
     assert profile["manual_article_measurements"][0]["measurements"][0]["value"] is None
     assert not traffic["complete"] and traffic["sensor_range_m"] is None
     assert survey["exterior_xyz"] == [] and not survey["trace_is_drivable_boundary"]

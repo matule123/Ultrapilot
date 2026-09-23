@@ -492,6 +492,9 @@ class EvidenceDiagnosticCollector:
         identity_counts = Counter(tuple(json.dumps(v, sort_keys=True) for v in identity)
                                   for identity in identities)
         profile = latest.get("vehicle_profile") or {}
+        observation = profile.get("observation") or {}
+        attached_articles = [article for article in (observation.get("articles") or [])
+                             if article.get("attached")]
         traffic_rows = [row["traffic"] for row in rows if isinstance(row.get("traffic"), dict)]
         actors = [actor for value in traffic_rows for actor in (value.get("actors") or [])]
         truck_xz = [(row["truck"].get("x"), row["truck"].get("z")) for row in rows]
@@ -515,6 +518,40 @@ class EvidenceDiagnosticCollector:
             "accessory_fingerprint": None, "accessory_inventory_complete": False,
             "manual_article_measurements": _article_profile_templates(profile),
             "collected_at_utc": _utc_now(),
+        })
+        configuration_candidate = _sealed({
+            "schema_version": 1, "kind": "active_configuration_candidate",
+            "measurement_domain": "scs_shared_memory_revision_12",
+            "reviewed": False, "confirmed": False, "runtime_authorized": False,
+            "qualification": "MISSING_COMPLETE_ACTIVE_CONFIGURATION",
+            "atomic": bool(observation.get("atomic", False)),
+            "stable_read": bool(observation.get("stable_read", False)),
+            "observation_sdk_frame_us": observation.get("sdk_frame_us"),
+            "observed_at_monotonic_s": observation.get("captured_at"),
+            "game_version": observation.get("game_version"),
+            "configuration_revision": None,
+            "truck_model_identifier": (attached_articles[0].get("vehicle_id")
+                                         if attached_articles else None),
+            "cabin_identifier": None, "chassis_identifier": None,
+            "relevant_accessory_identifiers": None,
+            "accessory_inventory_complete": False,
+            "active_mod_identifiers": None, "mod_inventory_complete": False,
+            "resulting_asset_fingerprint": None,
+            "trailer_chain": [{key: article.get(key) for key in (
+                "slot", "vehicle_id", "brand_id", "name", "body_type",
+                "chain_type", "cargo_accessory_id")}
+                for article in attached_articles if article.get("slot") != -1],
+            "available_producer_fields": [
+                "truck_model_identifier", "trailer_chain", "game_version",
+                "observation_sdk_frame_us"],
+            "missing_producer_fields": [
+                "cabin_identifier", "chassis_identifier",
+                "relevant_accessory_identifiers", "configuration_revision",
+                "active_mod_identifiers", "resulting_asset_fingerprint"],
+            "producer_limit": (
+                "SCS telemetry/shared-memory revision 12 exposes truck/trailer IDs, "
+                "wheel and hook geometry but not installed cabin, chassis or complete "
+                "accessory unit paths"),
         })
         ground_candidate = _sealed({
             "schema_version": 1, "kind": "ground_reference_candidate",
@@ -621,6 +658,7 @@ class EvidenceDiagnosticCollector:
         return {
             "automatic-observations.json": raw,
             "body-profile-candidate.json": profile_candidate,
+            "configuration-identity-candidate.json": configuration_candidate,
             "ground-reference-candidate.json": ground_candidate,
             "traffic-coverage-observations.json": traffic_candidate,
             "tracking-samples-candidate.json": tracking_candidate,

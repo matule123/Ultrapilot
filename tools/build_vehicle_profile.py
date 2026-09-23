@@ -20,7 +20,8 @@ from core.asset_profile_compiler import compile_candidate, ProfileCache
 from core.navigation.production_evidence import canonical
 from core.sdk.vehicle_observation import VehicleObservation, ArticleObservation, WheelObservation
 from core.swept_envelope import require
-from core.vehicle_assets import AssetResolver, Package, archive_format, asset_path, extract_hashfs, file_sha
+from core.vehicle_assets import (AssetResolver, Package, archive_format, asset_path,
+                                 collision_asset_receipt, extract_hashfs, file_sha)
 from core.vehicle_profile import configuration_fingerprint
 
 
@@ -106,7 +107,8 @@ def audit(game, mods, collection=None, *, timeout_s=90.):
                                  'sha256': hashlib.sha256(data).hexdigest(), 'size_bytes': len(data)}
                         if name.endswith(('.sii','.sui')):
                             text = data.decode('utf-8-sig', errors='replace')
-                            found['collision_links'] = re.findall(r'\bcollision\s*:\s*"([^"\n]+)"', text)
+                            found['collision_links'] = re.findall(
+                                r'\b(?:collision|coll)\s*:\s*"([^"\n]+)"', text)
                         report['found_scania_assets'].append(found)
             except (ValueError, OSError, zipfile.BadZipFile, RuntimeError) as error:
                 row['read_error'] = type(error).__name__ + ':' + str(error)
@@ -140,7 +142,12 @@ def main():
     a.add_argument('--collection'); a.add_argument('--output', required=True)
     e = sub.add_parser('extract')
     e.add_argument('--extractor', required=True); e.add_argument('--extractor-sha256', required=True)
+    e.add_argument('--extractor-version')
     e.add_argument('--archive', required=True); e.add_argument('--output', required=True)
+    e.add_argument('--timeout-s', type=float, default=120.)
+    c = sub.add_parser('inspect-collision')
+    c.add_argument('--package-id', required=True); c.add_argument('--package', required=True)
+    c.add_argument('--asset', required=True); c.add_argument('--output', required=True)
     b = sub.add_parser('build')
     b.add_argument('--job', required=True); b.add_argument('--output', required=True)
     b.add_argument('--cache'); b.add_argument('--cache-key-file')
@@ -152,9 +159,19 @@ def main():
                           'cab01': result.get('cab01'), 'runtime_authorized': False}))
     elif args.command == 'extract':
         dst = output_path(args.output)
-        receipt = extract_hashfs(args.extractor, args.extractor_sha256, args.archive, dst)
+        receipt = extract_hashfs(args.extractor, args.extractor_sha256, args.archive, dst,
+                                 timeout_s=args.timeout_s,
+                                 expected_version=args.extractor_version)
         write_json(dst.parent/(dst.name+'.receipt.json'), receipt)
         print(json.dumps(receipt))
+    elif args.command == 'inspect-collision':
+        with AssetResolver([Package(args.package_id, Path(args.package))]) as resolver:
+            receipt = collision_asset_receipt(resolver.resolve(args.asset))
+            receipt['package_receipts'] = list(resolver.receipts)
+        write_json(args.output, receipt)
+        print(json.dumps({'asset': receipt['asset_path'],
+                          'failure_reason': receipt['failure_reason'],
+                          'runtime_authorized': False}))
     else:
         job = read_json(args.job)
         observation = decode_observation(read_json(job['observation_file']))

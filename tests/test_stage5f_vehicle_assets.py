@@ -4,12 +4,16 @@ import hashlib
 import json
 from dataclasses import replace
 from pathlib import Path
-import zipfile
 import subprocess
+import sys
+import time
+import zipfile
 
 import pytest
 
-from core.vehicle_assets import AssetResolver, Package, asset_path, extractor_command
+from core.vehicle_assets import (AssetResolver, Package, asset_path,
+                                 collision_asset_receipt, extract_hashfs,
+                                 extractor_command)
 from core.asset_profile_compiler import compile_candidate, transform_points, ProfileCache
 from core.navigation.production_evidence import canonical
 from core.navigation.profile_catalog import validate_profile_payload
@@ -153,12 +157,62 @@ def test_cache_transfer_stale_and_tampering(tmp_path):
 
 
 def test_extractor_requires_pinned_binary_and_hashfs(tmp_path):
-    exe=tmp_path/'extractor.exe';exe.write_bytes(b'not executable')
+    exe=tmp_path/'scs_extractor.exe';exe.write_bytes(b'not executable')
     archive=tmp_path/'base.scs';archive.write_bytes(b'SCS#'+b'\x02\x00'+b'\x00'*10)
     sha=hashlib.sha256(exe.read_bytes()).hexdigest()
     cmd=extractor_command(exe,sha,archive,tmp_path/'new')
     assert cmd==[str(exe.resolve()),str(archive.resolve()),str((tmp_path/'new').resolve())]
     with pytest.raises(EnvelopeError): extractor_command(exe,'0'*64,archive,tmp_path/'new')
+    wrong=tmp_path/'renamed.exe';wrong.write_bytes(exe.read_bytes())
+    with pytest.raises(EnvelopeError,match='INVALID_SCS_EXTRACTOR'):
+        extractor_command(wrong,sha,archive,tmp_path/'new')
+    with pytest.raises(EnvelopeError,match='MISSING_OFFICIAL_SCS_EXTRACTOR'):
+        extractor_command(tmp_path/'absent'/'scs_extractor.exe',sha,archive,
+                          tmp_path/'new')
+
+
+def test_extractor_rejects_symlink_and_wrong_pinned_version(tmp_path, monkeypatch):
+    exe=tmp_path/'scs_extractor.exe';exe.write_bytes(b'pinned-fixture')
+    archive=tmp_path/'base.scs';archive.write_bytes(b'SCS#\x02\x00')
+    sha=hashlib.sha256(exe.read_bytes()).hexdigest()
+    monkeypatch.setattr('core.vehicle_assets._windows_file_version',lambda _: '1.55.0.0')
+    with pytest.raises(EnvelopeError,match='EXTRACTOR_VERSION_MISMATCH'):
+        extractor_command(exe,sha,archive,tmp_path/'new',expected_version='1.54.0.0')
+    link=tmp_path/'links'/'scs_extractor.exe'
+    original_is_symlink=Path.is_symlink
+    monkeypatch.setattr(Path,'is_symlink',
+                        lambda path: path == link or original_is_symlink(path))
+    with pytest.raises(EnvelopeError,match='INVALID_SCS_EXTRACTOR'):
+        extractor_command(link,sha,archive,tmp_path/'new')
+
+
+def test_extractor_success_is_shell_free_bounded_and_atomic(tmp_path,monkeypatch):
+    exe=tmp_path/'scs_extractor.exe';exe.write_bytes(b'pinned-fixture')
+    archive=tmp_path/'base & whoami.scs';archive.write_bytes(b'SCS#\x02\x00')
+    output=tmp_path/'cache'/'base'
+    def success(command, stage, directory, deadline):
+        assert deadline > 0 and stage.parent == directory
+        assert command[1] == str(archive.resolve())
+        target=Path(command[2]);(target/'def'/'vehicle').mkdir(parents=True)
+        (target/'def'/'vehicle'/'truck.sii').write_text('safe',encoding='utf-8')
+    monkeypatch.setattr('core.vehicle_assets._run_extractor',success)
+    receipt=extract_hashfs(exe,hashlib.sha256(exe.read_bytes()).hexdigest(),
+                           archive,output,timeout_s=1.)
+    assert output.is_dir() and receipt['output_tree']['file_count']==1
+    assert receipt['extractor']['name']=='scs_extractor.exe'
+    assert not receipt['collision_verified'] and not receipt['runtime_authorized']
+    assert not list(output.parent.glob('.base.partial-*'))
+
+
+def test_empty_or_failed_extractor_output_is_not_published(tmp_path,monkeypatch):
+    exe=tmp_path/'scs_extractor.exe';exe.write_bytes(b'pinned-fixture')
+    archive=tmp_path/'base.scs';archive.write_bytes(b'SCS#\x02\x00')
+    monkeypatch.setattr('core.vehicle_assets._run_extractor',lambda *a,**k: None)
+    output=tmp_path/'output'
+    with pytest.raises(EnvelopeError,match='EMPTY_EXTRACTOR_OUTPUT'):
+        extract_hashfs(exe,hashlib.sha256(exe.read_bytes()).hexdigest(),
+                       archive,output,timeout_s=1.)
+    assert not output.exists() and not list(tmp_path.glob('.output.partial-*'))
 
 
 def test_extracted_tree_and_zip_resolve_same_bytes(tmp_path):
@@ -192,6 +246,33 @@ def test_include_cycle_and_unknown_directive_are_rejected(tmp_path):
     with AssetResolver([Package('x',p)]) as r:
         with pytest.raises(EnvelopeError, match='CYCLIC'): r.definition_graph(['a.sii'])
         with pytest.raises(EnvelopeError, match='UNSUPPORTED_SII'): r.definition_graph(['c.sii'])
+
+
+def test_addon_coll_reference_is_recorded_but_pmc_never_authorizes(tmp_path):
+    p=tmp_path/'accessory.zip'
+    binary=(6).to_bytes(4,'little') + (1).to_bytes(4,'little') + b'\x00'*8
+    with zipfile.ZipFile(p,'w') as z:
+        z.writestr('addon.sii','accessory_addon_data : x { coll: "/addon.pmc" }')
+        z.writestr('addon.pmc',binary)
+        z.writestr('render.pmg',b'render-only')
+    with AssetResolver([Package('active-mod',p)]) as r:
+        assert r.definition_graph(['addon.sii'])['collision_assets']==['addon.pmc']
+        receipt=collision_asset_receipt(r.resolve('addon.pmc'))
+        assert receipt['unverified_first_u32_le']==6
+        assert receipt['format_version_verified'] is False
+        assert receipt['collision_geometry_decoded'] is False
+        assert receipt['collision_authority'] is False
+        assert receipt['runtime_authorized'] is False
+        with pytest.raises(EnvelopeError,match='RENDER_ASSET_NOT_COLLISION'):
+            collision_asset_receipt(r.resolve('render.pmg'))
+
+
+def test_truncated_pmc_is_rejected_before_any_offset_or_count_decode(tmp_path):
+    p=tmp_path/'bad.zip'
+    with zipfile.ZipFile(p,'w') as z:z.writestr('bad.pmc',b'\x06\x00\x00\x00')
+    with AssetResolver([Package('bad',p)]) as r:
+        with pytest.raises(EnvelopeError,match='TRUNCATED_PMC_ASSET'):
+            collision_asset_receipt(r.resolve('bad.pmc'))
 
 
 def test_candidate_cannot_enter_existing_runtime_catalog(tmp_path):
@@ -261,14 +342,33 @@ def test_actual_package_update_changes_fingerprint(tmp_path):
 
 def test_extractor_timeout_is_fail_closed(tmp_path,monkeypatch):
     from core.vehicle_assets import extract_hashfs
-    exe=tmp_path/'extractor.exe';exe.write_bytes(b'pinned-fixture')
+    exe=tmp_path/'scs_extractor.exe';exe.write_bytes(b'pinned-fixture')
     archive=tmp_path/'base.scs';archive.write_bytes(b'SCS#\x02\x00')
-    def timeout(command,**kwargs):
-        assert kwargs['shell'] is False and kwargs['timeout']==1.
-        raise subprocess.TimeoutExpired(command,1.)
-    monkeypatch.setattr('core.vehicle_assets.subprocess.run',timeout)
-    with pytest.raises(subprocess.TimeoutExpired):
+    def timeout(command, stage, directory, deadline):
+        stage.joinpath('incomplete.bin').write_bytes(b'partial')
+        raise EnvelopeError('SCS_EXTRACTOR_TIMEOUT')
+    monkeypatch.setattr('core.vehicle_assets._run_extractor',timeout)
+    with pytest.raises(EnvelopeError,match='SCS_EXTRACTOR_TIMEOUT'):
         extract_hashfs(exe,hashlib.sha256(exe.read_bytes()).hexdigest(),archive,tmp_path/'output',timeout_s=1.)
+    assert not (tmp_path/'output').exists()
+    assert not list(tmp_path.glob('.output.partial-*'))
+
+
+def test_real_extractor_child_is_reaped_on_timeout(tmp_path, monkeypatch):
+    from core.vehicle_assets import _run_extractor
+    original = subprocess.Popen
+    children = []
+    def capture(*args, **kwargs):
+        child = original(*args, **kwargs)
+        children.append(child)
+        return child
+    monkeypatch.setattr('core.vehicle_assets.subprocess.Popen', capture)
+    stage = tmp_path / 'stage'
+    stage.mkdir()
+    with pytest.raises(EnvelopeError, match='SCS_EXTRACTOR_TIMEOUT'):
+        _run_extractor([sys.executable, '-c', 'import time; time.sleep(30)'],
+                       stage, tmp_path, time.monotonic() + .2)
+    assert len(children) == 1 and children[0].poll() is not None
 
 
 def test_cli_build_repeats_canonical_output_without_installing(tmp_path,monkeypatch):
