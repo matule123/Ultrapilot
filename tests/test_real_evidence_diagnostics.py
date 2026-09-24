@@ -1,6 +1,9 @@
 """Diagnostic collection is bounded, atomic and has no driving authority."""
 
 import json
+import time
+from copy import deepcopy
+from dataclasses import replace
 
 import pytest
 
@@ -35,7 +38,8 @@ def capture(index, *, when=10.0, configuration="cfg-a", map_key="map-a"):
         "source_map_key": map_key, "source_dataset_fingerprint": "dataset-a",
     }
     profile = {
-        "token": {"configuration": configuration},
+        "token": {"producer_session": "profile-session-a",
+                  "generation": 1, "configuration": configuration},
         "observation": {
             "sdk_frame_us": 1_000_000 + index,
             "captured_at": observed, "atomic": False, "stable_read": True,
@@ -57,6 +61,7 @@ def capture(index, *, when=10.0, configuration="cfg-a", map_key="map-a"):
     }
     source = {**identity, "authority_revision": identity["revision"],
               "sdk_frame_us": 1_000_000 + index,
+              "computed_at": observed,
               "calculation_sequence": index + 1, "reference_mode": "global_lane",
               "lane_match_snapshot": {"active_lane_id": {"uid": 7, "lane": 1},
                                       "lateral_error_m": 0.02,
@@ -86,6 +91,182 @@ def capture(index, *, when=10.0, configuration="cfg-a", map_key="map-a"):
         0.0, None, None)
 
 
+def trailer_capture(index):
+    value = capture(index)
+    profile = deepcopy(value.profile)
+    profile["observation"].update({
+        "source": "scs_shared_memory_revision_12", "failure_reason": "",
+        "active": True, "paused": False})
+    trailer = deepcopy(profile["observation"]["articles"][0])
+    trailer.update({"slot": 0, "vehicle_id": "trailer.a",
+                    "position_m": [100.0, 12.0, 190.0],
+                    "rotation_rad": [0.1, 0.0, 0.0]})
+    trailer["wheels"] = [
+        {**deepcopy(trailer["wheels"][0]), "index": wheel,
+         "position_m": [(-1.0 if wheel == 0 else 1.0), -0.5, -3.0]}
+        for wheel in range(2)]
+    profile["observation"]["articles"].append(trailer)
+    return replace(value, profile=profile, truck={**value.truck, "speed": 0.0})
+
+
+def parked_trailer_capture(index):
+    value = trailer_capture(index)
+    return replace(value, engine_steer=None, backend_sent=False,
+                   autopilot_active=False, applied_target={})
+
+
+def moving_trailer_capture(index):
+    value = trailer_capture(index)
+    return replace(value, truck={**value.truck, "speed": 3.0})
+
+
+def test_parked_trailer_geometry_passes_without_command_or_replay(tmp_path, capsys):
+    collector = EvidenceDiagnosticCollector(root(tmp_path), capacity=30)
+    collector.apply_command(command(1, collection_id="trailer-axle-01",
+                                    sample_period_s=0.05))
+    assert collector.status()["sample_period_s"] == 0.05
+    for index in range(30):
+        collector._ingest(parked_trailer_capture(index))
+    preflight = collector.status()["trailer_preflight"]
+    assert preflight["atomic"] is False
+    assert preflight["stationary_geometry_frames"] == 30
+    assert preflight["consecutive_stationary_geometry_frames"] == 30
+    assert preflight["stationary_geometry_ready"] is True
+    assert preflight["moving_command_binding_observed"] is False
+    assert preflight["replay_channels_observed"] is False
+    assert preflight["replay_candidate_complete"] is False
+    assert diagnostic_cli(["status", "--output", str(root(tmp_path))]) == 0
+    live = json.loads(capsys.readouterr().out)
+    assert live["trailer_preflight"]["stationary_geometry_ready"] is True
+    assert live["trailer_preflight"]["replay_candidate_complete"] is False
+    assert live["trailer_preflight"]["atomic"] is False
+    collector.finalize()
+    target = root(tmp_path) / "trailer-axle-01"
+    assert inspect_collection(target)["integrity_valid"]
+    assert inspect_collection(target)["trailer_axle_replay_candidate_complete"] is False
+    assert inspect_collection(target)["trailer_axle_replay_channels_observed"] is False
+    raw = read_json(target / "automatic-observations.json")
+    frame = raw["samples"][0]
+    assert frame["trailer_geometry_eligible"] is True
+    assert frame["trailer_moving_command_binding_eligible"] is False
+    assert frame["trailer_axle_replay_eligible"] is False
+    assert frame["sdk_frame_us"] == frame["vehicle_profile"]["observation"]["sdk_frame_us"]
+    assert frame["command_binding_proven"] is False
+    assert frame["calculation_sdk_frame_us"] is None
+    article = frame["vehicle_profile"]["observation"]["articles"][1]
+    assert article["slot"] == 0 and article["attached"] is True
+    assert article["position_m"] == [100.0, 12.0, 190.0]
+    assert article["rotation_rad"] == [0.1, 0.0, 0.0]
+    assert len(article["wheels"]) == 2
+    assert all(wheel["on_ground"] and not wheel["liftable"]
+               and not wheel["steerable"] for wheel in article["wheels"])
+    tracking = read_json(target / "tracking-samples-candidate.json")
+    assert tracking["trailer_axle_replay_candidate_complete"] is False
+    assert tracking["samples"][0]["engine_steer"] is None
+    assert tracking["samples"][0]["game_steer"] == -0.2
+    assert tracking["samples"][0]["tyre_angles_rad"] == [0.1]
+
+
+def test_trailer_geometry_rejects_missing_wheels_and_mixed_sdk_frame(tmp_path):
+    collector = EvidenceDiagnosticCollector(root(tmp_path), capacity=30)
+    collector.apply_command(command(1, collection_id="trailer-axle-02",
+                                    sample_period_s=0.05))
+    collector._ingest(parked_trailer_capture(0))
+    missing = parked_trailer_capture(1)
+    missing.profile["observation"]["articles"][1]["wheels"] = []
+    collector._ingest(missing)
+    assert "TRAILER_SLOT_0_WHEELS_OR_CONTACT_MISSING" in (
+        collector.status()["trailer_preflight"]["latest_geometry_reasons"])
+    assert collector.status()["trailer_preflight"]["stationary_geometry_ready"] is False
+    mixed = parked_trailer_capture(2)
+    mixed.profile["observation"]["sdk_frame_us"] += 1
+    collector._ingest(mixed)
+    assert "TRAILER_SDK_FRAME_STALE_OR_INCOHERENT" in (
+        collector.status()["trailer_preflight"]["latest_geometry_reasons"])
+    assert collector.status()["trailer_preflight"]["stationary_geometry_ready"] is False
+    changed = parked_trailer_capture(3)
+    changed.profile["token"]["configuration"] = "different-trailer"
+    collector._ingest(changed)
+    assert "TRAILER_CONFIGURATION_BINDING_CHANGED" in (
+        collector.status()["trailer_preflight"]["latest_geometry_reasons"])
+    for index in range(4, 7):
+        current = parked_trailer_capture(index)
+        current.profile["token"]["configuration"] = "different-trailer"
+        collector._ingest(current)
+    assert collector.status()["trailer_preflight"]["stationary_geometry_ready"]
+    detached = parked_trailer_capture(7)
+    detached.profile["observation"]["articles"][1]["attached"] = False
+    collector._ingest(detached)
+    assert "TRAILER_SLOT_0_WORLD_POSE_MISSING" in (
+        collector.status()["trailer_preflight"]["latest_geometry_reasons"])
+    assert collector.status()["trailer_preflight"]["stationary_geometry_ready"] is False
+
+
+def test_repeated_sdk_frame_is_ignored_only_while_fresh(tmp_path):
+    collector = EvidenceDiagnosticCollector(root(tmp_path), capacity=30)
+    collector.apply_command(command(1, collection_id="trailer-frame-repeat"))
+    for index in range(3):
+        collector._ingest(parked_trailer_capture(index))
+    assert collector.status()["trailer_preflight"]["stationary_geometry_ready"]
+    repeated = parked_trailer_capture(3)
+    repeated.truck["sdkFrameTimeUs"] = 1_000_002
+    repeated.profile["observation"]["sdk_frame_us"] = 1_000_002
+    collector._ingest(repeated)
+    preflight = collector.status()["trailer_preflight"]
+    assert preflight["latest_geometry_reasons"] == ["DUPLICATE_SDK_FRAME"]
+    assert preflight["stationary_geometry_ready"]
+    stale = parked_trailer_capture(4)
+    stale.truck["sdkFrameTimeUs"] = 1_000_002
+    stale.profile["observation"]["sdk_frame_us"] = 1_000_002
+    stale.profile["observation"]["captured_at"] = stale.captured_at_s - 0.4
+    collector._ingest(stale)
+    preflight = collector.status()["trailer_preflight"]
+    assert "TRAILER_SDK_FRAME_STALE_OR_INCOHERENT" in preflight["latest_geometry_reasons"]
+    assert preflight["stationary_geometry_ready"] is False
+
+
+def test_moving_command_binding_completes_only_after_parked_geometry(tmp_path):
+    collector = EvidenceDiagnosticCollector(root(tmp_path), capacity=30)
+    collector.apply_command(command(1, collection_id="trailer-axle-03",
+                                    sample_period_s=0.05))
+    for index in range(3):
+        collector._ingest(parked_trailer_capture(index))
+    assert collector.status()["trailer_preflight"]["stationary_geometry_ready"]
+    assert not collector.status()["trailer_preflight"]["replay_candidate_complete"]
+    stale = moving_trailer_capture(3)
+    stale = replace(stale, applied_target={**stale.applied_target,
+        "execution_monotonic_s": stale.captured_at_s - 0.2})
+    collector._ingest(stale)
+    assert "CALCULATION_TO_APPLIED_COMMAND_BINDING_MISSING" in (
+        collector.status()["trailer_preflight"]["latest_command_reasons"])
+    assert not collector.status()["trailer_preflight"]["replay_candidate_complete"]
+    for index in range(4, 7):
+        collector._ingest(moving_trailer_capture(index))
+    preflight = collector.status()["trailer_preflight"]
+    assert preflight["stationary_geometry_ready"] is True
+    assert preflight["moving_command_binding_observed"] is True
+    assert preflight["replay_channels_observed"] is True
+    assert preflight["replay_candidate_complete"] is False
+    assert collector._rows[-1]["trailer_axle_replay_eligible"] is True
+    for index in range(7, 30):
+        collector._ingest(moving_trailer_capture(index))
+    collector.finalize()
+    target = root(tmp_path) / "trailer-axle-03"
+    result = inspect_collection(target)
+    assert result["trailer_axle_replay_channels_observed"] is True
+    assert result["trailer_axle_replay_candidate_complete"] is False
+    assert result["confirmed"] is False and result["runtime_authorized"] is False
+    moving = read_json(target / "automatic-observations.json")["samples"][4]
+    assert moving["trailer_axle_replay_eligible"] is True
+    assert moving["calculation_sdk_frame_us"] == moving["sdk_frame_us"]
+    assert moving["steer_raw"] == moving["steer_out"] == moving["engine_steer"] == 0.2
+    assert moving["game_steer"] == -0.2 and moving["tyre_angles_rad"] == [0.1]
+    tracking = read_json(target / "tracking-samples-candidate.json")
+    assert tracking["trailer_axle_replay_channels_observed"] is True
+    assert tracking["trailer_axle_replay_candidate_complete"] is False
+    assert tracking["runtime_authorized"] is False
+
+
 def test_diagnostic_default_is_disabled_and_never_authorizes(tmp_path):
     collector = EvidenceDiagnosticCollector(root(tmp_path), capacity=30)
     status = collector.status()
@@ -107,6 +288,8 @@ def test_arm_collect_finish_exports_only_unconfirmed_candidates(tmp_path):
     assert result == {"integrity_valid": True, "file_count": 8,
                       "sample_count": 30, "confirmed": False,
                       "runtime_authorized": False,
+                      "trailer_axle_replay_channels_observed": False,
+                      "trailer_axle_replay_candidate_complete": False,
                       "qualification": "READY_FOR_OFFLINE_REVIEW"}
     profile = read_json(root(tmp_path) / "cab-01" / "body-profile-candidate.json")
     configuration = read_json(
@@ -269,6 +452,44 @@ def test_manual_driver_can_collect_profile_without_backend_command():
     captured = engine._maneuver_diagnostic_collector.offered[0]
     assert captured.backend_sent is False and captured.engine_steer is None
     assert state.get("runtime_authorized") is None
+
+
+def test_parked_trailer_preflight_uses_real_engine_manual_branch(tmp_path):
+    from tests.test_stage4d_control_timing import EngineRealtimeBoundaryTests, State
+
+    collector = EvidenceDiagnosticCollector(root(tmp_path), capacity=30)
+    collector.apply_command(command(1, collection_id="trailer-manual-engine",
+                                    sample_period_s=0.05))
+    offered = []
+
+    class DirectOffer:
+        def should_sample(self, _now):
+            return True
+
+        def offer(self, value):
+            offered.append(value)
+            collector._ingest(value)
+            return True
+
+    state = State({"autopilot_active": False, "telemetry_valid": True})
+    engine = EngineRealtimeBoundaryTests.bare_engine(state)
+    engine.controller = EngineRealtimeBoundaryTests.FakeController()
+    engine._maneuver_diagnostic_collector = DirectOffer()
+    engine._maneuver_diagnostic_sequence = 0
+    engine._maneuver_tracking_recorder = None
+    for index in range(3):
+        value = parked_trailer_capture(index)
+        value.profile["observation"]["captured_at"] = time.monotonic()
+        state.update_batch({"telemetry": {"truck": value.truck},
+                            "vehicle_profile_snapshot": value.profile})
+        engine._flush_controls_unlocked()
+    assert engine.controller.steering_writes == []
+    assert all(not value.backend_sent and value.engine_steer is None
+               for value in offered)
+    preflight = collector.status()["trailer_preflight"]
+    assert preflight["stationary_geometry_ready"] is True
+    assert preflight["moving_command_binding_observed"] is False
+    assert preflight["replay_candidate_complete"] is False
 
 
 def test_control_boundary_contains_no_json_or_planner_work():

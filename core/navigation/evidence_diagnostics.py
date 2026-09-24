@@ -227,6 +227,137 @@ def _identity(row):
     return tuple(row["lane"].get(key) for key in IDENTITY_KEYS)
 
 
+def _finite_xyz(value):
+    return (isinstance(value, (tuple, list)) and len(value) == 3
+            and all(_finite(component) for component in value))
+
+
+def _geometry_binding(row):
+    profile = row.get("vehicle_profile") or {}
+    token = profile.get("token") or {}
+    return (token.get("producer_session"), token.get("generation"),
+            token.get("configuration"))
+
+
+def _navigation_binding(row):
+    lane = row.get("lane") or {}
+    return (tuple(lane.get(key) for key in IDENTITY_KEYS),
+            json.dumps(row.get("lane_id"), sort_keys=True),
+            lane.get("elevation_layer"))
+
+
+def _trailer_geometry_reasons(row, previous_sdk_frame, previous_binding):
+    """Check a passive SDK geometry frame without requiring any control write.
+
+    The SDK read is stable but not atomic. Equal frame IDs only make the truck
+    and trailer observations eligible for later independent offline review.
+    """
+    reasons = []
+    frame = row["sdk_frame_us"]
+    observation = (row.get("vehicle_profile") or {}).get("observation") or {}
+    articles = observation.get("articles") or []
+    trailer = next((article for article in articles if isinstance(article, dict)
+                    and article.get("slot") == 0 and article.get("attached") is True), None)
+    wheels = trailer.get("wheels") if trailer else None
+    if (observation.get("source") != "scs_shared_memory_revision_12"
+            or observation.get("failure_reason")
+            or observation.get("stable_read") is not True
+            or observation.get("active") is not True
+            or observation.get("paused") is True
+            or observation.get("sdk_frame_us") != frame
+            or row.get("telemetry_valid") is not True
+            or not _finite(observation.get("captured_at"))
+            or not 0 <= row["captured_at_s"] - observation["captured_at"] <= 0.25):
+        reasons.append("TRAILER_SDK_FRAME_STALE_OR_INCOHERENT")
+    if previous_sdk_frame is not None and frame == previous_sdk_frame:
+        reasons.append("DUPLICATE_SDK_FRAME")
+    if (not _finite_xyz([row["truck"].get(axis) for axis in ("x", "y", "z")])
+            or not _finite(row["truck"].get("rotation"))
+            or row["truck"].get("pose_valid") is not True):
+        reasons.append("TRACTOR_WORLD_POSE_MISSING")
+    if (trailer is None or not isinstance(trailer.get("vehicle_id"), str)
+            or not trailer.get("vehicle_id")
+            or not _finite_xyz(trailer.get("position_m"))
+            or not _finite_xyz(trailer.get("rotation_rad"))):
+        reasons.append("TRAILER_SLOT_0_WORLD_POSE_MISSING")
+    if (not isinstance(wheels, list) or len(wheels) < 2
+            or not any(isinstance(wheel, dict) and wheel.get("on_ground") is True
+                       for wheel in wheels)
+            or any(not isinstance(wheel, dict)
+                   or type(wheel.get("index")) is not int
+                   or not _finite_xyz(wheel.get("position_m"))
+                   or not _finite(wheel.get("radius_m"))
+                   or not all(type(wheel.get(key)) is bool for key in
+                              ("on_ground", "liftable", "steerable"))
+                   or not _finite(wheel.get("lift"))
+                   or not _finite(wheel.get("lift_offset_m"))
+                   or not _finite(wheel.get("steering_right_rad"))
+                   for wheel in (wheels or []))):
+        reasons.append("TRAILER_SLOT_0_WHEELS_OR_CONTACT_MISSING")
+    binding = _geometry_binding(row)
+    if (not isinstance(binding[0], str) or not binding[0]
+            or type(binding[1]) is not int or binding[1] <= 0
+            or not isinstance(binding[2], str) or not binding[2]):
+        reasons.append("CONFIGURATION_FINGERPRINT_MISSING")
+    if previous_binding is not None and binding != previous_binding:
+        reasons.append("TRAILER_CONFIGURATION_BINDING_CHANGED")
+    return reasons
+
+
+def _moving_command_reasons(row, geometry_reasons):
+    """Check a moving backend write separately from parked trailer geometry."""
+    reasons = []
+    frame = row["sdk_frame_us"]
+    if not _finite(row.get("speed_mps")) or abs(row["speed_mps"]) <= 0.5:
+        reasons.append("MOVING_COMMAND_NOT_OBSERVED")
+    if geometry_reasons:
+        reasons.append("TRAILER_GEOMETRY_FRAME_NOT_ELIGIBLE")
+    lane = row.get("lane") or {}
+    source = (row.get("executor") or {}).get("source_packet") or {}
+    if (lane.get("valid") is not True or not isinstance(row.get("lane_id"), dict)
+            or not row["lane_id"] or not _finite(row.get("global_cte_m"))
+            or not _finite(row.get("heading_error_rad"))
+            or lane.get("elevation_layer") is None
+            or any(lane.get(key) in (None, "") for key in IDENTITY_KEYS)
+            or any(source.get(key) != lane.get(key) for key in IDENTITY_KEYS
+                   if key != "revision")
+            or source.get("authority_revision") != lane.get("revision")):
+        reasons.append("NAVIGATION_LANE_IDENTITY_OR_CTE_MISSING")
+    calculation_frame = row.get("calculation_sdk_frame_us")
+    calculated_at = source.get("computed_at")
+    executed_at = (row.get("executor") or {}).get("execution_monotonic_s")
+    if (row.get("autopilot_active") is not True
+            or not row.get("command_binding_proven")
+            or type(calculation_frame) is not int or not 0 < calculation_frame <= frame
+            or frame - calculation_frame > 250_000
+            or not _finite(calculated_at) or not _finite(executed_at)
+            or not 0 <= executed_at - calculated_at <= 0.25
+            or type(row.get("calculation_sequence")) is not int
+            or row["calculation_sequence"] <= 0
+            or not _finite(row.get("steer_raw"))
+            or not _finite(row.get("steer_out"))
+            or not _finite(row.get("game_steer"))
+            or not isinstance(row.get("tyre_angles_rad"), (list, tuple))
+            or not row["tyre_angles_rad"]
+            or not all(_finite(value) for value in row["tyre_angles_rad"])):
+        reasons.append("CALCULATION_TO_APPLIED_COMMAND_BINDING_MISSING")
+    return reasons
+
+
+def _empty_trailer_preflight():
+    return {"atomic": False, "latest_sdk_frame_us": None,
+            "vehicle_stationary": None,
+            "stationary_geometry_frames": 0,
+            "consecutive_stationary_geometry_frames": 0,
+            "stationary_geometry_ready": False,
+            "latest_geometry_reasons": ["WAITING_FOR_SAMPLE"],
+            "moving_command_frames": 0,
+            "moving_command_binding_observed": False,
+            "latest_command_reasons": ["WAITING_FOR_MOVING_COMMAND"],
+            "replay_channels_observed": False,
+            "replay_candidate_complete": False}
+
+
 class EvidenceDiagnosticCollector:
     """One bounded queue and one writer for unqualified live observations."""
 
@@ -257,6 +388,9 @@ class EvidenceDiagnosticCollector:
         self._dropped = 0
         self._last_capture_s = None
         self._last_sdk_frame = None
+        self._last_geometry_binding = None
+        self._last_moving_navigation_binding = None
+        self._trailer_preflight = _empty_trailer_preflight()
         self._last_command_sequence = 0
         self._stop = threading.Event()
         self._thread = None
@@ -283,10 +417,12 @@ class EvidenceDiagnosticCollector:
                 "schema_version": SCHEMA_VERSION, "state": state,
                 "reason": reason, "collection_id": self._collection_id,
                 "purpose": self._purpose, "sample_count": len(self._rows),
+                "sample_period_s": self._sample_period_s,
                 "dropped_samples": self._dropped,
                 "capacity": self.capacity,
                 "runtime_authorized": False, "confirmed": False,
                 "accepting_samples": state in ("ARMED", "COLLECTING"),
+                "trailer_preflight": dict(self._trailer_preflight),
             }
 
     def _publish(self):
@@ -374,6 +510,9 @@ class EvidenceDiagnosticCollector:
                 self._next_sample_s = 0.0
                 self._dropped = 0
                 self._last_capture_s = self._last_sdk_frame = None
+                self._last_geometry_binding = None
+                self._last_moving_navigation_binding = None
+                self._trailer_preflight = _empty_trailer_preflight()
         else:
             with self._lock:
                 if (action != "disable" and collection_id != self._collection_id):
@@ -390,7 +529,7 @@ class EvidenceDiagnosticCollector:
         self._publish()
 
     def _ingest(self, capture):
-        profile = _jsonable(capture.profile)
+        profile = _jsonable(capture.profile) or {}
         sdk_frame = capture.truck.get("sdkFrameTimeUs")
         if (not _finite(capture.captured_at_s)
                 or (self._last_capture_s is not None
@@ -476,14 +615,65 @@ class EvidenceDiagnosticCollector:
                 for article in ((profile.get("observation") or {}).get("articles", ()) or ())
                 if article.get("attached")],
         }
+        geometry_reasons = _trailer_geometry_reasons(
+            row, self._last_sdk_frame, self._last_geometry_binding)
+        command_reasons = _moving_command_reasons(row, geometry_reasons)
+        geometry_binding = _geometry_binding(row)
+        navigation_binding = _navigation_binding(row)
+        stationary = _finite(row.get("speed_mps")) and abs(row["speed_mps"]) <= 0.2
+        row["trailer_geometry_eligible"] = not geometry_reasons
+        row["trailer_geometry_rejection_reasons"] = geometry_reasons
+        row["trailer_moving_command_binding_eligible"] = not command_reasons
+        row["trailer_command_rejection_reasons"] = command_reasons
+        row["trailer_axle_replay_eligible"] = not geometry_reasons and not command_reasons
         with self._lock:
             if self._state not in ("ARMED", "COLLECTING"):
                 return
             if len(self._rows) == self._rows.maxlen:
                 self._dropped += 1
             self._rows.append(row)
+            preflight = dict(self._trailer_preflight)
+            binding_changed = (self._last_geometry_binding is not None
+                               and geometry_binding != self._last_geometry_binding)
+            duplicate = self._last_sdk_frame == sdk_frame
+            if binding_changed or (geometry_reasons and not (
+                    duplicate and geometry_reasons == [
+                        "DUPLICATE_SDK_FRAME"])):
+                preflight["consecutive_stationary_geometry_frames"] = 0
+                preflight["stationary_geometry_ready"] = False
+                preflight["moving_command_frames"] = 0
+                preflight["moving_command_binding_observed"] = False
+            elif not geometry_reasons and stationary:
+                preflight["stationary_geometry_frames"] += 1
+                preflight["consecutive_stationary_geometry_frames"] += 1
+                if preflight["consecutive_stationary_geometry_frames"] >= 3:
+                    preflight["stationary_geometry_ready"] = True
+            if (self._last_moving_navigation_binding is not None
+                    and navigation_binding != self._last_moving_navigation_binding):
+                preflight["moving_command_frames"] = 0
+                preflight["moving_command_binding_observed"] = False
+            if not command_reasons:
+                preflight["moving_command_frames"] += 1
+                if preflight["moving_command_frames"] >= 3:
+                    preflight["moving_command_binding_observed"] = True
+                self._last_moving_navigation_binding = navigation_binding
+            elif _finite(row.get("speed_mps")) and abs(row["speed_mps"]) > 0.5:
+                preflight["moving_command_frames"] = 0
+            preflight.update({
+                "latest_sdk_frame_us": sdk_frame,
+                "vehicle_stationary": stationary,
+                "latest_geometry_reasons": list(geometry_reasons),
+                "latest_command_reasons": list(command_reasons),
+                "replay_channels_observed": bool(
+                    preflight["stationary_geometry_ready"]
+                    and preflight["moving_command_binding_observed"]
+                    and self._dropped == 0),
+                "replay_candidate_complete": False,
+            })
+            self._trailer_preflight = preflight
             self._state, self._reason = "COLLECTING", "RAW_MEASUREMENTS_NOT_CONFIRMED"
             self._last_capture_s, self._last_sdk_frame = capture.captured_at_s, sdk_frame
+            self._last_geometry_binding = geometry_binding
         self._publish()
 
     def _candidate_documents(self, rows):
@@ -590,6 +780,9 @@ class EvidenceDiagnosticCollector:
             "qualification": "PASSIVE_GLOBAL_OR_UNQUALIFIED_RAW_MEASUREMENT",
             "reviewed": False, "confirmed": False, "runtime_authorized": False,
             "local_maneuver_qualification": False,
+            "trailer_axle_replay_channels_observed": bool(
+                self._trailer_preflight["replay_channels_observed"]),
+            "trailer_axle_replay_candidate_complete": False,
             "command_bound_sample_count": sum(row["command_binding_proven"] for row in rows),
             "samples": [{k: row.get(k) for k in (
                 "sequence", "captured_at_s", "sdk_frame_us", "calculation_sdk_frame_us",
@@ -601,7 +794,8 @@ class EvidenceDiagnosticCollector:
                 "yaw_rate_rad_s", "speed_mps", "acceleration_mps2", "articulation_rad",
                 "planned_point", "planned_tangent", "predicted_clearance_m",
                 "actuator_calibration", "command_binding_proven", "article_positions",
-                "ground_reference", "surface_token")}
+                "ground_reference", "surface_token", "trailer_geometry_eligible",
+                "trailer_moving_command_binding_eligible", "trailer_axle_replay_eligible")}
                 for row in rows],
         })
         lane_ids = []
@@ -696,6 +890,9 @@ class EvidenceDiagnosticCollector:
                 "created_at_utc": _utc_now(), "sample_count": len(rows),
                 "dropped_samples": self._dropped, "files": entries,
                 "qualification": "READY_FOR_OFFLINE_REVIEW",
+                "trailer_axle_replay_channels_observed": bool(
+                    self._trailer_preflight["replay_channels_observed"]),
+                "trailer_axle_replay_candidate_complete": False,
                 "confirmed": False, "runtime_authorized": False,
             })
             atomic_json_write(target / "manifest.json", manifest)
@@ -758,4 +955,8 @@ def inspect_collection(path):
     return {"integrity_valid": True, "file_count": len(manifest["files"]),
             "sample_count": manifest["sample_count"], "confirmed": False,
             "runtime_authorized": False,
+            "trailer_axle_replay_channels_observed": bool(
+                manifest.get("trailer_axle_replay_channels_observed", False)),
+            "trailer_axle_replay_candidate_complete": bool(
+                manifest.get("trailer_axle_replay_candidate_complete", False)),
             "qualification": "READY_FOR_OFFLINE_REVIEW"}
