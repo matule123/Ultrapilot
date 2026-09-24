@@ -2,6 +2,7 @@
 
 import json
 import time
+from pathlib import Path
 from copy import deepcopy
 from dataclasses import replace
 
@@ -11,6 +12,7 @@ from core.navigation.evidence_diagnostics import (
     DiagnosticCapture, EvidenceDiagnosticCollector, atomic_json_write,
     inspect_collection, read_json,
 )
+import core.navigation.evidence_diagnostics as evidence_diagnostics
 from core.navigation.traffic_producer import TrafficCapture
 from core.sdk.ets2la_data import _PARKED_SIZE, _TRAFFIC_SIZE
 from tools.manage_maneuver_diagnostics import main as diagnostic_cli
@@ -118,6 +120,139 @@ def parked_trailer_capture(index):
 def moving_trailer_capture(index):
     value = trailer_capture(index)
     return replace(value, truck={**value.truck, "speed": 3.0})
+
+
+def full_trailer_capture(index):
+    """Full revision-12 slot and wheel payload, deterministic across 1800 frames."""
+    value = moving_trailer_capture(index)
+    profile = deepcopy(value.profile)
+    articles = profile["observation"]["articles"]
+    for article in articles:
+        seed = article["wheels"][0]
+        article["wheels"] = [
+            {**deepcopy(seed), "index": wheel,
+             "position_m": [(-1.0 if wheel % 2 == 0 else 1.0),
+                            -0.5, float(wheel // 2)]}
+            for wheel in range(14)]
+    articles.extend({
+        "slot": slot, "attached": False, "vehicle_id": "", "brand_id": "",
+        "name": "", "body_type": "", "chain_type": "",
+        "cargo_accessory_id": "", "hook_local_m": [0.0, 0.0, 0.0],
+        "wheels": [], "position_m": [0.0, 0.0, 0.0],
+        "rotation_rad": [0.0, 0.0, 0.0],
+    } for slot in range(1, 10))
+    profile.update({"observed_at": value.captured_at_s,
+                    "observation_failure": "", "model_failure": "MISSING_CONFIRMED_BODY_PROFILE",
+                    "model": None, "axle_geometry": [None, None],
+                    "geometry_failures": ["UNPROVEN_FIXED_AXLE", "UNPROVEN_FIXED_AXLE"],
+                    "live_maneuver_ready": False})
+    return replace(value, profile=profile, traffic_capture=None)
+
+
+def test_1800_full_trailer_samples_export_and_inspect(tmp_path, capsys):
+    collector = EvidenceDiagnosticCollector(root(tmp_path), capacity=1800)
+    collector.apply_command(command(1, collection_id="full-trailer-1800",
+                                    sample_period_s=0.05))
+    # Sampling is worker-owned; avoid 1800 status fsyncs in this export test.
+    collector._publish = lambda: None
+    for index in range(1800):
+        collector._ingest(full_trailer_capture(index))
+    collector.finalize()
+    assert collector.status()["state"] == "READY_FOR_OFFLINE_REVIEW"
+    result = inspect_collection(root(tmp_path) / "full-trailer-1800")
+    assert result["integrity_valid"] and result["sample_count"] == 1800
+    assert result["confirmed"] is False and result["runtime_authorized"] is False
+    target = root(tmp_path) / "full-trailer-1800"
+    assert diagnostic_cli(["inspect", str(target)]) == 0
+    assert json.loads(capsys.readouterr().out) == result
+    manifest = read_json(target / "manifest.json")
+    assert manifest["schema_version"] == 2
+    parts = [entry for entry in manifest["files"]
+             if entry.get("parent_name") == "automatic-observations.json"]
+    assert len(parts) >= 15
+    assert sum(entry["sample_count"] for entry in parts) == 1800
+    assert all((target / entry["name"]).stat().st_size <= 8 * 1024 * 1024
+               for entry in parts)
+    rows = [row for entry in parts
+            for row in read_json(target / entry["name"])["records"]]
+    assert [row["sequence"] for row in rows] == list(range(1, 1801))
+    assert [row["sdk_frame_us"] for row in rows] == [1_000_000 + i for i in range(1800)]
+    assert [row["captured_at_s"] for row in rows] == [10.0 + 0.1 * i
+                                                         for i in range(1800)]
+    for row in (rows[0], rows[899], rows[-1]):
+        articles = row["vehicle_profile"]["observation"]["articles"]
+        assert articles[1]["slot"] == 0 and articles[1]["attached"] is True
+        assert len(articles[1]["wheels"]) == 14
+        assert len(articles) == 11
+
+    changed = target / parts[0]["name"]
+    original = changed.read_bytes()
+    changed.write_bytes(original + b" ")
+    with pytest.raises(ValueError, match="INTEGRITY"):
+        inspect_collection(target)
+    changed.write_bytes(original)
+    changed.unlink()
+    with pytest.raises(ValueError, match="INTEGRITY"):
+        inspect_collection(target)
+    changed.write_bytes(original)
+    reordered = deepcopy(manifest)
+    offsets = [i for i, entry in enumerate(reordered["files"])
+               if entry.get("parent_name") == "automatic-observations.json"]
+    a, b = offsets[:2]
+    reordered["files"][a], reordered["files"][b] = (
+        reordered["files"][b], reordered["files"][a])
+    atomic_json_write(target / "manifest.json", evidence_diagnostics._sealed(
+        {key: value for key, value in reordered.items()
+         if key != "integrity_sha256"}))
+    with pytest.raises(ValueError, match="ORDER"):
+        inspect_collection(target)
+
+
+def test_interrupted_chunk_export_is_not_published(tmp_path, monkeypatch):
+    collector = EvidenceDiagnosticCollector(root(tmp_path), capacity=130)
+    collector.apply_command(command(1, collection_id="interrupted-130"))
+    collector._publish = lambda: None
+    for index in range(130):
+        collector._ingest(full_trailer_capture(index))
+    original = evidence_diagnostics.atomic_json_write
+
+    def interrupt_second_part(path, value):
+        if Path(path).name == "automatic-observations.part-0001.json":
+            raise OSError("machine-specific private path")
+        original(path, value)
+
+    monkeypatch.setattr(evidence_diagnostics, "atomic_json_write", interrupt_second_part)
+    collector.finalize()
+    assert collector.status()["state"] == "INSUFFICIENT_EVIDENCE"
+    assert collector.status()["reason"] == "DIAGNOSTIC_EXPORT_WRITE_FAILED"
+    assert not (root(tmp_path) / "interrupted-130").exists()
+    assert list(root(tmp_path).glob(".interrupted-130.*.partial"))
+    with pytest.raises(FileNotFoundError):
+        inspect_collection(root(tmp_path) / "interrupted-130")
+
+
+def test_collection_id_is_never_overwritten(tmp_path):
+    output = root(tmp_path)
+    existing = output / "already-used"
+    existing.mkdir(parents=True)
+    marker = existing / "private-marker"
+    marker.write_text("preserve", encoding="utf-8")
+    collector = EvidenceDiagnosticCollector(output, capacity=30)
+    with pytest.raises(ValueError, match="ALREADY_EXISTS"):
+        collector.apply_command(command(1, collection_id="already-used"))
+    assert marker.read_text(encoding="utf-8") == "preserve"
+
+
+def test_diagnostic_file_32_mb_limit_is_exact(tmp_path):
+    limit = evidence_diagnostics.MAX_DIAGNOSTIC_FILE_BYTES
+    overhead = len(json.dumps({"data": ""}, ensure_ascii=False,
+                              indent=2).encode("utf-8"))
+    path = root(tmp_path) / "boundary.json"
+    atomic_json_write(path, {"data": "x" * (limit - overhead)})
+    assert path.stat().st_size == limit
+    with pytest.raises(ValueError, match="DIAGNOSTIC_FILE_TOO_LARGE"):
+        atomic_json_write(path, {"data": "x" * (limit - overhead + 1)})
+    assert path.stat().st_size == limit
 
 
 def test_parked_trailer_geometry_passes_without_command_or_replay(tmp_path, capsys):

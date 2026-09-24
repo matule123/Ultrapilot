@@ -29,6 +29,14 @@ from core.navigation.traffic_producer import LegacyTrafficProducer, TrafficCaptu
 SCHEMA_VERSION = 1
 MAX_DIAGNOSTIC_SAMPLES = 3600
 MAX_DIAGNOSTIC_FILE_BYTES = 32 * 1024 * 1024
+MAX_DIAGNOSTIC_CHUNK_BYTES = 8 * 1024 * 1024
+MAX_DIAGNOSTIC_CHUNK_RECORDS = 128
+CHUNKABLE_DOCUMENT_FIELDS = {
+    "automatic-observations.json": "samples",
+    "ground-reference-candidate.json": "frames",
+    "traffic-coverage-observations.json": "history",
+    "tracking-samples-candidate.json": "samples",
+}
 DIAGNOSTIC_STATES = (
     "DISABLED", "ARMED", "COLLECTING", "SAMPLE_COMPLETE",
     "INSUFFICIENT_EVIDENCE", "READY_FOR_OFFLINE_REVIEW",
@@ -112,6 +120,95 @@ def atomic_json_write(path, value, *, replace=os.replace):
                 os.unlink(temporary)
             except OSError:
                 pass
+
+
+def _json_size(value):
+    return len(json.dumps(value, ensure_ascii=False, indent=2,
+                          allow_nan=False).encode("utf-8"))
+
+
+def _file_entry(path, **metadata):
+    return {"name": path.name, "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+            **metadata}
+
+
+def _write_candidate_document(stage, name, document, entries):
+    """Write bounded files; retain the original record order and contents."""
+    field = CHUNKABLE_DOCUMENT_FIELDS.get(name)
+    records = document.get(field) if field else None
+    if not isinstance(records, list):
+        records = None
+    if (records is None or (len(records) <= MAX_DIAGNOSTIC_CHUNK_RECORDS
+                            and _json_size(document) <= MAX_DIAGNOSTIC_CHUNK_BYTES)):
+        path = stage / name
+        atomic_json_write(path, document)
+        entries.append(_file_entry(path, role="document"))
+        return False
+
+    part_entries = []
+    start = 0
+    while start < len(records):
+        stop = min(start + MAX_DIAGNOSTIC_CHUNK_RECORDS, len(records))
+        while True:
+            selected = records[start:stop]
+            first, last = selected[0], selected[-1]
+            chunk = _sealed({
+                "schema_version": 2, "kind": "diagnostic_record_chunk",
+                "parent_name": name, "record_field": field,
+                "order": len(part_entries), "start_index": start,
+                "sample_count": len(selected),
+                "first_sdk_frame_us": (first.get("sdk_frame_us")
+                                       if isinstance(first, dict) else None),
+                "last_sdk_frame_us": (last.get("sdk_frame_us")
+                                      if isinstance(last, dict) else None),
+                "first_sequence": (first.get("sequence")
+                                   if isinstance(first, dict) else None),
+                "last_sequence": (last.get("sequence")
+                                  if isinstance(last, dict) else None),
+                "confirmed": False, "runtime_authorized": False,
+                "records": selected,
+            })
+            if _json_size(chunk) <= MAX_DIAGNOSTIC_CHUNK_BYTES:
+                break
+            if stop - start == 1:
+                raise ValueError("DIAGNOSTIC_EXPORT_SINGLE_RECORD_TOO_LARGE")
+            stop = start + max(1, (stop - start) // 2)
+        path = stage / f"{name[:-5]}.part-{len(part_entries):04d}.json"
+        atomic_json_write(path, chunk)
+        part_entries.append(_file_entry(path, role="chunk", parent_name=name,
+            record_field=field, order=chunk["order"], start_index=start,
+            sample_count=chunk["sample_count"],
+            first_sdk_frame_us=chunk["first_sdk_frame_us"],
+            last_sdk_frame_us=chunk["last_sdk_frame_us"],
+            first_sequence=chunk["first_sequence"],
+            last_sequence=chunk["last_sequence"]))
+        start = stop
+
+    header = dict(document)
+    header.pop("integrity_sha256", None)
+    header.pop(field)
+    header.update({"chunked": True, "record_field": field,
+                   "chunk_count": len(part_entries),
+                   "chunk_sample_count": len(records)})
+    path = stage / name
+    atomic_json_write(path, _sealed(header))
+    entries.append(_file_entry(path, role="index"))
+    entries.extend(part_entries)
+    return True
+
+
+def _export_failure_reason(error):
+    """Return a stable, non-sensitive diagnostic code, never an OS path."""
+    if isinstance(error, ValueError):
+        code = str(error)
+        if code in ("DIAGNOSTIC_FILE_TOO_LARGE",
+                    "DIAGNOSTIC_EXPORT_SINGLE_RECORD_TOO_LARGE",
+                    "DIAGNOSTIC_COLLECTION_ALREADY_EXISTS"):
+            return code
+        return "DIAGNOSTIC_EXPORT_INVALID_CANDIDATE"
+    if isinstance(error, (OSError, TypeError)):
+        return "DIAGNOSTIC_EXPORT_WRITE_FAILED"
+    return "DIAGNOSTIC_EXPORT_FAILED"
 
 
 def _finite(value):
@@ -877,15 +974,17 @@ class EvidenceDiagnosticCollector:
             target = self.output_root / collection_id
             if target.exists():
                 raise ValueError("DIAGNOSTIC_COLLECTION_ALREADY_EXISTS")
-            target.mkdir(parents=True)
+            self.output_root.mkdir(parents=True, exist_ok=True)
+            stage = Path(tempfile.mkdtemp(prefix=f".{collection_id}.",
+                                          suffix=".partial", dir=self.output_root))
             documents = self._candidate_documents(rows)
             entries = []
+            chunked = False
             for name, document in documents.items():
-                atomic_json_write(target / name, document)
-                entries.append({"name": name, "sha256": hashlib.sha256(
-                    (target / name).read_bytes()).hexdigest()})
+                chunked |= _write_candidate_document(stage, name, document, entries)
             manifest = _sealed({
-                "schema_version": 1, "kind": "diagnostic_collection_manifest",
+                "schema_version": 2 if chunked else 1,
+                "kind": "diagnostic_collection_manifest",
                 "collection_id": collection_id, "purpose": self._purpose,
                 "created_at_utc": _utc_now(), "sample_count": len(rows),
                 "dropped_samples": self._dropped, "files": entries,
@@ -895,10 +994,13 @@ class EvidenceDiagnosticCollector:
                 "trailer_axle_replay_candidate_complete": False,
                 "confirmed": False, "runtime_authorized": False,
             })
-            atomic_json_write(target / "manifest.json", manifest)
+            atomic_json_write(stage / "manifest.json", manifest)
+            if target.exists():
+                raise ValueError("DIAGNOSTIC_COLLECTION_ALREADY_EXISTS")
+            os.rename(stage, target)
         except (OSError, ValueError, TypeError) as error:
             with self._lock:
-                self._state, self._reason = "INSUFFICIENT_EVIDENCE", "DIAGNOSTIC_EXPORT_FAILED:" + type(error).__name__
+                self._state, self._reason = "INSUFFICIENT_EVIDENCE", _export_failure_reason(error)
             self._publish()
             return
         with self._lock:
@@ -939,19 +1041,32 @@ def inspect_collection(path):
     """Offline integrity check. It can never return driving authorization."""
     root = Path(path)
     manifest = read_json(root / "manifest.json")
-    if not _verify_seal(manifest) or manifest.get("runtime_authorized") is not False:
+    if (not _verify_seal(manifest) or manifest.get("runtime_authorized") is not False
+            or manifest.get("confirmed") is not False
+            or manifest.get("schema_version") not in (1, 2)):
         raise ValueError("INVALID_DIAGNOSTIC_MANIFEST")
-    for entry in manifest.get("files", ()):
-        target = (root / entry["name"]).resolve()
-        if not target.is_relative_to(root.resolve()) or target == root.resolve():
+    entries = manifest.get("files")
+    if not isinstance(entries, list) or not entries:
+        raise ValueError("INVALID_DIAGNOSTIC_MANIFEST")
+    values = {}
+    for entry in entries:
+        if not isinstance(entry, dict) or not isinstance(entry.get("name"), str):
+            raise ValueError("INVALID_DIAGNOSTIC_MANIFEST")
+        name = entry["name"]
+        target = (root / name).resolve()
+        if (name in values or not target.is_relative_to(root.resolve())
+                or target == root.resolve() or target.parent != root.resolve()):
             raise ValueError("DIAGNOSTIC_MANIFEST_PATH_ESCAPE")
-        if (not target.is_file()
+        if (not target.is_file() or target.stat().st_size > MAX_DIAGNOSTIC_FILE_BYTES
                 or hashlib.sha256(target.read_bytes()).hexdigest() != entry["sha256"]):
             raise ValueError("DIAGNOSTIC_FILE_INTEGRITY_MISMATCH")
         value = read_json(target)
         if (not _verify_seal(value) or value.get("confirmed") is not False
                 or value.get("runtime_authorized") is not False):
             raise ValueError("DIAGNOSTIC_CANDIDATE_WAS_PROMOTED")
+        values[name] = value
+    if manifest["schema_version"] == 2:
+        _inspect_chunked_collection(root, manifest, entries, values)
     return {"integrity_valid": True, "file_count": len(manifest["files"]),
             "sample_count": manifest["sample_count"], "confirmed": False,
             "runtime_authorized": False,
@@ -960,3 +1075,92 @@ def inspect_collection(path):
             "trailer_axle_replay_candidate_complete": bool(
                 manifest.get("trailer_axle_replay_candidate_complete", False)),
             "qualification": "READY_FOR_OFFLINE_REVIEW"}
+
+
+def _inspect_chunked_collection(root, manifest, entries, values):
+    expected_names = {"manifest.json", *(entry["name"] for entry in entries)}
+    if {p.name for p in root.iterdir()} != expected_names:
+        raise ValueError("DIAGNOSTIC_FILE_SET_MISMATCH")
+    index = 0
+    raw_count = None
+    while index < len(entries):
+        entry = entries[index]
+        name = entry["name"]
+        document = values[name]
+        role = entry.get("role")
+        if role == "document":
+            if document.get("chunked") is True or name not in (
+                    set(CHUNKABLE_DOCUMENT_FIELDS) | {
+                        "body-profile-candidate.json",
+                        "configuration-identity-candidate.json",
+                        "surface-survey-candidate.json", "identity-binding.json"}):
+                raise ValueError("DIAGNOSTIC_CHUNK_ORDER_MISMATCH")
+            index += 1
+            continue
+        if role != "index" or name not in CHUNKABLE_DOCUMENT_FIELDS:
+            raise ValueError("DIAGNOSTIC_CHUNK_ORDER_MISMATCH")
+        field = CHUNKABLE_DOCUMENT_FIELDS[name]
+        count = document.get("chunk_count")
+        if (document.get("chunked") is not True or document.get("record_field") != field
+                or type(count) is not int or count <= 0
+                or type(document.get("chunk_sample_count")) is not int):
+            raise ValueError("DIAGNOSTIC_CHUNK_INDEX_INVALID")
+        total = 0
+        last_sequence = last_time = last_frame = None
+        for order in range(count):
+            index += 1
+            if index >= len(entries):
+                raise ValueError("DIAGNOSTIC_CHUNK_MISSING")
+            part = entries[index]
+            expected_name = f"{name[:-5]}.part-{order:04d}.json"
+            if (part.get("role") != "chunk" or part.get("name") != expected_name
+                    or part.get("parent_name") != name
+                    or part.get("record_field") != field
+                    or part.get("order") != order
+                    or part.get("start_index") != total):
+                raise ValueError("DIAGNOSTIC_CHUNK_ORDER_MISMATCH")
+            chunk = values[expected_name]
+            records = chunk.get("records")
+            if (not isinstance(records, list) or not records
+                    or chunk.get("kind") != "diagnostic_record_chunk"
+                    or chunk.get("schema_version") != 2
+                    or chunk.get("confirmed") is not False
+                    or chunk.get("runtime_authorized") is not False):
+                raise ValueError("DIAGNOSTIC_CHUNK_INVALID")
+            for key in ("parent_name", "record_field", "order", "start_index",
+                        "sample_count", "first_sdk_frame_us", "last_sdk_frame_us",
+                        "first_sequence", "last_sequence"):
+                if part.get(key) != chunk.get(key):
+                    raise ValueError("DIAGNOSTIC_CHUNK_METADATA_MISMATCH")
+            if chunk["sample_count"] != len(records):
+                raise ValueError("DIAGNOSTIC_CHUNK_COUNT_MISMATCH")
+            first, last = records[0], records[-1]
+            if not all(isinstance(row, dict) for row in records):
+                raise ValueError("DIAGNOSTIC_CHUNK_INVALID")
+            for key, record_key in (("first_sdk_frame_us", "sdk_frame_us"),
+                                    ("last_sdk_frame_us", "sdk_frame_us"),
+                                    ("first_sequence", "sequence"),
+                                    ("last_sequence", "sequence")):
+                row = first if key.startswith("first") else last
+                if chunk[key] != row.get(record_key):
+                    raise ValueError("DIAGNOSTIC_CHUNK_METADATA_MISMATCH")
+            if name == "automatic-observations.json":
+                for row in records:
+                    sequence = row.get("sequence")
+                    frame = row.get("sdk_frame_us")
+                    captured = row.get("captured_at_s")
+                    if (type(sequence) is not int or type(frame) is not int
+                            or not _finite(captured)
+                            or (last_sequence is not None and sequence <= last_sequence)
+                            or (last_frame is not None and frame <= last_frame)
+                            or (last_time is not None and captured <= last_time)):
+                        raise ValueError("DIAGNOSTIC_CHUNK_TIME_ORDER_MISMATCH")
+                    last_sequence, last_frame, last_time = sequence, frame, captured
+            total += len(records)
+        if total != document["chunk_sample_count"]:
+            raise ValueError("DIAGNOSTIC_CHUNK_COUNT_MISMATCH")
+        if name == "automatic-observations.json":
+            raw_count = total
+        index += 1
+    if raw_count != manifest.get("sample_count"):
+        raise ValueError("DIAGNOSTIC_CHUNK_COUNT_MISMATCH")
