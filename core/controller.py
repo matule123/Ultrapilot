@@ -162,6 +162,15 @@ class Controller:
             self._key('a', value < -0.1)
             self._key('d', value > 0.1)
 
+    def read_steering_diagnostic(self):
+        """Read-only observation of the SCS mapping, when it owns output."""
+        if self.mode != "SCS_SDK":
+            return {"backend_mode": self.mode,
+                    "status": "SCS_BACKEND_NOT_ACTIVE", "value": None,
+                    "read_started_s": None, "read_completed_s": None}
+        return {"backend_mode": self.mode,
+                **self.scs.read_steering_diagnostic()}
+
     def set_throttle(self, value: float):
         value = max(0.0, min(1.0, value))
         if self.mode == "SCS_SDK":

@@ -323,18 +323,32 @@ class UltraPilotEngine:
                 status.get("accepting_samples", False)),
         })
 
-    def _offer_maneuver_evidence_diagnostic(self, steering, now):
+    def _offer_maneuver_evidence_diagnostic(self, steering, now,
+                                            application_sdk_frame_us=None,
+                                            steering_write_returned_at_s=None):
         """Non-blocking capture; serialization and parsing stay on its worker."""
         diagnostic = getattr(self, "_maneuver_diagnostic_collector", None)
         if diagnostic is None or not diagnostic.should_sample(now):
             return
         from core.navigation.evidence_diagnostics import capture_diagnostic_application
+        read_steering = getattr(self.controller,
+                                "read_steering_diagnostic", None)
+        boundary = {"status": "SCS_READBACK_UNAVAILABLE", "value": None,
+                    "read_started_s": None, "read_completed_s": None}
+        if callable(read_steering):
+            try:
+                boundary = read_steering()
+            except (OSError, TypeError, ValueError, AttributeError):
+                boundary["status"] = "SCS_READ_FAILED"
         self._maneuver_diagnostic_sequence = int(getattr(
             self, "_maneuver_diagnostic_sequence", 0)) + 1
         try:
             diagnostic.offer(capture_diagnostic_application(
-                self.shared_state, steering, now,
-                self._maneuver_diagnostic_sequence))
+                self.shared_state, steering, time.monotonic(),
+                self._maneuver_diagnostic_sequence,
+                steering_boundary=boundary,
+                application_sdk_frame_us=application_sdk_frame_us,
+                steering_write_returned_at_s=steering_write_returned_at_s))
         except (AttributeError, TypeError, ValueError):
             self.shared_state.set(
                 "maneuver_evidence_diagnostic_failure",
@@ -1114,7 +1128,8 @@ class UltraPilotEngine:
             # the driver owns the vehicle. A missing backend command is stored
             # explicitly and can never qualify tracking.
             self._offer_maneuver_evidence_diagnostic(
-                None, self._last_control_flush)
+                None, self._last_control_flush,
+                application_sdk_frame_us=truck_telemetry.get("sdkFrameTimeUs"))
             return
         if self.shared_state.get("telemetry_valid", True) is False:
             # Never keep flushing the last acceleration/steering intent after
@@ -1204,13 +1219,16 @@ class UltraPilotEngine:
         })
 
         self.controller.set_steering(steering)
+        steering_write_returned_at_s = time.monotonic()
         self.controller.set_throttle(throttle)
         self.controller.set_brake(brake)
         self._last_control_flush = time.monotonic()
         # O(1), non-blocking offer after the physical backend call. The
         # diagnostics worker owns parsing, hashing and every disk write.
         self._offer_maneuver_evidence_diagnostic(
-            steering, self._last_control_flush)
+            steering, self._last_control_flush,
+            application_sdk_frame_us=truck_telemetry.get("sdkFrameTimeUs"),
+            steering_write_returned_at_s=steering_write_returned_at_s)
         recorder = getattr(self, "_maneuver_tracking_recorder", None)
         if recorder is not None and active_reference.get("mode") == "local_maneuver":
             from core.navigation.tracking_evidence import capture_application

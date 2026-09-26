@@ -386,6 +386,8 @@ def test_moving_command_binding_completes_only_after_parked_geometry(tmp_path):
     for index in range(7, 30):
         collector._ingest(moving_trailer_capture(index))
     collector.finalize()
+    final_status = collector.status()
+    assert final_status["state"] == "READY_FOR_OFFLINE_REVIEW", final_status
     target = root(tmp_path) / "trailer-axle-03"
     result = inspect_collection(target)
     assert result["trailer_axle_replay_channels_observed"] is True

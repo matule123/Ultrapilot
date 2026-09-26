@@ -254,9 +254,15 @@ class DiagnosticCapture:
     trailer_articulation_rad: float | None
     surface_token: object
     ground_reference: object
+    steering_boundary: dict | None = None
+    application_sdk_frame_us: int | None = None
+    steering_write_returned_at_s: float | None = None
 
 
-def capture_diagnostic_application(state, steering, now, sequence):
+def capture_diagnostic_application(state, steering, now, sequence, *,
+                                   steering_boundary=None,
+                                   application_sdk_frame_us=None,
+                                   steering_write_returned_at_s=None):
     """Take a bounded snapshot after the physical backend call returned."""
     telemetry = state.get("telemetry", {}) or {}
     truck = telemetry.get("truck", {}) or {}
@@ -267,7 +273,7 @@ def capture_diagnostic_application(state, steering, now, sequence):
         _finite(steering),
         bool(state.get("autopilot_active", False)),
         bool(state.get("telemetry_valid", False)),
-        _pick(truck, ("sdkFrameTimeUs", "speed", "gameSteer", "rotation",
+        _pick(truck, ("sdkFrameTimeUs", "speed", "userSteer", "gameSteer", "rotation",
                       "x", "y", "z", "pose_valid", "roadWheelAnglesRad",
                       "yawRateRadS", "yawRateValid")),
         state.get("vehicle_profile_snapshot"),
@@ -286,6 +292,9 @@ def capture_diagnostic_application(state, steering, now, sequence):
                "observation_delay_s", "source")),
         state.get("trailer_articulation"), state.get("maneuver_surface_token"),
         state.get("maneuver_ground_reference"),
+        _pick(steering_boundary, ("backend_mode", "status", "value", "read_started_s",
+                                  "read_completed_s")),
+        application_sdk_frame_us, steering_write_returned_at_s,
     )
 
 
@@ -670,6 +679,15 @@ class EvidenceDiagnosticCollector:
             "lane": capture.lane, "reference": capture.reference,
             "actuator_calibration": capture.actuator_calibration,
             "engine_steer": capture.engine_steer,
+            "steering_boundary": {
+                **(capture.steering_boundary or {}),
+                "application_sdk_frame_us": capture.application_sdk_frame_us,
+                "steering_write_returned_at_s": capture.steering_write_returned_at_s,
+                "dll_consumed_value": None,
+                "physical_axis_value": None,
+                "dll_consumption_observed": False,
+            },
+            "user_steer": capture.truck.get("userSteer"),
             "executor": capture.applied_target,
             "command_binding_proven": command_bound,
             "calculation_sdk_frame_us": source.get("sdk_frame_us"),

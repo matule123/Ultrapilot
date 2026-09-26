@@ -15,7 +15,9 @@ wrong input, so the order is intentionally fixed.
 """
 
 import logging
+import math
 import struct
+import time
 
 # (name, 'f' for float / '?' for bool) in the exact order the plugin lays them
 # out in Local\SCSControls.  Only steering/aforward/abackward/clutch are used by
@@ -197,6 +199,25 @@ class SCSControlsWriter:
         if self.invert_steering:
             v = -v
         self._write_float("steering", v)
+
+    def read_steering_diagnostic(self):
+        """Observe the mapped float; this does not prove the DLL consumed it."""
+        started = time.monotonic()
+        result = {"status": "SCS_MAPPING_NOT_CONNECTED", "value": None,
+                  "read_started_s": started, "read_completed_s": started}
+        if not self.connected or self._buf is None:
+            return result
+        try:
+            self._buf.seek(self._offsets["steering"])
+            raw = self._buf.read(_SIZE["f"])
+            value = struct.unpack("f", raw)[0]
+            result["status"] = ("SHARED_MEMORY_READBACK_ONLY"
+                                if math.isfinite(value) else "SCS_READ_NONFINITE")
+            result["value"] = value if math.isfinite(value) else None
+        except (OSError, ValueError, struct.error, AttributeError):
+            result["status"] = "SCS_READ_FAILED"
+        result["read_completed_s"] = time.monotonic()
+        return result
 
     def set_throttle(self, value: float):
         self._write_float("aforward", max(0.0, min(1.0, value)))
