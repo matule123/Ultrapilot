@@ -176,6 +176,55 @@ class RealMapLaneDataTests(unittest.TestCase):
             (selected.centerline[0].x, selected.centerline[0].y,
              selected.centerline[0].z)), 0.01)
 
+    def test_2026_09_27_rolling_prefix_locates_proven_parallel_prefab_lane(self):
+        """The truck is 1.63 m past the incoming road, on PPD curve 2.
+
+        The navNode representative is curve 3, 4.48 m away. The first GPS
+        UID is the prefab exit, so the rolling prefix must expose curve 2
+        without projecting the truck back onto the exhausted road lane.
+        """
+        gps = (5337536180336860780, 5337536182220102206,
+               5337536182589199430, 5337536178910797982,
+               5337536182849251078, 5337536178705272641)
+        position = (34697.306701660156, 6.900073528289795,
+                    45871.18849182129)
+        heading = -0.31043674039915814
+        for route in (gps[:3], gps):
+            with self.subTest(gps_uids=len(route)):
+                match = LaneLocator(self.net).locate(
+                    position, heading, route)
+                self.assertIsNotNone(match)
+                self.assertEqual(match.lane_id.prefab_token,
+                                 "dlc_blkw_94")
+                self.assertEqual(match.lane_id.connector_path, (2,))
+                path, returned = self.net.build_lane_path(
+                    route, (position[0], position[2]), heading,
+                    altitude=position[1], start_match=match)
+                self.assertTrue(path.valid, path.failure_reason)
+                self.assertEqual(returned.lane_id, match.lane_id)
+                self.assertEqual(path.segments[0].lane_id.connector_path,
+                                 (2,))
+                self.assertGreater(len(path.points), 2)
+                trajectory = build_lane_trajectory(path)
+                self.assertTrue(trajectory.valid, trajectory.failure_reason)
+                validation = validate_lane_trajectory(trajectory)
+                self.assertTrue(validation.valid, validation.failure_reason)
+
+        # A stale match pinned to the exhausted road is never accepted as
+        # authority merely because the prefix topology exists.
+        incoming = next(lane for lane in self.net._build_lane_segments(
+            self.net._road_segment_by_uid[5337536096001983137])
+            if lane.lane_id.direction == 1 and lane.lane_index == 1)
+        stale_match = replace(match, lane_id=incoming.lane_id,
+                              point=incoming.centerline[-1],
+                              segment_index=len(incoming.centerline) - 2)
+        rejected, _ = self.net.build_lane_path(
+            gps[:3], (position[0], position[2]), heading,
+            altitude=position[1], start_match=stale_match)
+        self.assertFalse(rejected.valid)
+        self.assertEqual(rejected.points, ())
+        self.assertIn("no forward geometry", rejected.failure_reason)
+
     def test_2026_07_31_parallel_lane_continues_across_two_prefabs(self):
         """route_build_id=0cc3209ceb5245418158a5f76eae2410.
 

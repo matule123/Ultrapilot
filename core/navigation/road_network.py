@@ -24,7 +24,7 @@ from dataclasses import replace
 
 from core.navigation.lane_model import (
     GpsCorridor, GpsCorridorEdge, LaneChangeProof, LaneConnection, LaneId,
-    LaneLocator, LanePath, LanePoint, LaneSegment,
+    LaneLocator, LaneLocatorConfig, LanePath, LanePoint, LaneSegment,
 )
 from core.navigation.route_diagnostics import (
     lane_id_payload, safe_diagnostic_call,
@@ -1764,8 +1764,46 @@ class RoadNetwork:
             for start_uid in uids:
                 if start_uid == route_start_uid:
                     continue
-                for option in self._prefab_connector_options(
-                        instance, start_uid, route_start_uid):
+                representative_options = self._prefab_connector_options(
+                    instance, start_uid, route_start_uid)
+                options = list(representative_options)
+                # A navNode connection records one representative curve, but
+                # reciprocal PPD lane links can prove its parallel sibling.
+                # Consider that sibling only when no representative lies
+                # within the normal fresh-acquisition distance. This is the
+                # rolling GPS entrance, not permission to choose another arm.
+                acquisition_limit = LaneLocatorConfig().max_lateral_m
+                representative_near = False
+                for option in representative_options:
+                    points = self._prefab_curve_chain_3d(instance, option)
+                    if len(points) < 2:
+                        continue
+                    projection = LaneLocator._project(
+                        position, make_segment(start_uid, option, points))
+                    if (projection is not None
+                            and projection[0] <= acquisition_limit):
+                        representative_near = True
+                        break
+                sibling_options = ()
+                if representative_options and not representative_near:
+                    nearby_siblings = []
+                    for option in self._prefab_parallel_lane_options(
+                            instance, start_uid, route_start_uid):
+                        if option in representative_options:
+                            continue
+                        points = self._prefab_curve_chain_3d(instance, option)
+                        if len(points) < 2:
+                            continue
+                        projected = LaneLocator._project(
+                            position, make_segment(start_uid, option,
+                                                   points))
+                        if (projected is not None
+                                and projected[0] <= acquisition_limit):
+                            nearby_siblings.append(option)
+                    if len(nearby_siblings) == 1:
+                        sibling_options = tuple(nearby_siblings)
+                        options.extend(sibling_options)
+                for option in options:
                     points = self._prefab_curve_chain_3d(instance, option)
                     if len(points) < 2:
                         continue
@@ -1779,7 +1817,8 @@ class RoadNetwork:
                     terminal = (option[-1],)
                     terminal_points = self._prefab_curve_chain_3d(
                         instance, terminal)
-                    if len(terminal_points) >= 2:
+                    if (option not in sibling_options
+                            and len(terminal_points) >= 2):
                         terminal_segment = make_segment(
                             route_start_uid, terminal, terminal_points)
                         terminal_projection = LaneLocator._project(

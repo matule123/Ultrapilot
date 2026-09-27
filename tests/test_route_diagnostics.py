@@ -59,6 +59,12 @@ class RouteDiagnosticFormatTests(unittest.TestCase):
             with self.subTest(expected):
                 self.assertEqual(classify_failure(phase, reason, details), expected)
 
+    def test_exhausted_first_lane_is_localization_failure_not_internal_error(self):
+        self.assertEqual(classify_failure(
+            "LanePath",
+            "confirmed truck position leaves no forward geometry on the "
+            "first GPS lane"), "LOCALIZATION_NO_MATCH")
+
     def test_failed_record_has_complete_versioned_shape(self):
         diagnostic = RouteBuildDiagnostics(
             17, (10, 20), (100.0, 5.0, 200.0), 1.25,

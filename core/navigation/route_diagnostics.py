@@ -107,6 +107,8 @@ def classify_failure(phase: str, reason: str, details=None) -> str:
         if outcome == "ambiguous" or "ambiguous" in reason:
             return "LOCALIZATION_AMBIGUOUS"
         return "LOCALIZATION_NO_MATCH"
+    if "no forward geometry on the first gps lane" in reason:
+        return "LOCALIZATION_NO_MATCH"
     # A missing PPD is tied to a GPS UID pair as well.  Classify the specific
     # dataset defect before the generic UID rule so diagnostics do not hide
     # the prefab token which made the corridor unavailable.
