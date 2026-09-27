@@ -29,6 +29,8 @@ _TECHNICAL_LOG_MARKERS = (
     "active_lane_id", "lane_match", "locator_score", "trajectory_score",
     "autopilot: active=", "lane_off=", "nav_steer=", "steer_out=",
     "lane_revision=", "confidence=", "reject=",
+    "technical_reason=", "route-build failed unexpectedly:",
+    "route-build result", "route-build phase-result",
 )
 _PROCESS_STARTED_RE = re.compile(r"^Process \w+ started \(PID: \d+\)$", re.I)
 
@@ -192,14 +194,14 @@ class DynamicIsland(QWidget):
         active = bool(state.get("navigation_recalculating", False))
         progress = float(state.get("navigation_progress", 0.0) or 0.0)
         status = state.get("navigation_status", "") or "Prepočítavam navigáciu…"
+        failed_status = any(marker in status.lower() for marker in (
+            "nepodarilo", "nie je na", "nenašiel", "mimo gps",
+            "no candidate", "invalid", "failed", "chyba", "zlyhal"))
         if active:
             self._navigation_was_active = True
             self.time_lbl.setText("NAV")
             self.msg_lbl.setText(status)
             self.msg_lbl.setStyleSheet("color:#047857;font-size:12px;font-weight:700;border:none;")
-            failed_status = any(marker in status.lower() for marker in (
-                "nepodarilo", "nie je na", "nenašiel", "mimo gps",
-                "no candidate", "invalid", "failed"))
             self.src_lbl.setText("" if failed_status
                                  else f"{int(progress * 100)}%")
             self.progress.setValue(int(progress * 100))
@@ -211,7 +213,8 @@ class DynamicIsland(QWidget):
             self._navigation_was_active = False
             self.time_lbl.setText("NAV")
             self.msg_lbl.setText(status or "Trasa je pripravená")
-            succeeded = progress >= 0.99 or "pripraven" in status.lower()
+            succeeded = (not failed_status and
+                         (progress >= 0.99 or "pripraven" in status.lower()))
             self.src_lbl.setText("100%" if succeeded else "CHYBA")
             self.progress.setValue(100 if succeeded else max(0, int(progress * 100)))
             self.msg_lbl.setStyleSheet(

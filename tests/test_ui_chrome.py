@@ -271,6 +271,12 @@ class UiChromeTests(unittest.TestCase):
         self.assertIsNone(_friendly_activity_message("Launching Engine Process..."))
         self.assertEqual(_friendly_activity_message("Loading road network"),
                          "Načítavam mapu ciest")
+        self.assertIsNone(_friendly_activity_message(
+            "Navigation calculation failed: code=INTERNAL_ERROR "
+            "technical_reason=ValueError at C:\\Users\\driver\\private.sii"))
+        self.assertIsNone(_friendly_activity_message(
+            "route-build failed unexpectedly: ValueError at "
+            "C:\\Users\\driver\\private.sii"))
 
     def test_performance_popover_has_transparent_rounded_surface(self):
         overlay = PerfOverlay(State({"ui_theme": "light"}))
@@ -392,6 +398,25 @@ class UiChromeTests(unittest.TestCase):
         self.assertTrue(island._poll_navigation())
         self.assertEqual(island.src_lbl.text(), "")
         self.assertFalse(island.progress.isVisible())
+        island.close()
+        host.close()
+
+    def test_dynamic_island_keeps_route_failure_red_at_full_progress(self):
+        host = QWidget()
+        host.state = State({
+            "navigation_recalculating": True,
+            "navigation_progress": 1.0,
+            "navigation_status": (
+                "Vnútorná chyba pri tvorbe riadiacej trajektórie "
+                "(ValueError). Presný dôvod je v logu."),
+        })
+        island = DynamicIsland(host)
+        self.assertTrue(island._poll_navigation())
+        self.assertEqual(island.src_lbl.text(), "")
+        host.state.set("navigation_recalculating", False)
+        self.assertTrue(island._poll_navigation())
+        self.assertEqual(island.src_lbl.text(), "CHYBA")
+        self.assertIn("tvorbe riadiacej trajektórie", island.msg_lbl.text())
         island.close()
         host.close()
 

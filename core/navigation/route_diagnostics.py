@@ -60,7 +60,21 @@ FRIENDLY_FAILURE_MESSAGES = {
     "GEOMETRY_ELEVATION_JUMP": "Výškový priebeh GPS trasy nie je platný.",
     "TRAJECTORY_VALIDATION_FAILED": "GPS trasu sa nepodarilo bezpečne overiť.",
     "STALE_REVISION": "GPS cieľ sa počas výpočtu zmenil.",
-    "INTERNAL_ERROR": "Výpočet GPS trasy sa nepodarilo dokončiť.",
+    "INTERNAL_ERROR": (
+        "Pri výpočte GPS trasy nastala vnútorná chyba. "
+        "Presný technický dôvod je v logu."),
+}
+
+_FAILURE_PHASE_LABELS = {
+    "resolve_gps_corridor": "overovaní GPS spojenia",
+    "LaneLocator": "určovaní aktuálneho pruhu",
+    "select_lane_sequence": "výbere jazdných pruhov",
+    "connect_lane_sequence": "spájaní jazdných pruhov",
+    "LanePath": "zostavovaní trasy v pruhu",
+    "build_lane_trajectory": "tvorbe riadiacej trajektórie",
+    "validate_lane_trajectory": "overovaní riadiacej trajektórie",
+    "route_build": "zostavovaní GPS trasy",
+    "publish_snapshot": "publikovaní GPS trasy",
 }
 
 
@@ -145,6 +159,19 @@ def classify_failure(phase: str, reason: str, details=None) -> str:
 def friendly_failure_message(code: str) -> str:
     return FRIENDLY_FAILURE_MESSAGES.get(
         str(code or ""), FRIENDLY_FAILURE_MESSAGES["INTERNAL_ERROR"])
+
+
+def route_failure_display_message(code: str, phase=None, technical_reason=None):
+    """Explain an internal failure without leaking raw exception text to UI."""
+    if code != "INTERNAL_ERROR":
+        return friendly_failure_message(code)
+    phase_label = _FAILURE_PHASE_LABELS.get(str(phase or ""),
+                                            "výpočte GPS trasy")
+    match = re.match(r"^([A-Za-z][A-Za-z0-9_]*(?:Error|Exception))\b",
+                     str(technical_reason or ""))
+    exception = f" ({match.group(1)})" if match else ""
+    return (f"Vnútorná chyba pri {phase_label}{exception}. "
+            "Presný dôvod je v logu; autopilot trasu nepoužije.")
 
 
 def lane_id_payload(lane_id):
@@ -320,7 +347,8 @@ class RouteBuildDiagnostics:
             self.record["failure"] = {
                 "code": code,
                 "phase": str(phase),
-                "friendly_message": friendly_failure_message(code),
+                "friendly_message": route_failure_display_message(
+                    code, phase, reason),
                 "technical_reason": str(reason or ""),
             }
         self._merge_failure_details(details)

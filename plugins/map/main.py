@@ -17,7 +17,7 @@ from core.navigation.evidence_worker import (
 )
 from core.navigation.route_diagnostics import (
     RouteBuildDiagnostics, classify_failure, dataset_fingerprint,
-    export_anonymized_failure, friendly_failure_message,
+    export_anonymized_failure, route_failure_display_message,
     lane_change_payload, safe_diagnostic_call,
 )
 from core.navigation.runtime_preflight import CONFIDENCE_THRESHOLD
@@ -620,8 +620,10 @@ class Plugin(BasePlugin):
                 "failure") or {}
         failure_code = failure.get("code") or classify_failure(
             "route_build", reason)
+        failure_phase = failure.get("phase") or "route_build"
         friendly = (failure.get("friendly_message")
-                    or friendly_failure_message(failure_code))
+                    or route_failure_display_message(
+                        failure_code, failure_phase, reason))
         safe_diagnostic_call(diagnostic, "start_phase", "publish_snapshot", {
             "valid": False, "failure_code": failure_code,
         })
@@ -648,8 +650,11 @@ class Plugin(BasePlugin):
                 current, self._lane_match)
             try:
                 logging.error(
-                    "Navigation horizon refresh failed; preserving revision %s: %s",
-                    current.get("revision"), reason)
+                    "Navigation horizon refresh failed: code=%s phase=%s "
+                    "build=%s revision=%s technical_reason=%s; "
+                    "preserving previous revision %s",
+                    failure_code, failure_phase, diagnostic.build_id,
+                    diagnostic.revision, reason, current.get("revision"))
             except Exception:
                 pass
             self._remember_route_diagnostic(diagnostic, "failed")
@@ -658,7 +663,8 @@ class Plugin(BasePlugin):
             reason, uids, status or friendly,
             revision=diagnostic.revision,
             route_build_id=diagnostic.build_id,
-            failure_code=failure_code)
+            failure_code=failure_code,
+            failure_phase=failure_phase)
         safe_diagnostic_call(diagnostic, "finish_phase", "publish_snapshot",
                              details={
             "published_revision": snapshot["revision"], "valid": False,
@@ -1068,7 +1074,8 @@ class Plugin(BasePlugin):
     def _publish_invalid_lane_trajectory(self, reason, uids=(), status=None,
                                          log_failure=True, revision=None,
                                          route_build_id=None,
-                                         failure_code=None):
+                                         failure_code=None,
+                                         failure_phase=None):
         if route_build_id is None:
             # An external authority/session/teleport invalidation supersedes a
             # previously completed input. A subsequent identical UID window
@@ -1106,9 +1113,11 @@ class Plugin(BasePlugin):
             "navigation_failure_reason": snapshot["failure_reason"],
             "navigation_source": navigation_source,
         })
+        display_failure = route_failure_display_message(
+            failure_code, failure_phase, reason)
         if status:
             technical = str(status)
-            friendly = (friendly_failure_message(failure_code)
+            friendly = (display_failure
                         if failure_code else
                         "Trasu sa nepodarilo bezpečne zostaviť"
                         if any(word in technical.lower() for word in
@@ -1123,9 +1132,12 @@ class Plugin(BasePlugin):
                 self._last_logged_lane_failure = failure_signature
                 try:
                     logging.error(
-                        "Navigation calculation failed: %s "
-                        "(GPS UID count=%d, revision=%d)",
-                        technical_reason, len(tuple(uids)), revision)
+                        "Navigation calculation failed: code=%s phase=%s "
+                        "build=%s revision=%d gps_uid_count=%d "
+                        "technical_reason=%s",
+                        failure_code or "UNCLASSIFIED",
+                        failure_phase or "unclassified", route_build_id,
+                        revision, len(tuple(uids)), technical_reason)
                 except Exception:
                     pass
                 self._navigation_log_seq += 1
@@ -1134,7 +1146,7 @@ class Plugin(BasePlugin):
                     "navigation_log_event": {
                         "seq": self._navigation_log_seq,
                         "level": "ERROR",
-                        "message": (friendly_failure_message(failure_code)
+                        "message": (display_failure
                                     if failure_code else
                                     "Výpočet navigácie zlyhal. Podrobnosti sú v logu."),
                     },

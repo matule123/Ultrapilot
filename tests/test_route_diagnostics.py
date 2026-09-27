@@ -9,6 +9,7 @@ from core.navigation.lane_trajectory import build_lane_trajectory
 from core.navigation.route_diagnostics import (
     FAILURE_CODES, RouteBuildDiagnostics, anonymize_failure_record,
     classify_failure, export_anonymized_failure,
+    route_failure_display_message,
 )
 from tests.test_lane_authority_integration import State, build_map_plugin
 from tests.test_lane_locator import FakeNetwork, lane
@@ -17,6 +18,37 @@ from UI.map_page import MapPage
 
 
 class RouteDiagnosticFormatTests(unittest.TestCase):
+    def test_internal_failure_shows_phase_without_leaking_exception_detail(self):
+        reason = ("ValueError while building trajectory: secret path "
+                  "C:\\Users\\driver\\private.sii")
+        message = route_failure_display_message(
+            "INTERNAL_ERROR", "build_lane_trajectory", reason)
+        self.assertIn("tvorbe riadiacej trajektórie", message)
+        self.assertIn("ValueError", message)
+        self.assertNotIn("private.sii", message)
+        self.assertNotIn("nepodarilo dokončiť", message)
+
+    def test_internal_failure_reaches_navigation_status_and_precise_log(self):
+        plugin, sdk, _point = build_map_plugin()
+        diagnostic = RouteBuildDiagnostics(
+            99, (1, 2), (0.0, 3.0, 0.0), 0.0, {},
+            route_build_id="failed-build-phase")
+        reason = "ValueError while building trajectory: source geometry is empty"
+        diagnostic.fail_phase("build_lane_trajectory", reason,
+                              {"failure_code": "INTERNAL_ERROR"})
+        with self.assertLogs(level="ERROR") as captured:
+            plugin._fail_route_build(diagnostic, reason, (1, 2))
+        message = sdk.get("navigation_status")
+        self.assertIn("tvorbe riadiacej trajektórie", message)
+        self.assertEqual(message, sdk.get("navigation_log_event")["message"])
+        self.assertEqual(message, sdk.get(
+            "route_diagnostic_last_result")["message"])
+        log = "\n".join(captured.output)
+        self.assertIn("code=INTERNAL_ERROR", log)
+        self.assertIn("phase=build_lane_trajectory", log)
+        self.assertIn("build=failed-build-phase", log)
+        self.assertIn(reason, log)
+
     def test_every_stable_failure_code_has_a_deterministic_classifier_case(self):
         cases = {
             "DATASET_MISSING_PREFAB": (
