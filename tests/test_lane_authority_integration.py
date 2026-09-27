@@ -441,6 +441,9 @@ class LaneAuthorityIntegrationTests(unittest.TestCase):
         plugin, sdk, _ = build_map_plugin()
         snapshot = sdk.get("lane_trajectory")
         self.assertTrue(snapshot["valid"], snapshot["failure_reason"])
+        self.assertEqual(snapshot["trailer_guidance"]["status"],
+                         "nadchádzanie neaktívne")
+        self.assertFalse(snapshot["trailer_guidance"]["runtime_authorized"])
         self.assertEqual(plugin._lane_route.world_points,
                          [tuple(point) for point in snapshot["points"]])
         self.assertEqual(snapshot["display_points"], snapshot["points"])

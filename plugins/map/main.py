@@ -379,6 +379,7 @@ class Plugin(BasePlugin):
                                    if segment.successors else None),
                 "elevation_layer": int(segment.elevation_layer),
                 "lane_width_m": float(segment.width_m),
+                "lane_width_source": str(segment.width_source),
                 "start_uid": int(segment.start_uid),
                 "end_uid": int(segment.end_uid),
                 "lane_change": lane_change_payload(segment.lane_change),
@@ -1615,6 +1616,16 @@ class Plugin(BasePlugin):
         display_points = [list(point) for point in control_points]
         snapshot = {
             "revision": revision, "valid": True,
+            # Current map widths describe lane placement. They do not prove
+            # a usable lateral corridor for trailer compensation. Candidates
+            # from trailer_guidance stay offline until independent lane-edge
+            # evidence and the existing 5D live gates are available.
+            "trailer_guidance": {
+                "status": "nadchádzanie neaktívne",
+                "reference_mode": "global_lane",
+                "failure_reason": "MISSING_CONFIRMED_USABLE_LANE_CORRIDOR",
+                "runtime_authorized": False,
+            },
             "confidence": float(min(trajectory.confidence, match.confidence)),
             "confidence_components": {
                 "locator": float(match.confidence),
