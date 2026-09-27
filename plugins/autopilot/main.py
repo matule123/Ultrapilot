@@ -33,7 +33,6 @@ BRAKE_RAMP_DOWN = 4.0        # brake releases faster than it engages
 BRAKE_MIN_HOLD = 0.04        # below this, treat brake as zero (avoid flutter)
 THROTTLE_RAMP = 3.0          # throttle slew rate per second
 DRIVE_ENGAGE_SETTLE_S = 0.45 # allow the selector pulse to reach the gearbox
-DRIVE_RETRY_S = 1.50         # retry D without blocking throttle indefinitely
 ENGAGEMENT_DEFAULT_LATERAL_M = 1.10
 ENGAGEMENT_MAX_LATERAL_M = 1.50
 ENGAGEMENT_MAX_HEADING_RAD = math.radians(18.0)
@@ -1123,10 +1122,6 @@ class Plugin(BasePlugin):
         reverse_signal = bool(float(speed) < -0.10 or gear < 0)
         if autopilot_engaged and reverse_signal and not self._reverse_recovery:
             self._reverse_recovery = True
-            # A reverse ratio reached while UltraPilot itself was holding the
-            # service brake is ETS2's automatic brake-to-reverse gesture, not
-            # an unexplained driver selection.
-            self._reverse_recovery_owned = bool(self._automatic_brake_stop)
         reversing = bool(autopilot_engaged and
                          (reverse_signal or self._reverse_recovery))
         if reversing:
@@ -1140,59 +1135,32 @@ class Plugin(BasePlugin):
                     "navigation_status", "Zastavujem neočakávanú spiatočku")
                 self._publish_control_tags(speed_kmh, False)
                 return
-            if gear < 0 and self._reverse_recovery_owned:
-                # Release the brake gesture before requesting D. Keep
-                # throttle at zero until telemetry proves reverse is gone.
-                self.sdk.controller.set_brake(0.0)
-                self._last_brake = 0.0
-                now = time.monotonic()
-                if (self._drive_request_t <= 0.0
-                        or now - self._drive_request_t >= DRIVE_RETRY_S):
-                    self.sdk.controller.select_drive(True)
-                    self._drive_request_t = now
-                self.sdk.shared_state.set(
-                    "navigation_status",
-                    "Obnovujem jazdu dopredu po automatickej spiatočke")
-                self._publish_control_tags(speed_kmh, False)
-                return
-            if gear < 0:
-                # A reverse selection not caused by our own brake remains a
-                # genuine fail-closed event.
-                self.sdk.controller.set_brake(0.0)
-                self.sdk.controller.select_drive(False)
-                self._last_brake = 0.0
-                self._publish_automatic_disable("unexpected reverse gear")
-                logging.warning(
-                    "Autopilot automatically disengaged: unexpected reverse gear")
-                self.sdk.shared_state.set(
-                    "navigation_status", "Autopilot vypnutý po spiatočke")
-                self._reverse_recovery = False
-                self._reverse_recovery_owned = False
-                self._automatic_brake_stop = False
-                self._drive_engage_started = 0.0
-                self._publish_control_tags(speed_kmh, False)
-                return
-            # D/neutral is proven again; continue through the normal drive
-            # handshake without needlessly disabling the autopilot.
+            # The SDK cannot identify which actor selected Reverse. Repeated
+            # D pulses in this state could oscillate the game's selector, so
+            # stop automation rather than trying to recover the gearbox.
+            self.sdk.controller.set_brake(0.0)
+            self.sdk.controller.select_drive(False)
+            self._last_brake = 0.0
+            self._publish_automatic_disable("unexpected reverse gear")
+            logging.warning(
+                "Autopilot automatically disengaged: unexpected reverse gear")
+            self.sdk.shared_state.set(
+                "navigation_status", "Autopilot vypnutý po spiatočke")
             self._reverse_recovery = False
             self._reverse_recovery_owned = False
             self._automatic_brake_stop = False
+            self._drive_engage_started = 0.0
+            self._publish_control_tags(speed_kmh, False)
+            return
 
-        # ``gear`` is the currently engaged ratio, not a reliable automatic
-        # selector mode. Several ETS2 automatic transmissions report gear 0
-        # while stationary in D and engage first gear only after throttle is
-        # applied. Waiting for gear > 0 before allowing any throttle therefore
-        # deadlocks forever: D waits for throttle and autopilot waits for D.
-        # Send one proven momentary D pulse, wait briefly, then continue with
-        # the normal ramped throttle even if the ratio still reads zero. Retry
-        # the selector periodically without re-entering the blocking phase.
+        # A zero engaged ratio cannot prove the automatic selector is in D.
+        # The previous fallback applied throttle after a brief D pulse even
+        # when telemetry still reported gear 0. That can propel an unverified
+        # selector state. Do not use throttle to discover the game's state.
         if autopilot_engaged and speed_kmh < 0.5 and gear == 0:
             now = time.monotonic()
             if self._drive_engage_started <= 0.0:
                 self._drive_engage_started = now
-                self.sdk.controller.select_drive(True)
-                self._drive_request_t = now
-            elif now - self._drive_request_t >= DRIVE_RETRY_S:
                 self.sdk.controller.select_drive(True)
                 self._drive_request_t = now
 
@@ -1217,8 +1185,18 @@ class Plugin(BasePlugin):
                     "navigation_status", "Pripravujem jazdu dopredu")
                 self._publish_control_tags(speed_kmh, settle_nav_active)
                 return
+            self.sdk.controller.set_throttle(0.0)
+            self._last_throttle = 0.0
+            self.sdk.controller.set_brake(0.0)
+            self._last_brake = 0.0
+            self.sdk.controller.select_drive(False)
+            self._drive_engage_started = 0.0
+            self._publish_automatic_disable(
+                "forward gear not confirmed after Drive request")
             self.sdk.shared_state.set(
-                "navigation_status", "Jazda dopredu pripravená")
+                "navigation_status", "Autopilot vypnutý: jazda dopredu nebola potvrdená")
+            self._publish_control_tags(speed_kmh, False)
+            return
         if gear > 0:
             # The engine owns the physical release half of every momentary
             # selector pulse. Publishing False here can overwrite an unconsumed

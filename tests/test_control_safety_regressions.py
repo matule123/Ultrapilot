@@ -166,6 +166,14 @@ class ControlSafetyRegressionTests(unittest.TestCase):
         state.set("nav_steering_debug", {})
         self.assertIn("incomplete",
                       engine._autopilot_activation_rejection_reason())
+        state.set("nav_steering_debug", {
+            "calculation_packet_schema_version": 1,
+            "authority_valid": False,
+            "control_failure": (
+                "live LaneId has no reachable projection on the validated trajectory"),
+        })
+        self.assertIn("live LaneId has no reachable projection",
+                      engine._autopilot_activation_rejection_reason())
         state.set("nav_steering_debug", packet)
         self.assertIn("observation_timestamp is stale",
                       engine._autopilot_activation_rejection_reason())
@@ -288,8 +296,8 @@ class ControlSafetyRegressionTests(unittest.TestCase):
         collision.on_tick(0.05)
         self.assertAlmostEqual(state.get("collision_brake_request"), 0.64)
 
-    def test_brake_to_reverse_is_recovered_to_drive_without_disengaging(self):
-        """Real 10:12:26 stop: our service brake selected R at 0 km/h."""
+    def test_brake_to_reverse_disengages_without_drive_retry(self):
+        """A service-brake stop cannot grant authority to toggle D from R."""
         truck = {"speed": 0.0, "gear": -1}
         state = ready_navigation_state(
             nav_active=True, nav_steering=0.0, system_state="FOLLOW_LANE",
@@ -302,17 +310,21 @@ class ControlSafetyRegressionTests(unittest.TestCase):
         plugin = autopilot(truck, state)
         plugin._automatic_brake_stop = True
         plugin.on_tick(0.05)
-        self.assertTrue(state.get("autopilot_active"))
-        self.assertTrue(plugin._reverse_recovery)
-        self.assertIn(True, plugin.sdk.controller.drive_events)
-        self.assertEqual(plugin.sdk.controller.throttle, 0.0)
-
-        truck["gear"] = 1
-        plugin.on_tick(0.05)
-        self.assertTrue(state.get("autopilot_active"))
+        self.assertFalse(state.get("autopilot_active"))
         self.assertFalse(plugin._reverse_recovery)
-        self.assertNotEqual(
-            state.get("autopilot_disable_reason"), "unexpected reverse gear")
+        self.assertNotIn(True, plugin.sdk.controller.drive_events)
+        self.assertEqual(plugin.sdk.controller.throttle, 0.0)
+        self.assertEqual(state.get("autopilot_disable_reason"),
+                         "unexpected reverse gear")
+
+    def test_observed_reverse_after_automatic_brake_never_retries_drive(self):
+        state = ready_navigation_state()
+        plugin = autopilot({"speed": 0.0, "gear": -1}, state)
+        plugin._automatic_brake_stop = True
+        plugin.on_tick(0.05)
+        self.assertFalse(state.get("autopilot_active"))
+        self.assertEqual(plugin.sdk.controller.throttle, 0.0)
+        self.assertNotIn(True, plugin.sdk.controller.drive_events)
 
     def test_uncommanded_reverse_still_fails_closed(self):
         truck = {"speed": 0.0, "gear": -1}
@@ -746,25 +758,145 @@ class ControlSafetyRegressionTests(unittest.TestCase):
         plugin.on_tick(0.05)
         self.assertEqual(plugin.sdk.controller.drive_events, [True])
 
-    def test_automatic_drive_mode_with_zero_ratio_does_not_deadlock(self):
+    def test_unknown_forward_ratio_never_receives_propulsion_after_selector_settle(self):
+        state = ready_navigation_state()
+        plugin = autopilot({"speed": 0.0, "gear": 0}, state)
+        plugin.on_tick(0.05)
+        plugin._drive_engage_started = time.monotonic() - 1.0
+        plugin._drive_request_t = time.monotonic()
+        plugin.on_tick(0.10)
+        self.assertEqual(plugin.sdk.controller.throttle, 0.0)
+        self.assertEqual(plugin.tags.throttle, 0.0)
+
+    def test_disabled_engine_discards_unconsumed_drive_selector_intent(self):
+        state = State({"autopilot_active": False, CTL_SELECT_DRIVE: True})
+        engine = UltraPilotEngine.__new__(UltraPilotEngine)
+        engine.shared_state = state
+        engine.controller = Controller()
+        engine._was_active = False
+        engine._drive_selector_pressed = False
+        engine._flush_controls()
+        self.assertIsNone(state.get(CTL_SELECT_DRIVE))
+        state.set("autopilot_active", True)
+        state.set("autopilot_control_heartbeat", time.monotonic())
+        state.set("telemetry_valid", True)
+        engine._flush_controls()
+        self.assertNotIn(True, engine.controller.drive_events)
+
+    def test_engine_does_not_flush_positive_throttle_after_gear_turns_reverse(self):
+        state = State({
+            "autopilot_active": True,
+            "autopilot_control_heartbeat": time.monotonic(),
+            "telemetry_valid": True,
+            "telemetry": {"truck": {"gear": -1, "speed": -0.2,
+                                     "sdkFrameTimeUs": 123456}},
+            CTL_STEERING: 0.0, CTL_THROTTLE: 0.4, CTL_BRAKE: 0.0,
+        })
+        engine = UltraPilotEngine.__new__(UltraPilotEngine)
+        engine.shared_state = state
+        engine.controller = Controller()
+        engine._was_active = False
+        engine._drive_selector_pressed = False
+        engine._flush_controls()
+        self.assertEqual(engine.controller.throttle, 0.0)
+        self.assertEqual(state.get(CTL_THROTTLE), 0.0)
+        event = state.get("drive_boundary_event")
+        self.assertEqual(event["action"],
+                         "suppress_unconfirmed_forward_throttle")
+        self.assertEqual(event["sdk_frame_us"], 123456)
+        self.assertEqual(event["observed_gear"], -1)
+
+    def test_engine_stale_gps_packet_blocks_pending_drive_and_throttle(self):
+        state = State({
+            "autopilot_active": True, "navigation_source": "gps_lane",
+            "autopilot_control_heartbeat": time.monotonic(),
+            "telemetry_valid": True,
+            "telemetry": {"truck": {"gear": 1, "speed": 0.0,
+                                     "sdkFrameTimeUs": 234567}},
+            "lane_trajectory": {"valid": True, "revision": 7,
+                                "route_build_id": "incident-build"},
+            "nav_steering_debug": {
+                "controller": "frenet_bicycle",
+                "calculation_packet_schema_version": 1,
+                "authority_valid": True, "authority_revision": 7,
+                "route_build_id": "incident-build",
+                "observation_timestamp": time.monotonic() - 0.7,
+                "computed_at": time.monotonic() - 0.1,
+            },
+            CTL_SELECT_DRIVE: True,
+            CTL_STEERING: 0.0, CTL_THROTTLE: 0.4, CTL_BRAKE: 0.0,
+        })
+        engine = UltraPilotEngine.__new__(UltraPilotEngine)
+        engine.shared_state = state
+        engine.controller = Controller()
+        engine._was_active = False
+        engine._drive_selector_pressed = False
+        engine._flush_controls()
+        self.assertEqual(engine.controller.throttle, 0.0)
+        self.assertNotIn(True, engine.controller.drive_events)
+
+    def test_engine_fresh_bound_gps_packet_keeps_forward_output(self):
+        now = time.monotonic()
+        identity = {
+            "navigation_intent_id": "incident-intent",
+            "route_build_id": "incident-build",
+            "source_game_session_id": "session",
+            "source_map_key": "map",
+            "source_dataset_fingerprint": "dataset",
+        }
+        state = State({
+            "autopilot_active": True, "navigation_source": "gps_lane",
+            "autopilot_control_heartbeat": now,
+            "telemetry_valid": True,
+            "telemetry": {"truck": {"gear": 1, "speed": 0.0,
+                                     "sdkFrameTimeUs": 345678}},
+            "lane_trajectory": {"valid": True, "revision": 7, **identity},
+            "lane_trajectory_revision": 7,
+            "lane_trajectory_heartbeat": now,
+            "nav_steering_debug": {
+                "controller": "frenet_bicycle",
+                "calculation_packet_schema_version": 1,
+                "authority_valid": True, "authority_revision": 7,
+                "observation_timestamp": now - 0.05,
+                "computed_at": now - 0.01,
+                "sdk_frame_us": 345678,
+                "calculation_sequence": 1,
+                "output": 0.0, "local_curvature": 0.0,
+                **identity,
+            },
+            CTL_SELECT_DRIVE: True,
+            CTL_STEERING: 0.0, CTL_THROTTLE: 0.4, CTL_BRAKE: 0.0,
+        })
+        engine = UltraPilotEngine.__new__(UltraPilotEngine)
+        engine.shared_state = state
+        engine.controller = Controller()
+        engine._was_active = False
+        engine._drive_selector_pressed = False
+        engine._flush_controls()
+        self.assertEqual(engine.controller.throttle, 0.4)
+        self.assertIn(True, engine.controller.drive_events)
+        event = state.get("drive_boundary_event")
+        self.assertEqual(event["action"], "press_drive_selector")
+        self.assertEqual(event["sdk_frame_us"], 345678)
+
+    def test_automatic_drive_mode_with_zero_ratio_fails_closed(self):
         state = ready_navigation_state()
         plugin = autopilot({"speed": 0.0, "gear": 0}, state)
         plugin.on_tick(0.05)
         self.assertEqual(plugin.sdk.controller.throttle, 0.0)
         self.assertEqual(plugin.tags.throttle, 0.0)
 
-        # ETS2 can show selector D while its current-ratio telemetry remains
-        # zero until throttle is applied. After the bounded settling time the
-        # fallback cruise ramp must be allowed to engage first gear.
+        # The selector mode is not measured by the gear-ratio channel. A
+        # timed fallback must not add propulsion with an unproven direction.
         plugin._drive_engage_started = time.monotonic() - 1.0
         plugin._drive_request_t = time.monotonic() - 1.0
         plugin.on_tick(0.10)
-        self.assertTrue(state.get("autopilot_active"))
-        self.assertGreater(plugin.sdk.controller.throttle, 0.0)
-        self.assertGreater(plugin.tags.throttle, 0.0)
+        self.assertFalse(state.get("autopilot_active"))
+        self.assertEqual(plugin.sdk.controller.throttle, 0.0)
+        self.assertEqual(plugin.tags.throttle, 0.0)
         self.assertEqual(plugin.sdk.controller.brake, 0.0)
-        self.assertEqual(state.get("navigation_status"),
-                         "Jazda dopredu pripravená")
+        self.assertIn("jazda dopredu nebola potvrdená",
+                      state.get("navigation_status"))
 
     def test_red_light_brake_suppresses_throttle_on_valid_route(self):
         state = ready_navigation_state(
@@ -1087,6 +1219,7 @@ class ControlSafetyRegressionTests(unittest.TestCase):
         state = State({
             "autopilot_active": False,
             "autopilot_command": {"seq": 4, "enabled": True},
+            CTL_SELECT_DRIVE: True,
         })
         engine = UltraPilotEngine.__new__(UltraPilotEngine)
         engine.shared_state = state
@@ -1095,6 +1228,7 @@ class ControlSafetyRegressionTests(unittest.TestCase):
         engine._process_autopilot_command()
         self.assertFalse(state.get("autopilot_active"))
         self.assertIn("trajektória", state.get("autopilot_disable_reason"))
+        self.assertIsNone(state.get(CTL_SELECT_DRIVE))
 
     def test_engine_accepts_enable_only_with_fresh_navigation_authority(self):
         state = State({
@@ -1110,6 +1244,55 @@ class ControlSafetyRegressionTests(unittest.TestCase):
         engine._last_autopilot_command = None
         engine._process_autopilot_command()
         self.assertTrue(state.get("autopilot_active"))
+
+    def test_rapid_toggle_cannot_replay_selector_from_previous_engagement(self):
+        state = State({
+            "autopilot_active": False,
+            "autopilot_command": {"seq": 1, "enabled": True},
+            "autopilot_navigation_readiness": {
+                "ready": True, "timestamp": time.monotonic()},
+            "autopilot_control_heartbeat": time.monotonic(),
+            "telemetry_valid": True,
+        })
+        engine = UltraPilotEngine.__new__(UltraPilotEngine)
+        engine.shared_state = state
+        engine.controller = Controller()
+        engine._last_autopilot_command = None
+        engine._was_active = False
+        engine._drive_selector_pressed = False
+        engine._process_autopilot_command()
+        self.assertTrue(state.get("autopilot_active"))
+        state.set(CTL_SELECT_DRIVE, True)
+        state.set("autopilot_command", {"seq": 2, "enabled": False})
+        engine._process_autopilot_command()
+        self.assertIsNone(state.get(CTL_SELECT_DRIVE))
+        state.set("autopilot_command", {"seq": 3, "enabled": True})
+        engine._process_autopilot_command()
+        engine._flush_controls()
+        self.assertNotIn(True, engine.controller.drive_events)
+
+    def test_disable_during_output_flush_cannot_send_throttle_or_drive(self):
+        state = State({
+            "autopilot_active": True,
+            "autopilot_control_heartbeat": time.monotonic(),
+            "telemetry_valid": True,
+            CTL_STEERING: 0.1, CTL_THROTTLE: 0.4, CTL_BRAKE: 0.0,
+            CTL_SELECT_DRIVE: True,
+        })
+
+        class DisablingController(Controller):
+            def set_steering(self, value):
+                super().set_steering(value)
+                state.set("autopilot_active", False)
+
+        engine = UltraPilotEngine.__new__(UltraPilotEngine)
+        engine.shared_state = state
+        engine.controller = DisablingController()
+        engine._was_active = False
+        engine._drive_selector_pressed = False
+        engine._flush_controls()
+        self.assertEqual(engine.controller.throttle, 0.0)
+        self.assertNotIn(True, engine.controller.drive_events)
 
     def test_navigation_stop_does_not_turn_off_master_autopilot(self):
         state = State({

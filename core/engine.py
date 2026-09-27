@@ -2,6 +2,7 @@ import time
 import logging
 import threading
 import os
+import math
 
 from core.telemetry import Telemetry
 from core.controller import Controller
@@ -943,7 +944,8 @@ class UltraPilotEngine:
                 self._last_output_brake = 0.0
                 self.shared_state.update_batch({
                     CTL_STEERING: 0.0, CTL_THROTTLE: 0.0, CTL_BRAKE: 0.0,
-                    "autopilot_disable_reason": "manual hotkey",
+                    CTL_SELECT_DRIVE: None,
+                    "autopilot_disable_reason": rejection_reason or "manual hotkey",
                 })
         self._hotkey_was_down = down
 
@@ -980,6 +982,12 @@ class UltraPilotEngine:
                     or readiness.get("revision") != snapshot.get("revision")):
                 return "potvrdenie navigačnej autority patrí starej trase"
             packet = self.shared_state.get("nav_steering_debug", {}) or {}
+            if (isinstance(packet, dict)
+                    and packet.get("calculation_packet_schema_version") is not None
+                    and packet.get("authority_valid") is False
+                    and packet.get("control_failure")):
+                return "steering calculation rejected: " + str(
+                    packet["control_failure"])
             if (not isinstance(packet, dict)
                     or packet.get("controller") != "frenet_bicycle"
                     or packet.get("calculation_packet_schema_version") is None):
@@ -1026,6 +1034,7 @@ class UltraPilotEngine:
             self._last_output_brake = 0.0
             self.shared_state.update_batch({
                 CTL_STEERING: 0.0, CTL_THROTTLE: 0.0, CTL_BRAKE: 0.0,
+                CTL_SELECT_DRIVE: None,
                 "autopilot_disable_reason": rejection_reason or "manual command",
             })
         self.shared_state.set("autopilot_command_ack", seq)
@@ -1122,6 +1131,93 @@ class UltraPilotEngine:
         with lock:
             return self._flush_controls_unlocked()
 
+    def _record_drive_boundary(self, action, truck, *, selector=None,
+                               returned=None, steering=None, throttle=None,
+                               brake=None, reason=None):
+        """Record selector writes and SDK gear edges without changing control.
+
+        A successful backend write is not evidence that the DLL consumed the
+        value or that ETS2 selected D. The SDK gear is a later observation.
+        """
+        sequence = getattr(self, "_drive_boundary_sequence", 0) + 1
+        self._drive_boundary_sequence = sequence
+        event = {
+            "sequence": sequence,
+            "monotonic_s": time.monotonic(),
+            "sdk_frame_us": truck.get("sdkFrameTimeUs"),
+            "observed_gear": truck.get("gear"),
+            "observed_speed_mps": truck.get("speed"),
+            "autopilot_active": bool(self.shared_state.get("autopilot_active", False)),
+            "action": action,
+            "reason": reason,
+            "selector_write": selector,
+            "backend_write_returned": returned,
+            "backend_mode": getattr(self.controller, "mode", None),
+            "steering_command": steering,
+            "throttle_command": throttle,
+            "brake_command": brake,
+            "route_revision": self.shared_state.get("lane_trajectory_revision"),
+            "route_build_id": (self.shared_state.get("lane_trajectory", {}) or {}).get(
+                "route_build_id"),
+        }
+        self.shared_state.set("drive_boundary_event", event)
+        window_start = getattr(self, "_drive_boundary_log_window_start", 0.0)
+        if event["monotonic_s"] - window_start >= 60.0:
+            self._drive_boundary_log_window_start = event["monotonic_s"]
+            self._drive_boundary_log_count = 0
+        count = getattr(self, "_drive_boundary_log_count", 0)
+        if count < 240:
+            logging.info("Drive boundary: %s", event)
+        elif count == 240:
+            logging.warning("Drive boundary logging capped at 240 events/minute")
+        self._drive_boundary_log_count = count + 1
+
+    def _gps_output_packet_rejection_reason(self, now, snapshot):
+        """Bounded final check before a GPS packet can accompany propulsion."""
+        packet = self.shared_state.get("nav_steering_debug", {}) or {}
+        if (not isinstance(snapshot, dict) or not snapshot.get("valid")
+                or not isinstance(packet, dict)
+                or packet.get("controller") != "frenet_bicycle"
+                or packet.get("calculation_packet_schema_version") is None
+                or packet.get("authority_valid") is not True
+                or packet.get("sdk_frame_us") is None
+                or packet.get("calculation_sequence") is None):
+            return "GPS steering packet is incomplete"
+        try:
+            if int(packet.get("authority_revision", -1)) != int(
+                    snapshot.get("revision", -2)):
+                return "GPS steering packet revision is stale"
+            if int(snapshot.get("revision", -1)) != int(self.shared_state.get(
+                    "lane_trajectory_revision", -2)):
+                return "GPS lane trajectory revision is stale"
+            for key in ("navigation_intent_id", "route_build_id",
+                        "source_game_session_id", "source_map_key",
+                        "source_dataset_fingerprint"):
+                if not snapshot.get(key) or snapshot.get(key) != packet.get(key):
+                    return f"GPS steering packet {key} is stale"
+            for snapshot_key, live_key in (
+                    ("source_game_session_id", "game_session_id"),
+                    ("source_map_key", "active_map_key"),
+                    ("source_dataset_fingerprint", "active_dataset_fingerprint"),
+                    ("navigation_intent_id", "navigation_intent_id")):
+                current = self.shared_state.get(live_key)
+                if current is not None and snapshot[snapshot_key] != current:
+                    return f"GPS steering packet {live_key} is stale"
+            heartbeat_age = now - float(self.shared_state.get(
+                "lane_trajectory_heartbeat", 0.0) or 0.0)
+            if not 0.0 <= heartbeat_age <= 0.5:
+                return "map plugin heartbeat is stale"
+            for key in ("observation_timestamp", "computed_at"):
+                age = now - float(packet[key])
+                if not math.isfinite(age) or not 0.0 <= age <= 0.5:
+                    return f"GPS steering packet {key} is stale"
+            for key in ("output", "local_curvature"):
+                if not math.isfinite(float(packet[key])):
+                    return f"GPS steering packet {key} is non-finite"
+        except (TypeError, ValueError, KeyError, OverflowError):
+            return "GPS steering packet metadata is malformed"
+        return ""
+
     def _flush_controls_unlocked(self):
         """Apply the latest control intents to the physical device.
 
@@ -1133,6 +1229,11 @@ class UltraPilotEngine:
             "safety_hazard_active", False))
         truck_telemetry = ((self.shared_state.get("telemetry", {}) or {})
                            .get("truck", {}) or {})
+        observed_gear = truck_telemetry.get("gear")
+        if (observed_gear is not None
+                and observed_gear != getattr(self, "_last_drive_observed_gear", None)):
+            self._last_drive_observed_gear = observed_gear
+            self._record_drive_boundary("sdk_gear_observed", truck_telemetry)
         observed_left = bool(truck_telemetry.get("blinkerLeft", False))
         observed_right = bool(truck_telemetry.get("blinkerRight", False))
         observed_blinker = (
@@ -1145,12 +1246,22 @@ class UltraPilotEngine:
         if callable(set_hazard):
             set_hazard(safety_hazard)
         if not self.shared_state.get("autopilot_active", False):
+            # A plugin may have published a D pulse just before an automatic
+            # disable. Discard that unconsumed intent even if the physical
+            # backend was already released on an earlier inactive frame.
+            if self.shared_state.get(CTL_SELECT_DRIVE, None) is not None:
+                self._record_drive_boundary(
+                    "discard_unconsumed_selector_intent", truck_telemetry)
+            self.shared_state.set(CTL_SELECT_DRIVE, None)
             if self._was_active:
                 # Cancel only an automatic signal that UltraPilot still owns.
                 # On later manual frames leave the driver's indicators alone.
                 if self.shared_state.get("active_blinker") in ("left", "right"):
                     self.controller.set_blinker("off")
                 self.controller.release_all()
+                self._record_drive_boundary(
+                    "release_all_after_disable", truck_telemetry,
+                    selector=False, steering=0.0, throttle=0.0, brake=0.0)
                 self.shared_state.update_batch({
                     "route_blinker": "off", "active_blinker": "off",
                 })
@@ -1205,13 +1316,51 @@ class UltraPilotEngine:
         steering = self.shared_state.get(CTL_STEERING, 0.0)
         throttle = self.shared_state.get(CTL_THROTTLE, 0.0)
         brake = self.shared_state.get(CTL_BRAKE, 0.0)
+        snapshot = self.shared_state.get("lane_trajectory", {}) or {}
+
+        gps_output_reason = (self._gps_output_packet_rejection_reason(
+            time.monotonic(), snapshot) if self.shared_state.get(
+                "navigation_source") == "gps_lane" else "")
+        if gps_output_reason:
+            if not getattr(self, "_gps_propulsion_suppressed", False):
+                self._record_drive_boundary(
+                    "suppress_invalid_gps_packet", truck_telemetry,
+                    steering=steering, throttle=0.0, brake=brake,
+                    reason=gps_output_reason)
+            self._gps_propulsion_suppressed = True
+            throttle = 0.0
+            self.shared_state.set(CTL_THROTTLE, 0.0)
+            self.shared_state.set(CTL_SELECT_DRIVE, None)
+        else:
+            self._gps_propulsion_suppressed = False
+
+        # The plugin and Engine run on different clocks. A stale positive
+        # throttle intent must not pass through after the SDK reports Neutral
+        # or Reverse, even before the plugin consumes that new frame.
+        if throttle and truck_telemetry:
+            try:
+                forward_ratio = int(truck_telemetry.get("gear", 0)) > 0
+                forward_motion = float(truck_telemetry.get("speed", 0.0)) >= -0.10
+            except (TypeError, ValueError, OverflowError):
+                forward_ratio = forward_motion = False
+            if not (forward_ratio and forward_motion):
+                if not getattr(self, "_forward_throttle_suppressed", False):
+                    self._record_drive_boundary(
+                        "suppress_unconfirmed_forward_throttle", truck_telemetry,
+                        throttle=0.0, brake=brake, steering=steering)
+                self._forward_throttle_suppressed = True
+                throttle = 0.0
+                self.shared_state.set(CTL_THROTTLE, 0.0)
+            else:
+                self._forward_throttle_suppressed = False
+        else:
+            self._forward_throttle_suppressed = False
 
         # Speed-dependent steering clamp for legacy/vision steering. A valid
         # GPS LaneTrajectory has already produced a bounded, speed-aware and
         # rate-limited command. Clamping that command a second time made the
         # truck understeer from its lane centre toward the road centre.
         spd_kmh = abs(float(self.shared_state.get("truck_speed_ms", 0.0) or 0.0)) * 3.6
-        snapshot = self.shared_state.get("lane_trajectory", {}) or {}
         try:
             snapshot_revision = int(snapshot.get("revision", -1) or -1)
             lane_revision = int(self.shared_state.get(
@@ -1261,6 +1410,14 @@ class UltraPilotEngine:
         })
 
         self.controller.set_steering(steering)
+        if not self.shared_state.get("autopilot_active", False):
+            self.controller.release_all()
+            self.shared_state.set(CTL_SELECT_DRIVE, None)
+            self._was_active = False
+            self._record_drive_boundary(
+                "release_after_disable_during_flush", truck_telemetry,
+                selector=False, steering=0.0, throttle=0.0, brake=0.0)
+            return
         steering_write_returned_at_s = time.monotonic()
         self.controller.set_throttle(throttle)
         self.controller.set_brake(brake)
@@ -1301,19 +1458,39 @@ class UltraPilotEngine:
             self.shared_state.set(CTL_PAY_TOLL, False)
 
         drive_intent = self.shared_state.get(CTL_SELECT_DRIVE, None)
+        if not self.shared_state.get("autopilot_active", False):
+            self.controller.release_all()
+            self.shared_state.set(CTL_SELECT_DRIVE, None)
+            self._was_active = False
+            self._record_drive_boundary(
+                "release_after_disable_during_flush", truck_telemetry,
+                selector=False, steering=0.0, throttle=0.0, brake=0.0)
+            return
         if self._drive_selector_pressed:
             # Always emit the release before accepting another press. Plugin
             # workers run faster than the engine and may coalesce repeated
             # True requests; this guarantees a real low->high input edge.
-            self.controller.select_drive(False)
+            returned = self.controller.select_drive(False)
+            self._record_drive_boundary(
+                "release_drive_selector", truck_telemetry,
+                selector=False, returned=returned, steering=steering,
+                throttle=throttle, brake=brake)
             self._drive_selector_pressed = False
             self.shared_state.set(CTL_SELECT_DRIVE, None)
         elif drive_intent is True:
-            self.controller.select_drive(True)
+            returned = self.controller.select_drive(True)
+            self._record_drive_boundary(
+                "press_drive_selector", truck_telemetry,
+                selector=True, returned=returned, steering=steering,
+                throttle=throttle, brake=brake)
             self._drive_selector_pressed = True
             self.shared_state.set(CTL_SELECT_DRIVE, None)
         elif drive_intent is False:
-            self.controller.select_drive(False)
+            returned = self.controller.select_drive(False)
+            self._record_drive_boundary(
+                "release_drive_selector", truck_telemetry,
+                selector=False, returned=returned, steering=steering,
+                throttle=throttle, brake=brake)
             self.shared_state.set(CTL_SELECT_DRIVE, None)
 
     def run_loop(self):
