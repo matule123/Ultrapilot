@@ -744,6 +744,11 @@ class Plugin(BasePlugin):
             "accepted_packet_computed_at": accepted.get("computed_at"),
             "accepted_packet_observation_timestamp": accepted.get(
                 "observation_timestamp"),
+            "map_tick_started_at": accepted.get("map_tick_started_at"),
+            "map_lane_update_finished_at": accepted.get(
+                "map_lane_update_finished_at"),
+            "map_calculation_started_at": accepted.get(
+                "map_calculation_started_at"),
             "accepted_packet_sdk_frame_us": accepted.get("sdk_frame_us"),
             "accepted_packet_output": accepted.get("output"),
             "accepted_nav_command": accepted.get("command"),
@@ -1004,6 +1009,12 @@ class Plugin(BasePlugin):
             "confidence": snapshot_confidence,
             "threshold": MIN_LANE_TRAJECTORY_CONFIDENCE,
             "timestamp": time.monotonic(),
+            "lane_heartbeat_at": self.sdk.shared_state.get(
+                "lane_trajectory_heartbeat", 0.0),
+            "vehicle_observation_at": vehicle_snapshot.get("timestamp"),
+            "steering_observation_at": accepted_packet.get(
+                "observation_timestamp"),
+            "steering_computed_at": accepted_packet.get("computed_at"),
         })
         navigation_unreliable = bool(
             (gps_navigation_present

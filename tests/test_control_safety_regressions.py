@@ -129,6 +129,57 @@ def ready_navigation_state(**extra):
 
 
 class ControlSafetyRegressionTests(unittest.TestCase):
+    def test_engine_engagement_rechecks_exact_fresh_gps_packet(self):
+        """A readiness sample can predate the next N press by one packet."""
+        now = time.monotonic()
+        state = ready_navigation_state(
+            autopilot_active=False, nav_active=True)
+        snapshot = state.get("lane_trajectory")
+        snapshot["navigation_intent_id"] = "incident-intent"
+        snapshot["request_id"] = "incident-intent"
+        state.set("navigation_intent_id", "incident-intent")
+        state.set("nav_recalc_request", "incident-intent")
+        state.get("lane_match").update({
+            "valid": True, "confidence": 0.95,
+            "authority_confidence": 0.95,
+        })
+        packet = {
+            "controller": "frenet_bicycle",
+            "calculation_packet_schema_version": 1,
+            "authority_valid": True, "authority_revision": 7,
+            "navigation_intent_id": "incident-intent",
+            "route_build_id": "test-build",
+            "source_game_session_id": "test-session",
+            "source_map_key": "test-map",
+            "source_dataset_fingerprint": "test-fingerprint",
+            "computed_at": now - 0.05,
+            "observation_timestamp": now - 0.55,
+            "output": 0.0, "local_curvature": 0.0,
+        }
+        state.set("nav_steering_debug", packet)
+        state.set("autopilot_navigation_readiness", {
+            "ready": True, "reason": "", "timestamp": now,
+            "revision": 7, "source": "gps_lane",
+        })
+        engine = UltraPilotEngine.__new__(UltraPilotEngine)
+        engine.shared_state = state
+        state.set("nav_steering_debug", {})
+        self.assertIn("incomplete",
+                      engine._autopilot_activation_rejection_reason())
+        state.set("nav_steering_debug", packet)
+        self.assertIn("observation_timestamp is stale",
+                      engine._autopilot_activation_rejection_reason())
+        packet["observation_timestamp"] = time.monotonic()
+        self.assertEqual(engine._autopilot_activation_rejection_reason(), "")
+        state.set("navigation_recalculating", True)
+        self.assertIn("recalculating",
+                      engine._autopilot_activation_rejection_reason())
+        state.set("navigation_recalculating", False)
+        self.assertEqual(engine._autopilot_activation_rejection_reason(), "")
+        packet["route_build_id"] = "old-build"
+        self.assertIn("route_build_id is stale",
+                      engine._autopilot_activation_rejection_reason())
+
     def test_long_route_confidence_keeps_live_and_identity_gates(self):
         # The 18 Sep route's 42 confirmed prefab segments must not cap the
         # current lane at 0.56. Its initial locator score and every live
@@ -473,8 +524,23 @@ class ControlSafetyRegressionTests(unittest.TestCase):
         state = ready_navigation_state(
             autopilot_active=False, nav_active=True, nav_steering=0.1)
         state.get("lane_match")["lane_width_m"] = 4.5
+        now = time.monotonic()
+        state.set("nav_steering_debug", {
+            "controller": "frenet_bicycle",
+            "calculation_packet_schema_version": 1,
+            "authority_valid": True, "authority_revision": 7,
+            "navigation_intent_id": None,
+            "route_build_id": "test-build",
+            "source_game_session_id": "test-session",
+            "source_map_key": "test-map",
+            "source_dataset_fingerprint": "test-fingerprint",
+            "computed_at": now, "observation_timestamp": now,
+            "sdk_frame_us": 1_000_000, "calculation_sequence": 1,
+            "output": 0.1, "local_curvature": 0.0,
+        })
         state.set("autopilot_navigation_readiness", {
-            "ready": True, "reason": "", "timestamp": time.monotonic(),
+            "ready": True, "reason": "", "timestamp": now,
+            "source": "gps_lane", "revision": 7,
         })
         state.set("autopilot_command", {"seq": 71, "enabled": True})
         engine = UltraPilotEngine.__new__(UltraPilotEngine)

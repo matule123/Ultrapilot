@@ -896,6 +896,20 @@ class UltraPilotEngine:
             if new_state:
                 rejection_reason = self._autopilot_activation_rejection_reason()
                 if rejection_reason:
+                    readiness = self.shared_state.get(
+                        "autopilot_navigation_readiness", {}) or {}
+                    if isinstance(readiness, dict):
+                        logging.info(
+                            "Autopilot activation timing: monotonic=%.6f "
+                            "revision=%s heartbeat_at=%s "
+                            "vehicle_observation_at=%s "
+                            "steering_observation_at=%s "
+                            "steering_computed_at=%s",
+                            time.monotonic(), readiness.get("revision"),
+                            readiness.get("lane_heartbeat_at"),
+                            readiness.get("vehicle_observation_at"),
+                            readiness.get("steering_observation_at"),
+                            readiness.get("steering_computed_at"))
                     new_state = False
                     self.shared_state.set(
                         "autopilot_disable_reason", rejection_reason)
@@ -947,6 +961,34 @@ class UltraPilotEngine:
             timestamp = 0.0
         if timestamp <= 0.0 or time.monotonic() - timestamp > 0.5:
             return "potvrdenie navigačnej autority je zastarané"
+        # Autopilot readiness and a finished Map steering packet are published
+        # by different processes. A fresh readiness sample can therefore
+        # outlive its packet at the exact moment N is pressed. Recheck the
+        # existing GPS packet contract against the current route identity;
+        # the worker repeats this check while control is active.
+        from plugins.autopilot.main import (
+            game_gps_navigation_present, lane_authority_rejection_reason,
+            navigation_command,
+        )
+        snapshot = self.shared_state.get("lane_trajectory", {}) or {}
+        if game_gps_navigation_present(self.shared_state, snapshot):
+            reason = lane_authority_rejection_reason(
+                self.shared_state, snapshot)
+            if reason:
+                return reason
+            if (readiness.get("source") != "gps_lane"
+                    or readiness.get("revision") != snapshot.get("revision")):
+                return "potvrdenie navigačnej autority patrí starej trase"
+            packet = self.shared_state.get("nav_steering_debug", {}) or {}
+            if (not isinstance(packet, dict)
+                    or packet.get("controller") != "frenet_bicycle"
+                    or packet.get("calculation_packet_schema_version") is None):
+                return "GPS steering packet is incomplete"
+            _steer, _curvature, reason = navigation_command(
+                self.shared_state, snapshot, gps_active=True,
+                packet=packet)
+            if reason:
+                return reason
         return ""
 
     def _process_autopilot_command(self):

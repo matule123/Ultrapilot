@@ -1845,6 +1845,9 @@ class RoadNetwork:
         if any(uid not in self.nodes for uid in gps_uids):
             return ()
         result, seen = [], set()
+        first_pair_index = next((index for index, (start, end) in
+                                 enumerate(zip(gps_uids, gps_uids[1:]))
+                                 if start != end), None)
         for pair_index, (start_uid, end_uid) in enumerate(
                 zip(gps_uids, gps_uids[1:])):
             if start_uid == end_uid:
@@ -1857,6 +1860,7 @@ class RoadNetwork:
                 break
             if edge.kind != "prefab":
                 continue
+            edge_start = len(result)
             lane_count = 0
             for instance in edge.prefab_instance or ():
                 lane_data = self._prefab_lane_data.get(instance[0]) or {}
@@ -1877,6 +1881,42 @@ class RoadNetwork:
                     continue
                 seen.add(segment.lane_id)
                 result.append(segment)
+            # The first GPS edge can itself be a prefab. Its navNode records
+            # only one representative lane, while reciprocal PPD lane links
+            # prove parallel lanes at the same directed entry/exit UIDs. A
+            # truck already inside the sibling is too far from its entrance
+            # for _prefab_lane_segment's entry-continuity selection. Expose
+            # only one uniquely near PPD sibling to the normal LaneLocator
+            # gates; never use a nearby sibling on a later route arm.
+            if pair_index != first_pair_index:
+                continue
+            acquisition_limit = LaneLocatorConfig().max_lateral_m
+            if any((projection is not None
+                    and projection[0] <= acquisition_limit)
+                   for candidate in result[edge_start:]
+                   if (projection := LaneLocator._project(
+                           position, candidate)) is not None):
+                continue
+            nearby_siblings = {}
+            for instance in edge.prefab_instance or ():
+                for indices in self._prefab_parallel_lane_options(
+                        instance, start_uid, end_uid):
+                    points = self._prefab_curve_chain_3d(instance, indices)
+                    if len(points) < 2:
+                        continue
+                    candidate = self._make_prefab_lane_segment(
+                        edge, instance, indices, points)
+                    projected = LaneLocator._project(position, candidate)
+                    if (projected is not None
+                            and projected[0] <= acquisition_limit):
+                        nearby_siblings[candidate.lane_id] = candidate
+            if len(nearby_siblings) == 1:
+                candidate = next(iter(nearby_siblings.values()))
+                if candidate.lane_id not in seen:
+                    seen.add(candidate.lane_id)
+                    if register:
+                        self._lane_id_index[candidate.lane_id] = candidate
+                    result.append(candidate)
         return tuple(result)
 
     def _graph_lane_segment(self, edge, previous):
@@ -2727,11 +2767,31 @@ class RoadNetwork:
             elif edge.kind == "prefab":
                 incoming_point = (selected[-1].centerline[-1] if selected
                                   else start_match.point)
-                current, reason = self._prefab_lane_segment(
-                    edge, lane_index, incoming_point,
-                    allow_parallel_sibling=(
-                        not selected
-                        or selected[-1].end_uid == edge.start_uid))
+                # When the GPS prefix begins inside a prefab, the locator may
+                # have confirmed a PPD-proven parallel lane well past its
+                # entry. Reuse that exact directed lane for the first edge:
+                # choosing the navNode representative again would switch to
+                # a different lane before trimming at the truck position.
+                proven_start = (not selected and matched_lane is not None
+                                and matched_lane.start_uid == edge.start_uid
+                                and matched_lane.end_uid == edge.end_uid
+                                and matched_lane.lane_id.prefab_token not in
+                                (None, "graph")
+                                and any(
+                                    instance[0] ==
+                                    matched_lane.lane_id.prefab_token
+                                    and tuple(matched_lane.connector_curve_indices)
+                                    in self._prefab_parallel_lane_options(
+                                        instance, edge.start_uid, edge.end_uid)
+                                    for instance in edge.prefab_instance or ()))
+                if proven_start:
+                    current, reason = matched_lane, ""
+                else:
+                    current, reason = self._prefab_lane_segment(
+                        edge, lane_index, incoming_point,
+                        allow_parallel_sibling=(
+                            not selected
+                            or selected[-1].end_uid == edge.start_uid))
                 if current is None:
                     observe_failure(
                         gps_uid_index=edge.gps_pair_index,
@@ -3154,14 +3214,39 @@ class RoadNetwork:
         if diagnostics is not None:
             safe_diagnostic_call(diagnostics, "start_phase",
                                  "select_lane_sequence")
+        # A rolling GPS buffer may still contain an entry already passed by
+        # the truck. Start at the *uniquely* confirmed directed edge carrying
+        # its LaneId, then let normal selection and boundary validation prove
+        # every remaining transition. Never reverse toward the old prefix.
+        selection_corridor = corridor
+        active_lane = self._lane_id_index.get(match.lane_id) if match else None
+        if active_lane is not None:
+            matching_edges = [index for index, edge in
+                              enumerate(corridor.edges)
+                              if edge.start_uid == active_lane.start_uid
+                              and edge.end_uid == active_lane.end_uid
+                              and ((edge.kind == "road"
+                                    and active_lane.lane_id.prefab_token is None)
+                                   or (edge.kind == "prefab"
+                                       and active_lane.lane_id.prefab_token
+                                       not in (None, "graph")
+                                       and any(instance[0] ==
+                                               active_lane.lane_id.prefab_token
+                                               for instance in
+                                               edge.prefab_instance or ())))]
+            if len(matching_edges) == 1 and matching_edges[0] > 0:
+                selection_corridor = replace(
+                    corridor, edges=corridor.edges[matching_edges[0]:])
         selection_failure = {}
         segments, reason = self.select_lane_sequence(
-            corridor, match, failure_details=selection_failure,
+            selection_corridor, match, failure_details=selection_failure,
             speed_mps=speed_mps)
         if reason:
             if diagnostics is not None:
-                edge_index = min(len(segments), max(0, len(corridor.edges) - 1))
-                edge = corridor.edges[edge_index] if corridor.edges else None
+                edge_index = min(len(segments), max(
+                    0, len(selection_corridor.edges) - 1))
+                edge = (selection_corridor.edges[edge_index]
+                        if selection_corridor.edges else None)
                 last = segments[-1] if segments else None
                 details = {
                     "gps_uid_index": (edge.gps_pair_index if edge else None),
@@ -3205,7 +3290,8 @@ class RoadNetwork:
         # still be on the confirmed incoming lane leading to that anchor. Add
         # this real lane segment before the first corridor edge so HUD, AR and
         # steering start at the truck instead of 10+ metres across the prefab.
-        expected_first_gps_pair_index = 0
+        expected_first_gps_pair_index = (
+            selection_corridor.edges[0].gps_pair_index)
         active = self._lane_id_index.get(match.lane_id) if match else None
         if active is not None and segments and active.lane_id != segments[0].lane_id:
             active_index = next(

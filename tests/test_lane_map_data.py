@@ -1,5 +1,6 @@
 import os
 import math
+import json
 import unittest
 from dataclasses import replace
 
@@ -224,6 +225,98 @@ class RealMapLaneDataTests(unittest.TestCase):
         self.assertFalse(rejected.valid)
         self.assertEqual(rejected.points, ())
         self.assertIn("no forward geometry", rejected.failure_reason)
+
+    def test_2026_09_27_first_gps_prefab_locates_parallel_branch(self):
+        """The same physical pose must work when GPS retains the entry UID."""
+        with open(os.path.join(ROOT, "tests", "fixtures",
+                               "route-20260927-prefab-entry-uids.json"),
+                  encoding="utf-8") as fixture:
+            full_gps = tuple(json.load(fixture))
+        gps = full_gps[:5]
+        position = (34697.30850982666, 6.900078773498535,
+                    45871.1856842041)
+        heading = -0.31086105686221366
+        for route in (gps[:3], gps, full_gps):
+            with self.subTest(gps_uids=len(route)):
+                match = LaneLocator(self.net).locate(
+                    position, heading, route)
+                self.assertIsNotNone(match)
+                self.assertEqual(match.lane_id.prefab_token,
+                                 "dlc_blkw_94")
+                self.assertEqual(match.lane_id.connector_path, (2,))
+                path, returned = self.net.build_lane_path(
+                    route, (position[0], position[2]), heading,
+                    altitude=position[1], start_match=match)
+                self.assertTrue(path.valid, path.failure_reason)
+                self.assertEqual(returned.lane_id, match.lane_id)
+                self.assertEqual(path.segments[0].lane_id.connector_path,
+                                 (2,))
+                self.assertTrue(validate_lane_trajectory(
+                    build_lane_trajectory(path)).valid)
+                repeated, _ = self.net.build_lane_path(
+                    route, (position[0], position[2]), heading,
+                    altitude=position[1], start_match=match)
+                self.assertTrue(repeated.valid, repeated.failure_reason)
+                self.assertEqual(path.points, repeated.points)
+        moved = (position[0] - 0.05 * math.sin(heading), position[1],
+                 position[2] - 0.05 * math.cos(heading))
+        moved_match = LaneLocator(self.net).locate(
+            moved, heading, full_gps)
+        self.assertIsNotNone(moved_match)
+        self.assertEqual(moved_match.lane_id.connector_path, (2,))
+        moved_path, _ = self.net.build_lane_path(
+            full_gps, (moved[0], moved[2]), heading,
+            altitude=moved[1], start_match=moved_match)
+        self.assertTrue(moved_path.valid, moved_path.failure_reason)
+
+    def test_2026_09_27_passed_prefab_prefix_starts_on_confirmed_road(self):
+        with open(os.path.join(ROOT, "tests", "fixtures",
+                               "route-20260927-prefab-entry-uids.json"),
+                  encoding="utf-8") as fixture:
+            full_gps = tuple(json.load(fixture))
+        edge = self.net.resolve_gps_corridor(full_gps).edges[1]
+        self.assertEqual(edge.kind, "road")
+        road = next(lane for lane in self.net._build_lane_segments(
+            edge.segment_index) if lane.start_uid == edge.start_uid
+            and lane.end_uid == edge.end_uid and lane.lane_index == 1)
+        point = road.centerline[1]
+        position = (point.x, point.y, point.z)
+        match = LaneLocator(self.net).locate(
+            position, point.heading, full_gps)
+        self.assertIsNotNone(match)
+        self.assertEqual(match.lane_id, road.lane_id)
+        path, _ = self.net.build_lane_path(
+            full_gps, (point.x, point.z), point.heading,
+            altitude=point.y, start_match=match)
+        self.assertTrue(path.valid, path.failure_reason)
+        self.assertEqual(path.segments[0].lane_id, road.lane_id)
+        self.assertEqual(path.expected_first_gps_pair_index,
+                         edge.gps_pair_index)
+
+    def test_2026_09_27_exit_seam_does_not_invent_forward_geometry(self):
+        with open(os.path.join(ROOT, "tests", "fixtures",
+                               "route-20260927-prefab-entry-uids.json"),
+                  encoding="utf-8") as fixture:
+            gps = tuple(json.load(fixture))
+        edge = self.net.resolve_gps_corridor(gps).edges[0]
+        points = self.net._prefab_curve_chain_3d(
+            edge.prefab_instance[0], (2,))
+        locator = LaneLocator(self.net)
+        before = points[-2]
+        previous = locator.locate(
+            (before.x, before.y, before.z), before.heading, gps)
+        self.assertIsNotNone(previous)
+        exit_point = points[-1]
+        match = locator.locate(
+            (exit_point.x, exit_point.y, exit_point.z),
+            exit_point.heading, gps, previous)
+        self.assertIsNotNone(match)
+        self.assertEqual(match.lane_id.connector_path, (2,))
+        path, _ = self.net.build_lane_path(
+            gps, (exit_point.x, exit_point.z), exit_point.heading,
+            altitude=exit_point.y, start_match=match)
+        self.assertFalse(path.valid)
+        self.assertIn("no forward geometry", path.failure_reason)
 
     def test_2026_07_31_parallel_lane_continues_across_two_prefabs(self):
         """route_build_id=0cc3209ceb5245418158a5f76eae2410.

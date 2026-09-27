@@ -2259,6 +2259,7 @@ class Plugin(BasePlugin):
     def on_tick(self, delta_time: float):
         if not self.enabled:
             return
+        map_tick_started_at = time.monotonic()
 
         pos = self.sdk.get("truck_world_pos")
         heading = self.sdk.get("truck_heading", 0.0) or 0.0
@@ -2433,6 +2434,7 @@ class Plugin(BasePlugin):
             self._update_lane_trajectory(pos, heading)
         else:
             self._update_lane_trajectory(pos, heading, observation_altitude)
+        lane_update_finished_at = time.monotonic()
         self._record_explored_road()
         self._exploration_save_t += delta_time
         exploration_save_due = self._exploration_save_t >= 15.0
@@ -2784,6 +2786,12 @@ class Plugin(BasePlugin):
                 steering_debug.update({
                     "computed_at": calculation_finished_at,
                     "observation_timestamp": vehicle_observation.get("timestamp"),
+                    # Passive phase markers, in the same monotonic clock as
+                    # the SDK observation. They identify where an old input
+                    # spent time without refreshing its safety timestamp.
+                    "map_tick_started_at": map_tick_started_at,
+                    "map_lane_update_finished_at": lane_update_finished_at,
+                    "map_calculation_started_at": calculation_started_at,
                     "sdk_frame_us": vehicle_observation.get("sdk_frame_us"),
                     "observation_interval_s": observation_dt,
                     "control_dt_s": control_dt_s,

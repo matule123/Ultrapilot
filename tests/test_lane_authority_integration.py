@@ -95,6 +95,33 @@ def build_map_plugin(y=3.0):
 
 
 class LaneAuthorityIntegrationTests(unittest.TestCase):
+    def test_map_packet_records_monotonic_phase_boundaries(self):
+        plugin, sdk, point = build_map_plugin()
+        plugin.tags = Tags()
+        sdk.set("truck_world_pos", (point.x, point.z))
+        sdk.set("truck_heading", point.heading)
+        sdk.set("truck_speed_ms", 0.0)
+        sdk.set("telemetry_valid", True)
+        sdk.set("vehicle_envelope_snapshot", {
+            "timestamp": time.monotonic(), "sdk_frame_us": 1_000_000,
+            "tractor_position": (point.x, point.y, point.z),
+            "tractor_heading": point.heading, "tractor_speed_ms": 0.0,
+            "tractor_reference_geometry": dict(
+                valid=True, source="synthetic_4x2", wheelbase_m=3.8,
+                reference_ahead_m=2.1),
+        })
+        plugin.on_tick(0.02)
+        packet = sdk.get("nav_steering_debug", {})
+        self.assertEqual(packet.get("controller"), "frenet_bicycle")
+        self.assertLessEqual(packet["map_tick_started_at"],
+                             packet["map_lane_update_finished_at"])
+        self.assertLessEqual(packet["map_lane_update_finished_at"],
+                             packet["map_calculation_started_at"])
+        self.assertLessEqual(packet["map_calculation_started_at"],
+                             packet["computed_at"])
+        self.assertLessEqual(packet["observation_timestamp"],
+                             packet["computed_at"])
+
     def test_stale_locator_callback_releases_input_for_fresh_gps_build(self):
         """17:10 regression: stale rolling GPS work is not a completed input."""
         plugin, _sdk, _point = build_map_plugin()
