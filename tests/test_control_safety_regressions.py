@@ -129,6 +129,41 @@ def ready_navigation_state(**extra):
 
 
 class ControlSafetyRegressionTests(unittest.TestCase):
+    def test_long_route_confidence_keeps_live_and_identity_gates(self):
+        # The 18 Sep route's 42 confirmed prefab segments must not cap the
+        # current lane at 0.56. Its initial locator score and every live
+        # authority gate remain independent of the immutable path score.
+        state = ready_navigation_state(autopilot_active=False)
+        snapshot = state.get("lane_trajectory")
+        snapshot["confidence"] = 0.794222672423582
+        snapshot["confidence_components"] = {
+            "trajectory": 0.97, "locator": 0.794222672423582,
+        }
+        live = state.get("lane_match")
+        live.update({"valid": True, "confidence": 0.794222672423582,
+                     "authority_confidence": 0.9666666667,
+                     "lateral_error_m": 0.952,
+                     "heading_error_rad": math.radians(6.1)})
+        self.assertAlmostEqual(effective_lane_confidence(snapshot, live),
+                               0.9666666667)
+        self.assertEqual(lane_authority_rejection_reason(state, snapshot), "")
+
+        live["authority_confidence"] = 0.69
+        self.assertIn("confidence", lane_authority_rejection_reason(
+            state, snapshot))
+        live["authority_confidence"] = 0.9666666667
+        live["valid"] = False
+        self.assertIn("localisation", lane_authority_rejection_reason(
+            state, snapshot))
+        live["valid"] = True
+        state.set("lane_trajectory_revision", 8)
+        self.assertIn("stale", lane_authority_rejection_reason(
+            state, snapshot))
+        state.set("lane_trajectory_revision", 7)
+        state.set("navigation_intent_id", "new-intent")
+        self.assertIn("different navigation intent",
+                      lane_authority_rejection_reason(state, snapshot))
+
     def test_unbound_steering_response_heuristic_has_no_runtime_authority(self):
         now = time.monotonic()
         state = ready_navigation_state(

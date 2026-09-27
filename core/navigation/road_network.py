@@ -3011,11 +3011,19 @@ class RoadNetwork:
                        else (rebuilt[-1].heading if rebuilt else point.heading))
             rebuilt.append(LanePoint(point.x, point.y, point.z,
                                      distance, heading, point.curvature))
-        prefab_count = sum(segment.lane_id.prefab_token not in (None, "graph")
-                           for segment in segments)
-        graph_count = sum(segment.lane_id.prefab_token == "graph"
-                          for segment in segments)
-        confidence = max(0.0, 0.98 - prefab_count * 0.01 - graph_count * 0.08)
+        # This is the quality of one validated lane reference, not the
+        # probability that every junction in the whole GPS route is clear.
+        # All directed boundaries and geometry above must pass independently;
+        # summing a penalty for each *distant, confirmed* prefab made the
+        # current lane unusable solely because the rolling path was long.
+        # Preserve the existing per-segment uncertainty, taking the weakest
+        # provenance anywhere on this path. The live LaneMatch independently
+        # determines whether the current lane is localised well enough.
+        provenance_penalty = max((
+            0.08 if segment.lane_id.prefab_token == "graph" else
+            0.01 if segment.lane_id.prefab_token is not None else 0.0
+            for segment in segments), default=0.0)
+        confidence = max(0.0, 0.98 - provenance_penalty)
         pair_indices = [segment.gps_pair_index for segment in segments
                         if segment.gps_pair_index >= 0]
         if expected_first_gps_pair_index is None:

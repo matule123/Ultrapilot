@@ -2,6 +2,7 @@ import io
 import math
 import pickle
 import unittest
+from dataclasses import replace
 from unittest import mock
 
 from core.navigation.lane_model import (
@@ -85,6 +86,68 @@ class SyntheticMap:
 
 
 class LaneRouteBuilderTests(unittest.TestCase):
+    def test_long_confirmed_prefabs_do_not_erase_local_lane_confidence(self):
+        # The 18 Sep route build had 99 road and 42 prefab segments in its
+        # rolling 8.1 km path. Every directed boundary was validated, but
+        # summing a 0.01 charge for each distant prefab yielded 0.56.
+        def confirmed_sequence(count, prefab_positions,
+                               graph_positions=frozenset()):
+            ids = tuple(LaneId(1000 + index, 1, 0,
+                               "graph" if index in graph_positions else
+                               "confirmed" if index in prefab_positions else None,
+                               0 if index in prefab_positions else None,
+                               (0,) if index in prefab_positions else ())
+                        for index in range(count))
+            segments = []
+            for index, lane_id in enumerate(ids):
+                z = index * 20.0
+                segments.append(LaneSegment(
+                    lane_id, index + 1, index + 2, 1, 0, 1, 4.5,
+                    "dataset" if index in prefab_positions else "derived",
+                    0, None,
+                    "prefab" if index in prefab_positions else "road",
+                    (LanePoint(0.0, 0.0, z, heading=math.pi),
+                     LanePoint(0.0, 0.0, z + 20.0, heading=math.pi)),
+                    successors=(LaneConnection(ids[index + 1], "prefab"),)
+                    if index + 1 < count else (),
+                    gps_pair_index=index))
+            return RoadNetwork().connect_lane_sequence(
+                segments, range(1, count + 2))
+
+        short = confirmed_sequence(2, {1})
+        long = confirmed_sequence(141, set(range(1, 127, 3)))
+        self.assertTrue(short.valid, short.failure_reason)
+        self.assertTrue(long.valid, long.failure_reason)
+        self.assertEqual(sum(segment.lane_id.prefab_token is not None
+                             for segment in long.segments), 42)
+        self.assertAlmostEqual(short.confidence, 0.97)
+        self.assertAlmostEqual(long.confidence, short.confidence)
+        self.assertAlmostEqual(confirmed_sequence(141, set()).confidence,
+                               0.98)
+        # Graph provenance is still weaker than a direct prefab/road, but
+        # distant repeated bridges do not consume the current-lane score.
+        graph = confirmed_sequence(141, {1}, {100, 103})
+        self.assertTrue(graph.valid, graph.failure_reason)
+        self.assertAlmostEqual(graph.confidence, 0.90)
+
+        # A higher score never repairs absent directed topology, reversed
+        # LaneId, an excessive deck step, or a wrong boundary tangent.
+        first, second = short.segments
+        invalid_cases = (
+            (replace(first, successors=()), second),
+            (first, replace(second, lane_id=replace(
+                second.lane_id, direction=-1))),
+            (first, replace(second, centerline=tuple(replace(
+                point, y=point.y + 1.0) for point in second.centerline))),
+            (first, replace(second, centerline=tuple(replace(
+                point, heading=point.heading + math.pi / 2)
+                for point in second.centerline))),
+        )
+        for segments in invalid_cases:
+            with self.subTest(segments=segments[1].lane_id):
+                path = RoadNetwork().connect_lane_sequence(segments, (1, 2, 3))
+                self.assertFalse(path.valid)
+
     def test_map_load_progress_is_phase_based_and_observational(self):
         net = RoadNetwork()
         phases = []
