@@ -997,6 +997,25 @@ class UltraPilotEngine:
                 packet=packet)
             if reason:
                 return reason
+        # Automatic Drive selection is not verified at the DLL/game boundary.
+        # Do not briefly grant control in Neutral and ask a worker to discover
+        # the direction by pulsing the selector after engagement.
+        truck = ((self.shared_state.get("telemetry", {}) or {})
+                 .get("truck", {}) or {})
+        try:
+            forward_gear = int(truck.get("gear", 0)) > 0
+            sdk_frame = int(truck.get("sdkFrameTimeUs", 0))
+            observed_at = float(self.shared_state.get("telemetry_timestamp", 0.0))
+        except (TypeError, ValueError, OverflowError):
+            forward_gear = False
+            sdk_frame = 0
+            observed_at = 0.0
+        age = time.monotonic() - observed_at
+        if (self.shared_state.get("telemetry_valid") is not True
+                or sdk_frame <= 0 or not 0.0 <= age <= 0.5):
+            return "forward gear observation is missing or stale"
+        if not forward_gear:
+            return "forward gear is not confirmed by vehicle telemetry"
         return ""
 
     def _process_autopilot_command(self):
@@ -1458,6 +1477,16 @@ class UltraPilotEngine:
             self.shared_state.set(CTL_PAY_TOLL, False)
 
         drive_intent = self.shared_state.get(CTL_SELECT_DRIVE, None)
+        if drive_intent is True:
+            # No production worker is authorized to select a gear. A queued
+            # True from a previous engagement must not become a late pulse
+            # after N is pressed again or after Reverse is observed.
+            self.shared_state.set(CTL_SELECT_DRIVE, None)
+            self._record_drive_boundary(
+                "discard_unverified_drive_request", truck_telemetry,
+                selector=None, steering=steering, throttle=throttle,
+                brake=brake)
+            drive_intent = None
         if not self.shared_state.get("autopilot_active", False):
             self.controller.release_all()
             self.shared_state.set(CTL_SELECT_DRIVE, None)
@@ -1476,14 +1505,6 @@ class UltraPilotEngine:
                 selector=False, returned=returned, steering=steering,
                 throttle=throttle, brake=brake)
             self._drive_selector_pressed = False
-            self.shared_state.set(CTL_SELECT_DRIVE, None)
-        elif drive_intent is True:
-            returned = self.controller.select_drive(True)
-            self._record_drive_boundary(
-                "press_drive_selector", truck_telemetry,
-                selector=True, returned=returned, steering=steering,
-                throttle=throttle, brake=brake)
-            self._drive_selector_pressed = True
             self.shared_state.set(CTL_SELECT_DRIVE, None)
         elif drive_intent is False:
             returned = self.controller.select_drive(False)

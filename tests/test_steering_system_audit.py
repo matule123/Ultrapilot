@@ -173,7 +173,7 @@ class SteeringSystemAuditTests(unittest.TestCase):
         braking = [r for r in rows if 10 < r['t'] < 13.5]
         self.assertGreater(max(r['out'] for r in braking)-min(r['out'] for r in braking), .005)
 
-    def test_drive_selector_wait_executes_current_command_packet(self):
+    def test_neutral_rejects_command_without_drive_selector_wait(self):
         now = time.monotonic()
         state = ready_navigation_state(system_state='CRUISE', nav_active=True,
             nav_steering=.4, nav_steering_debug=dict(
@@ -187,9 +187,29 @@ class SteeringSystemAuditTests(unittest.TestCase):
                 source_dataset_fingerprint='test-fingerprint'))
         plugin = autopilot({'speed': 0., 'gear': 0, 'gameSteer': 0.}, state)
         plugin.on_tick(.05)
-        self.assertLess(plugin.sdk.controller.steering, 0.)
+        self.assertFalse(state.get('autopilot_active'))
+        self.assertAlmostEqual(plugin.sdk.controller.steering, 0.)
         self.assertAlmostEqual(plugin.sdk.controller.throttle, 0.)
         self.assertAlmostEqual(plugin.sdk.controller.brake, 0.)
+        self.assertNotIn(True, plugin.sdk.controller.drive_events)
+
+    def test_confirmed_forward_gear_executes_current_command_packet(self):
+        now = time.monotonic()
+        state = ready_navigation_state(system_state='CRUISE', nav_active=True,
+            nav_steering=.4, nav_steering_debug=dict(
+                controller='frenet_bicycle', output=-.25,
+                local_curvature=-.02, authority_valid=True,
+                authority_revision=7, navigation_intent_id=None,
+                computed_at=now, observation_timestamp=now,
+                route_build_id='test-build',
+                source_game_session_id='test-session',
+                source_map_key='test-map',
+                source_dataset_fingerprint='test-fingerprint'))
+        plugin = autopilot({'speed': 0., 'gear': 4, 'gameSteer': 0.}, state)
+        plugin.on_tick(.05)
+        self.assertTrue(state.get('autopilot_active'))
+        self.assertLess(plugin.sdk.controller.steering, 0.)
+        self.assertNotIn(True, plugin.sdk.controller.drive_events)
 
     def test_frenet_signs_and_nonlinear_error_equation(self):
         for k in (-1/18, -1/35, 0., 1/83, 1/18):

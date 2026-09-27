@@ -134,6 +134,9 @@ class ControlSafetyRegressionTests(unittest.TestCase):
         now = time.monotonic()
         state = ready_navigation_state(
             autopilot_active=False, nav_active=True)
+        state.set("telemetry", {"truck": {
+            "gear": 3, "speed": 0.0, "sdkFrameTimeUs": 1_000_000}})
+        state.set("telemetry_timestamp", now)
         snapshot = state.get("lane_trajectory")
         snapshot["navigation_intent_id"] = "incident-intent"
         snapshot["request_id"] = "incident-intent"
@@ -555,6 +558,9 @@ class ControlSafetyRegressionTests(unittest.TestCase):
             "source": "gps_lane", "revision": 7,
         })
         state.set("autopilot_command", {"seq": 71, "enabled": True})
+        state.set("telemetry", {"truck": {
+            "gear": 3, "speed": 0.0, "sdkFrameTimeUs": 1_000_000}})
+        state.set("telemetry_timestamp", now)
         engine = UltraPilotEngine.__new__(UltraPilotEngine)
         engine.shared_state = state
         engine.controller = Controller()
@@ -737,33 +743,27 @@ class ControlSafetyRegressionTests(unittest.TestCase):
         self.assertEqual(plugin.sdk.controller.throttle, 0.0)
         truck["speed"] = 0.0
         plugin.sdk.telemetry.truck = truck
-        plugin._drive_request_t = -1.0
         plugin.on_tick(0.05)
         self.assertFalse(state.get("autopilot_active"))
         self.assertFalse(plugin._reverse_recovery)
         self.assertEqual(plugin.sdk.controller.drive_events, [False])
 
-    def test_neutral_selects_drive_before_throttle(self):
+    def test_neutral_disengages_without_selecting_drive_or_throttle(self):
         state = ready_navigation_state()
         plugin = autopilot({"speed": 0.0, "gear": 0}, state)
         plugin.on_tick(0.05)
-        self.assertTrue(state.get("autopilot_active"))
-        self.assertTrue(plugin.sdk.controller.drive)
+        self.assertFalse(state.get("autopilot_active"))
         self.assertEqual(plugin.sdk.controller.throttle, 0.0)
         self.assertEqual(plugin.sdk.controller.brake, 0.0)
-
-        # The plugin must not overwrite this event with False before the
-        # slower engine process has consumed it. The engine owns the physical
-        # release half of the momentary pulse.
+        self.assertNotIn(True, plugin.sdk.controller.drive_events)
         plugin.on_tick(0.05)
-        self.assertEqual(plugin.sdk.controller.drive_events, [True])
+        self.assertEqual(plugin.sdk.controller.throttle, 0.0)
+        self.assertNotIn(True, plugin.sdk.controller.drive_events)
 
-    def test_unknown_forward_ratio_never_receives_propulsion_after_selector_settle(self):
+    def test_unknown_forward_ratio_never_receives_propulsion_after_disable(self):
         state = ready_navigation_state()
         plugin = autopilot({"speed": 0.0, "gear": 0}, state)
         plugin.on_tick(0.05)
-        plugin._drive_engage_started = time.monotonic() - 1.0
-        plugin._drive_request_t = time.monotonic()
         plugin.on_tick(0.10)
         self.assertEqual(plugin.sdk.controller.throttle, 0.0)
         self.assertEqual(plugin.tags.throttle, 0.0)
@@ -835,7 +835,7 @@ class ControlSafetyRegressionTests(unittest.TestCase):
         self.assertEqual(engine.controller.throttle, 0.0)
         self.assertNotIn(True, engine.controller.drive_events)
 
-    def test_engine_fresh_bound_gps_packet_keeps_forward_output(self):
+    def test_engine_fresh_bound_gps_packet_keeps_forward_output_without_selector(self):
         now = time.monotonic()
         identity = {
             "navigation_intent_id": "incident-intent",
@@ -874,9 +874,9 @@ class ControlSafetyRegressionTests(unittest.TestCase):
         engine._drive_selector_pressed = False
         engine._flush_controls()
         self.assertEqual(engine.controller.throttle, 0.4)
-        self.assertIn(True, engine.controller.drive_events)
+        self.assertNotIn(True, engine.controller.drive_events)
         event = state.get("drive_boundary_event")
-        self.assertEqual(event["action"], "press_drive_selector")
+        self.assertEqual(event["action"], "discard_unverified_drive_request")
         self.assertEqual(event["sdk_frame_us"], 345678)
 
     def test_automatic_drive_mode_with_zero_ratio_fails_closed(self):
@@ -886,10 +886,8 @@ class ControlSafetyRegressionTests(unittest.TestCase):
         self.assertEqual(plugin.sdk.controller.throttle, 0.0)
         self.assertEqual(plugin.tags.throttle, 0.0)
 
-        # The selector mode is not measured by the gear-ratio channel. A
-        # timed fallback must not add propulsion with an unproven direction.
-        plugin._drive_engage_started = time.monotonic() - 1.0
-        plugin._drive_request_t = time.monotonic() - 1.0
+        # The selector mode is not measured by the gear-ratio channel.
+        # Neither waiting nor repeating N may authorize an automatic pulse.
         plugin.on_tick(0.10)
         self.assertFalse(state.get("autopilot_active"))
         self.assertEqual(plugin.sdk.controller.throttle, 0.0)
@@ -966,7 +964,7 @@ class ControlSafetyRegressionTests(unittest.TestCase):
         engine._flush_controls()
         self.assertLess(engine.controller.steering, 0.70)
 
-    def test_engine_turns_coalesced_drive_requests_into_real_pulses(self):
+    def test_engine_discards_coalesced_drive_requests(self):
         state = State({
             "autopilot_active": True,
             "autopilot_control_heartbeat": time.monotonic(),
@@ -985,13 +983,13 @@ class ControlSafetyRegressionTests(unittest.TestCase):
         engine._drive_selector_pressed = False
 
         engine._flush_controls()
-        # Simulate a 100 Hz plugin publishing True again before the slower
-        # engine frame. The engine must release first instead of holding it.
+        # A stale worker must not create a physical pulse on any engine frame.
         state.set(CTL_SELECT_DRIVE, True)
         engine._flush_controls()
         state.set(CTL_SELECT_DRIVE, True)
         engine._flush_controls()
-        self.assertEqual(controller.drive_events, [True, False, True])
+        self.assertNotIn(True, controller.drive_events)
+        self.assertIsNone(state.get(CTL_SELECT_DRIVE))
 
     def test_route_blinker_survives_legacy_planner_frames(self):
         state = State({
@@ -1039,7 +1037,7 @@ class ControlSafetyRegressionTests(unittest.TestCase):
         self.assertEqual(controller.blinker, "off")
         self.assertEqual(state.get("active_blinker"), "off")
 
-    def test_drive_request_survives_worker_engine_scheduling_race(self):
+    def test_neutral_worker_ticks_never_queue_drive_for_engine(self):
         shared = ready_navigation_state().values
         shared["telemetry"] = {"truck": {"speed": 0.0, "gear": 0}}
         sdk = PluginSDK(shared, "autopilot")
@@ -1047,9 +1045,8 @@ class ControlSafetyRegressionTests(unittest.TestCase):
         plugin.on_start()
         plugin.on_tick(0.01)
         plugin.on_tick(0.01)
-        # Two fast worker ticks happened before the engine got CPU time. The
-        # selector request must still be pending instead of being overwritten.
-        self.assertIs(shared.get(CTL_SELECT_DRIVE), True)
+        # No automatic selector intent may survive a fast worker/engine race.
+        self.assertIsNot(shared.get(CTL_SELECT_DRIVE), True)
 
         controller = Controller()
         engine = UltraPilotEngine.__new__(UltraPilotEngine)
@@ -1062,8 +1059,7 @@ class ControlSafetyRegressionTests(unittest.TestCase):
         engine._drive_selector_pressed = False
         engine._flush_controls()
         engine._flush_controls()
-        self.assertEqual(controller.drive_events, [True, False])
-        self.assertIsNone(shared.get(CTL_SELECT_DRIVE))
+        self.assertNotIn(True, controller.drive_events)
 
     def test_master_release_also_releases_drive_selector(self):
         class FakeSCS:
@@ -1078,6 +1074,14 @@ class ControlSafetyRegressionTests(unittest.TestCase):
         controller.scs = FakeSCS()
         controller.release_all()
         self.assertTrue(controller.scs.drive_released)
+
+    def test_non_scs_backends_cannot_select_drive(self):
+        controller = PhysicalController.__new__(PhysicalController)
+        for mode in ("VJOY", "DIGITAL"):
+            with self.subTest(mode=mode):
+                controller.mode = mode
+                self.assertIs(controller.select_drive(True), False)
+                self.assertIs(controller.select_drive(False), False)
 
     def test_scs_blinker_emits_one_frame_press_and_release(self):
         class FakeSCS:
@@ -1237,6 +1241,10 @@ class ControlSafetyRegressionTests(unittest.TestCase):
             "autopilot_navigation_readiness": {
                 "ready": True, "reason": "", "timestamp": time.monotonic(),
             },
+            "telemetry_valid": True,
+            "telemetry_timestamp": time.monotonic(),
+            "telemetry": {"truck": {
+                "gear": 3, "speed": 0.0, "sdkFrameTimeUs": 1_000_000}},
         })
         engine = UltraPilotEngine.__new__(UltraPilotEngine)
         engine.shared_state = state
@@ -1253,6 +1261,9 @@ class ControlSafetyRegressionTests(unittest.TestCase):
                 "ready": True, "timestamp": time.monotonic()},
             "autopilot_control_heartbeat": time.monotonic(),
             "telemetry_valid": True,
+            "telemetry_timestamp": time.monotonic(),
+            "telemetry": {"truck": {
+                "gear": 3, "speed": 0.0, "sdkFrameTimeUs": 1_000_000}},
         })
         engine = UltraPilotEngine.__new__(UltraPilotEngine)
         engine.shared_state = state

@@ -52,10 +52,14 @@ class MapSDK:
 class Controller:
     def __init__(self):
         self.steering = self.throttle = self.brake = 0.0
+        self.drive = False
 
     def set_steering(self, value): self.steering = value
     def set_throttle(self, value): self.throttle = value
     def set_brake(self, value): self.brake = value
+    def select_drive(self, pressed=True):
+        self.drive = bool(pressed)
+        return True
     def set_blinker(self, value): pass
     def pay_toll(self): pass
 
@@ -66,7 +70,7 @@ class Tags:
 
 class Telemetry:
     def get(self, key, default=None):
-        return {"speed": 15.0} if key == "truck" else default
+        return {"speed": 15.0, "gear": 4} if key == "truck" else default
 
 
 def build_map_plugin(y=3.0):

@@ -32,7 +32,6 @@ BRAKE_RAMP_UP = 2.5          # brake can rise this fast per second (anti-jerk)
 BRAKE_RAMP_DOWN = 4.0        # brake releases faster than it engages
 BRAKE_MIN_HOLD = 0.04        # below this, treat brake as zero (avoid flutter)
 THROTTLE_RAMP = 3.0          # throttle slew rate per second
-DRIVE_ENGAGE_SETTLE_S = 0.45 # allow the selector pulse to reach the gearbox
 ENGAGEMENT_DEFAULT_LATERAL_M = 1.10
 ENGAGEMENT_MAX_LATERAL_M = 1.50
 ENGAGEMENT_MAX_HEADING_RAD = math.radians(18.0)
@@ -518,8 +517,6 @@ class Plugin(BasePlugin):
         self._reverse_recovery = False
         self._reverse_recovery_owned = False
         self._automatic_brake_stop = False
-        self._drive_request_t = 0.0
-        self._drive_engage_started = 0.0
         self._lane_lock_acquired = False
         self._last_authority_stop_reason = None
         # Observational only: about 55 seconds at the measured ~65 Hz runtime.
@@ -968,7 +965,6 @@ class Plugin(BasePlugin):
         # fail-closed lane corridor above is checked on every tick.
         if not active_requested:
             self._lane_lock_acquired = False
-            self._drive_engage_started = 0.0
         if (gps_navigation_present and not authority_reason
                 and not self._lane_lock_acquired):
             live_match = (self.sdk.shared_state.get("lane_match")
@@ -1050,10 +1046,22 @@ class Plugin(BasePlugin):
             self._reset_steering_dynamics(observed_game_steering)
         self._was_active = autopilot_engaged
         self._engage_blend = 1.0 if autopilot_engaged else 0.0
+        if not autopilot_engaged:
+            # Worker ticks continue after an automatic disable. Do not leave
+            # fresh pedal or steering intent queued for the next N transition.
+            # The Engine independently releases the physical controller; this
+            # clears the plugin's published intent even between engine ticks.
+            self.sdk.controller.set_steering(0.0)
+            self.sdk.controller.set_throttle(0.0)
+            self.sdk.controller.set_brake(0.0)
+            self.sdk.controller.select_drive(False)
+            self._last_throttle = self._last_brake = 0.0
+            self._last_steering = 0.0
+            self._publish_control_tags(speed_kmh, False)
+            return
 
-        # Arrival is terminal and must run before reverse recovery or the
-        # automatic-D handshake. With gear 0/-1 those branches used to return
-        # first, so the autopilot stayed enabled and could start reversing.
+        # Arrival is terminal and must run before reverse recovery or gear
+        # validation. With gear 0/-1 those branches used to return first.
         arrival_pending = bool(self.sdk.shared_state.get(
             "navigation_arrival_pending", False))
         if arrival_pending and autopilot_engaged:
@@ -1072,7 +1080,6 @@ class Plugin(BasePlugin):
                 self.sdk.controller.select_drive(False)
                 self._last_brake = 0.0
                 self._reverse_recovery = False
-                self._drive_engage_started = 0.0
                 self.sdk.shared_state.set("autopilot_active", False)
                 self.sdk.shared_state.set("nav_active", False)
                 self.sdk.shared_state.set("nav_steering", 0.0)
@@ -1107,7 +1114,6 @@ class Plugin(BasePlugin):
                 self.sdk.controller.set_brake(0.0)
                 self.sdk.controller.select_drive(False)
                 self._last_brake = 0.0
-                self._drive_engage_started = 0.0
                 self._reverse_recovery = False
                 self._publish_automatic_disable(authority_reason)
                 logging.warning(
@@ -1149,60 +1155,28 @@ class Plugin(BasePlugin):
             self._reverse_recovery = False
             self._reverse_recovery_owned = False
             self._automatic_brake_stop = False
-            self._drive_engage_started = 0.0
             self._publish_control_tags(speed_kmh, False)
             return
 
-        # A zero engaged ratio cannot prove the automatic selector is in D.
-        # The previous fallback applied throttle after a brief D pulse even
-        # when telemetry still reported gear 0. That can propel an unverified
-        # selector state. Do not use throttle to discover the game's state.
-        if autopilot_engaged and speed_kmh < 0.5 and gear == 0:
-            now = time.monotonic()
-            if self._drive_engage_started <= 0.0:
-                self._drive_engage_started = now
-                self.sdk.controller.select_drive(True)
-                self._drive_request_t = now
-
-            if now - self._drive_engage_started < DRIVE_ENGAGE_SETTLE_S:
-                self.sdk.controller.set_throttle(0.0)
-                self._last_throttle = 0.0
-                self.sdk.controller.set_brake(0.0)
-                self._last_brake = 0.0
-                # The selector handshake is longitudinal only. It must not
-                # leave the previous CTL_STEERING value latched for up to
-                # 450 ms: execute this tick's already validated packet through
-                # the same sole physical dynamics used by normal driving.
-                settle_nav_active = bool(
-                    navigation_authority_safe
-                    and self.sdk.shared_state.get("nav_active", False))
-                self._last_steering = self._ramp_steering(
-                    nav_command if settle_nav_active else 0.0, dt,
-                    speed_ms=abs(speed),
-                    curvature_per_m=nav_command_curvature)
-                self._write_steering_output(self._last_steering)
-                self.sdk.shared_state.set(
-                    "navigation_status", "Pripravujem jazdu dopredu")
-                self._publish_control_tags(speed_kmh, settle_nav_active)
-                return
+        # The 27 Sep trace contains short D pulses followed by a forward gear
+        # observation only after automatic disable. Neither shared-memory
+        # write success nor a 450 ms timer proves that ETS2 selected Drive.
+        # Require the driver to select a forward ratio before engagement;
+        # losing it later revokes authority without another selector pulse.
+        if autopilot_engaged and gear == 0:
             self.sdk.controller.set_throttle(0.0)
             self._last_throttle = 0.0
             self.sdk.controller.set_brake(0.0)
             self._last_brake = 0.0
             self.sdk.controller.select_drive(False)
-            self._drive_engage_started = 0.0
+            self._last_steering = 0.0
+            self._write_steering_output(0.0)
             self._publish_automatic_disable(
-                "forward gear not confirmed after Drive request")
+                "forward gear is no longer confirmed")
             self.sdk.shared_state.set(
                 "navigation_status", "Autopilot vypnutý: jazda dopredu nebola potvrdená")
             self._publish_control_tags(speed_kmh, False)
             return
-        if gear > 0:
-            # The engine owns the physical release half of every momentary
-            # selector pulse. Publishing False here can overwrite an unconsumed
-            # True in shared state before the engine process observes it.
-            self._drive_engage_started = 0.0
-
         # 2. Safety states — these still brake hard, but through the ramp so
         #    the truck doesn't lock up and spin.
         if system_state == "EMERGENCY":
