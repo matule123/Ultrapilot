@@ -129,6 +129,52 @@ def ready_navigation_state(**extra):
 
 
 class ControlSafetyRegressionTests(unittest.TestCase):
+    def test_unbound_steering_response_heuristic_has_no_runtime_authority(self):
+        now = time.monotonic()
+        state = ready_navigation_state(
+            nav_active=True, nav_steering=0.12,
+            acc_throttle=0.4, acc_brake=0.0)
+        snapshot = state.get("lane_trajectory")
+        snapshot["navigation_intent_id"] = "incident-intent"
+        snapshot["request_id"] = "incident-intent"
+        state.set("navigation_intent_id", "incident-intent")
+        state.set("nav_recalc_request", "incident-intent")
+        calibration = {
+            "schema_version": 1, "valid": True,
+            "tyre_angle_per_input_rad": 0.7,
+            "command_delay_s": 0.067, "observation_delay_s": 0.067,
+            "source": "measured-candidate",
+        }
+        state.set("steering_actuator_calibration", calibration)
+        state.set("engine_applied_steering", 0.12)
+        state.set("nav_steering_debug", {
+            "controller": "frenet_bicycle", "calculation_packet_schema_version": 1,
+            "authority_valid": True, "authority_revision": 7,
+            "navigation_intent_id": "incident-intent",
+            "route_build_id": "test-build",
+            "source_game_session_id": "test-session",
+            "source_map_key": "test-map",
+            "source_dataset_fingerprint": "test-fingerprint",
+            "actuator_calibration": calibration,
+            "computed_at": now, "observation_timestamp": now,
+            "sdk_frame_us": 1_000_000, "calculation_sequence": 1,
+            "output": 0.12, "local_curvature": 0.01,
+        })
+        truck = {"speed": 12.0, "gear": 5, "sdkFrameTimeUs": 1_000_000,
+                 "gameSteer": -0.03,
+                 "roadWheelAnglesRad": [0.021, 0.021]}
+        plugin = autopilot(truck, state)
+        plugin._lane_lock_acquired = True
+        plugin._was_active = True
+        from plugins.autopilot.main import SteeringResponseMonitor
+        plugin._steering_response_monitor = SteeringResponseMonitor()
+        plugin._steering_response_monitor.latched = True
+        plugin.on_tick(0.05)
+        readiness = state.get("autopilot_navigation_readiness")
+        self.assertTrue(readiness["ready"], readiness["reason"])
+        self.assertNotIn("steering actuator response", readiness["reason"])
+        self.assertTrue(state.get("autopilot_active"))
+
     def test_unproven_screen_danger_cannot_create_a_brake_request(self):
         """10:12:26: curve_brake=0, but screen CV stopped the truck."""
         state = ready_navigation_state(

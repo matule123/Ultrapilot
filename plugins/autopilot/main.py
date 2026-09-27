@@ -400,6 +400,77 @@ def authority_retention_lateral_limit(live_match):
         width * AUTHORITY_RETENTION_WIDTH_FRACTION))
 
 
+class SteeringResponseMonitor:
+    """Offline-only diagnostic for a suspected low steering response.
+
+    It has no runtime authority. Live command and SDK response frames are not
+    yet bound tightly enough for this heuristic to disable the autopilot.
+    """
+
+    FAILURE_REASON = "steering actuator response persistently below commanded steering"
+
+    def __init__(self):
+        self.reset()
+
+    def reset(self):
+        self.identity = None
+        self.last_frame = None
+        self.last_time = None
+        self.last_command = None
+        self.mismatch_since = None
+        self.latched = False
+
+    def observe(self, *, now, sdk_frame_us, identity, active, speed_kmh,
+                command, game_steer_right, tyre_angles_rad,
+                tyre_angle_per_input_rad):
+        if not active:
+            self.reset()
+            return ""
+        if self.latched:
+            return self.FAILURE_REASON
+        try:
+            valid = (isinstance(identity, tuple) and all(v is not None for v in identity)
+                     and type(sdk_frame_us) is int and sdk_frame_us > 0
+                     and all(math.isfinite(float(v)) for v in (
+                         now, speed_kmh, command, game_steer_right,
+                         tyre_angle_per_input_rad))
+                     and 0.4 <= float(tyre_angle_per_input_rad) <= 1.0
+                     and isinstance(tyre_angles_rad, (tuple, list))
+                     and len(tyre_angles_rad) >= 2
+                     and all(math.isfinite(float(v)) for v in tyre_angles_rad[:2]))
+        except (TypeError, ValueError, OverflowError):
+            valid = False
+        if not valid:
+            self.reset()
+            return ""
+        if identity != self.identity:
+            self.reset()
+            self.identity = identity
+        if self.last_frame is not None and sdk_frame_us <= self.last_frame:
+            return ""
+        if self.last_time is not None and (now <= self.last_time or now - self.last_time > 0.2):
+            self.mismatch_since = None
+        stable = (self.last_command is not None
+                  and abs(command - self.last_command) <= 0.03)
+        self.last_frame, self.last_time, self.last_command = sdk_frame_us, now, command
+        if speed_kmh < 10.0 or abs(command) < 0.07 or not stable:
+            self.mismatch_since = None
+            return ""
+        tyre = (float(tyre_angles_rad[0]) + float(tyre_angles_rad[1])) / 2
+        underresponse = (game_steer_right * command < 0.55 * command * command
+                         and tyre * command < (
+                             0.55 * command * command * tyre_angle_per_input_rad))
+        if not underresponse:
+            self.mismatch_since = None
+            return ""
+        if self.mismatch_since is None:
+            self.mismatch_since = now
+        if now - self.mismatch_since >= 1.25:
+            self.latched = True
+            return self.FAILURE_REASON
+        return ""
+
+
 class Plugin(BasePlugin):
     """
     Autopilot plugin — the single authority that turns perception + ACC outputs
