@@ -355,6 +355,15 @@ class SettingsMenu(QWidget):
         sdk_info.setStyleSheet("font-size:12px;color:" + self._pal['muted'] + ";")
         self._themed_captions.append(sdk_info)
         sdk_layout.addWidget(sdk_info)
+        self.transmission_mode_label = QLabel()
+        self.transmission_mode_label.setObjectName("ETS2TransmissionMode")
+        self.transmission_mode_label.setWordWrap(True)
+        sdk_layout.addWidget(self.transmission_mode_label)
+        transmission_hint = self._caption(
+            "Zistené automaticky. Meňte len pri problémoch so zapnutím autopilota.")
+        transmission_hint.setWordWrap(True)
+        sdk_layout.addWidget(transmission_hint)
+        self.refresh_transmission_mode()
         grid.addWidget(sdk_frame, 2, 0, 1, 2)
         self._sdk_frame = sdk_frame
 
@@ -374,6 +383,25 @@ class SettingsMenu(QWidget):
         self.update_invert(self.invert_toggle.isChecked())
         self.update_sensitivity(init_sens)
         self.update_language(self.lang_combo.currentIndex())
+
+    def refresh_transmission_mode(self):
+        """Display the observer's evidence, never grant gearbox authority."""
+        from datetime import datetime
+        from core.transmission_mode import confirmed_mode
+        evidence = self.state.get("ets2_transmission_mode", {}) or {}
+        names = {0: "jednoduchá automatická", 1: "sekvenčná",
+                 2: "H radenie", 3: "reálna automatická"}
+        mode = confirmed_mode(evidence)
+        if mode is None:
+            detail = "nepotvrdený" + (
+                " – " + str(evidence.get("reason")) if evidence.get("reason") else "")
+        else:
+            stamp = evidence.get("detected_wall_time")
+            detected = datetime.fromtimestamp(stamp).strftime("%d.%m.%Y %H:%M:%S") if stamp else "?"
+            detail = (f"{names[mode]} (g_trans={mode}); "
+                      f"zdroj: {evidence.get('source', '?')}; zistené: {detected}")
+        self.transmission_mode_label.setText(
+            "Režim prevodovky ETS2: Automaticky – " + detail)
 
     def _show_settings_section(self, section, selected_button=None):
         """Switch the nested settings board without rebuilding live controls."""

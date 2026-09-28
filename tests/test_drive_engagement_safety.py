@@ -24,6 +24,10 @@ class DriveEngagementSafetyTests(unittest.TestCase):
                  "sdkFrameTimeUs": 290205058}
         state.set("telemetry", {"truck": truck})
         state.set("telemetry_timestamp", now)
+        state.set("ets2_transmission_mode", {
+            "mode": 3, "status": "confirmed", "profile": "test-profile",
+            "observed_at": now, "generation": "test-profile:3",
+        })
         state.set("autopilot_navigation_readiness", {
             "ready": True, "timestamp": now, "source": "gps_lane",
             "revision": 7,
@@ -334,6 +338,12 @@ class DriveEngagementSafetyTests(unittest.TestCase):
         state.set("telemetry_timestamp", time.monotonic())
         engine._flush_controls()
         self.assertFalse(state.get("auto_drive_pending"))
+        boundary = state.get("drive_boundary_event")
+        self.assertEqual(boundary["action"], "cancel_drive_selection")
+        self.assertEqual(boundary["observed_gear"], 0)
+        self.assertIn("SDK gear 0", boundary["reason"])
+        self.assertEqual(boundary["throttle_command"], 0.0)
+        self.assertEqual(boundary["steering_command"], 0.0)
         truck["gear"] = 4
         truck["sdkFrameTimeUs"] += 33_333
         state.set("telemetry_timestamp", time.monotonic())
@@ -373,6 +383,26 @@ class DriveEngagementSafetyTests(unittest.TestCase):
         self.assertFalse(state.get("autopilot_active"))
         self.assertFalse(state.get("auto_drive_pending"))
         self.assertEqual(engine.controller.throttle, 0.0)
+
+    def test_failed_selector_press_cancels_without_propulsion(self):
+        state, truck, engine = self._parked_request(park_brake=False)
+        original = engine.controller.select_drive
+        engine.controller.select_drive = lambda pressed=True: (
+            False if pressed else original(False))
+        state.set("autopilot_command", {"seq": 1, "enabled": True})
+        engine._process_autopilot_command()
+        truck["sdkFrameTimeUs"] += 33_333
+        state.set("telemetry_timestamp", time.monotonic())
+        engine._flush_controls()
+        self.assertFalse(state.get("auto_drive_pending"))
+        self.assertFalse(state.get("autopilot_active"))
+        self.assertNotIn(True, engine.controller.drive_events)
+        self.assertEqual((engine.controller.throttle,
+                          engine.controller.brake,
+                          engine.controller.steering), (0.0, 0.0, 0.0))
+        event = state.get("drive_boundary_event")
+        self.assertEqual(event["action"], "cancel_drive_selection")
+        self.assertIn("nepotvrdil zápis", event["reason"])
 
     def test_failed_selector_release_is_retried_only_as_false(self):
         state, truck, engine = self._parked_request()

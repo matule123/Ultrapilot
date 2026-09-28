@@ -45,6 +45,23 @@ class UiChromeTests(unittest.TestCase):
     def setUpClass(cls):
         cls.app = QApplication.instance() or QApplication([])
 
+    def test_settings_show_automatic_ets2_transmission_evidence(self):
+        import time
+        state = State({"ets2_transmission_mode": {
+            "mode": 0, "status": "confirmed", "profile": "active",
+            "source": "active/config_local.cfg + game.log.txt",
+            "detected_wall_time": time.time(),
+            "observed_at": time.monotonic(),
+        }})
+        page = SettingsMenu(state)
+        self.assertIn("jednoduchá automatická", page.transmission_mode_label.text())
+        self.assertIn("config_local.cfg", page.transmission_mode_label.text())
+        state.set("ets2_transmission_mode", {"status": "unknown",
+                                           "reason": "config disagrees with log"})
+        page.refresh_transmission_mode()
+        self.assertIn("nepotvrdený", page.transmission_mode_label.text())
+        page.close()
+
     def test_window_controls_match_reference_order_and_have_real_hitboxes(self):
         host = QWidget()
         bar = MacTitleBar(host, palette("light"))

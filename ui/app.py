@@ -1291,6 +1291,16 @@ class UltraPilotApp(QMainWindow):
             logging.debug("native taskbar icon could not be set: %s", exc)
 
     def update_ui(self):
+        if self.pages.currentIndex() == 4:
+            import time
+            now = time.monotonic()
+            if now - getattr(self, "_last_transmission_ui_update", 0.0) >= 1.0:
+                self._last_transmission_ui_update = now
+                page = self.pages.widget(4)
+                if isinstance(page, QScrollArea):
+                    page = page.widget()
+                if isinstance(page, SettingsMenu):
+                    page.refresh_transmission_mode()
         new_language = self.state.get("ui_language_code", "sk") or "sk"
         if new_language != getattr(self, "_language", None):
             self._language = new_language
