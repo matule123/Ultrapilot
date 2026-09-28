@@ -1054,7 +1054,9 @@ class Plugin(BasePlugin):
             self.sdk.controller.set_steering(0.0)
             self.sdk.controller.set_throttle(0.0)
             self.sdk.controller.set_brake(0.0)
-            self.sdk.controller.select_drive(False)
+            # Engine owns the physical selector release on disengagement.
+            # Publishing False every inactive worker tick creates a new
+            # shared-state intent and hides a genuinely pending True edge.
             self._last_throttle = self._last_brake = 0.0
             self._last_steering = 0.0
             self._publish_control_tags(speed_kmh, False)
@@ -1757,10 +1759,15 @@ class Plugin(BasePlugin):
         if (active and nav_active and lane_authority_confirmed
                 and engagement_request is not None
                 and engagement_request != engagement_confirmed):
+            park_hold = self.sdk.shared_state.get("auto_drive_park_hold") is True
             self.sdk.shared_state.update_batch({
                 "autopilot_engagement_confirmed": engagement_request,
-                "navigation_status": "Autopilot zapnutý",
-                "tts_message": "Autopilot enabled.",
+                "navigation_status": (
+                    "D potvrdené; uvoľnite parkovaciu brzdu"
+                    if park_hold else "Autopilot zapnutý"),
+                "tts_message": (
+                    "D potvrdené. Uvoľnite parkovaciu brzdu."
+                    if park_hold else "Autopilot enabled."),
             })
             logging.info(
                 "Autopilot enabled after navigation authority and control "

@@ -266,6 +266,13 @@ class UiChromeTests(unittest.TestCase):
             wizard.close()
 
     def test_dynamic_island_hides_repeated_process_lifecycle_noise(self):
+        self.assertEqual(_friendly_activity_message(
+            "Hotkey N -> Vyberám D – parkovaciu brzdu nechajte zatiahnutú"),
+            "Vyberám D – parkovaciu brzdu nechajte zatiahnutú")
+        self.assertEqual(_friendly_activity_message(
+            "Hotkey N -> Autopilot unavailable: forward gear is not "
+            "confirmed by vehicle telemetry; Zaraďte D a potom stlačte N"),
+            "Zaraďte D a potom stlačte N")
         self.assertIsNone(_friendly_activity_message(
             "Process Engine started (PID: 16144)"))
         self.assertIsNone(_friendly_activity_message("Launching Engine Process..."))

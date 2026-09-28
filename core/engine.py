@@ -251,6 +251,8 @@ class UltraPilotEngine:
         # Keeping ``geardrive`` high does not create another input edge in ETS2
         # and can leave an automatic gearbox stuck in Neutral indefinitely.
         self._drive_selector_pressed = False
+        self._drive_engagement = None
+        self._selector_release_pending = False
         # Track autopilot on/off edges so we release controls only once on disable.
         self._was_active = False
         try:
@@ -299,6 +301,8 @@ class UltraPilotEngine:
         for thread in (self._control_thread, self._telemetry_thread):
             if thread is not None and thread is not threading.current_thread():
                 thread.join(timeout=1.5)
+        self._cancel_auto_drive_engagement("Engine sa vypína")
+        self.shared_state.set("auto_drive_park_hold", False)
         self._release_controller()
         self.module_manager.stop_all()
         self.plugin_manager.stop_all()
@@ -894,30 +898,61 @@ class UltraPilotEngine:
         if down and not self._hotkey_was_down and self._game_window_active():
             new_state = not bool(self.shared_state.get("autopilot_active", False))
             rejection_reason = ""
-            if new_state:
-                rejection_reason = self._autopilot_activation_rejection_reason()
+            pending_started = False
+            if new_state and getattr(self, "_drive_engagement", None) is not None:
+                self._cancel_auto_drive_engagement("vodič zrušil požiadavku N")
+                new_state = False
+            elif new_state:
+                rejection_reason = self._autopilot_activation_rejection_reason(
+                    allow_neutral=True)
+                if not rejection_reason:
+                    truck = ((self.shared_state.get("telemetry", {}) or {})
+                             .get("truck", {}) or {})
+                    if truck.get("gear") == 0:
+                        request_id = time.monotonic_ns()
+                        rejection_reason = self._begin_auto_drive_engagement(
+                            request_id)
+                        pending_started = not rejection_reason
+                        new_state = False
                 if rejection_reason:
                     readiness = self.shared_state.get(
                         "autopilot_navigation_readiness", {}) or {}
                     if isinstance(readiness, dict):
+                        packet = self.shared_state.get(
+                            "nav_steering_debug", {}) or {}
+                        if not isinstance(packet, dict):
+                            packet = {}
                         logging.info(
                             "Autopilot activation timing: monotonic=%.6f "
                             "revision=%s heartbeat_at=%s "
                             "vehicle_observation_at=%s "
                             "steering_observation_at=%s "
-                            "steering_computed_at=%s",
+                            "steering_computed_at=%s "
+                            "map_tick_started_at=%s "
+                            "map_lane_update_finished_at=%s "
+                            "map_calculation_started_at=%s "
+                            "packet_sdk_frame_us=%s packet_intent=%s "
+                            "packet_build=%s",
                             time.monotonic(), readiness.get("revision"),
                             readiness.get("lane_heartbeat_at"),
                             readiness.get("vehicle_observation_at"),
                             readiness.get("steering_observation_at"),
-                            readiness.get("steering_computed_at"))
+                            readiness.get("steering_computed_at"),
+                            packet.get("map_tick_started_at"),
+                            packet.get("map_lane_update_finished_at"),
+                            packet.get("map_calculation_started_at"),
+                            packet.get("sdk_frame_us"),
+                            packet.get("navigation_intent_id"),
+                            packet.get("route_build_id"))
                     new_state = False
                     self.shared_state.set(
                         "autopilot_disable_reason", rejection_reason)
                     self.shared_state.set(
                         "navigation_status",
                         f"Autopilot zablokovaný: {rejection_reason}")
-            msg = (f"Autopilot unavailable: {rejection_reason}"
+            msg = ("Vyberám D – parkovaciu brzdu nechajte zatiahnutú"
+                   if pending_started else
+                   f"Autopilot unavailable: {rejection_reason}"
                    if rejection_reason else
                    ("Autopilot activation requested." if new_state
                     else "Autopilot disabled."))
@@ -936,7 +971,8 @@ class UltraPilotEngine:
                    if not new_state else {}),
             })
             logging.info("Hotkey N -> %s", msg)
-            if not new_state:
+            if not new_state and not pending_started:
+                self._cancel_auto_drive_engagement("autopilot vypnutý")
                 self._release_controller()
                 self._was_active = False
                 self._drive_selector_pressed = False
@@ -949,7 +985,7 @@ class UltraPilotEngine:
                 })
         self._hotkey_was_down = down
 
-    def _autopilot_activation_rejection_reason(self):
+    def _autopilot_activation_rejection_reason(self, *, allow_neutral=False):
         """Return why a new engagement is unsafe; empty means ready."""
         readiness = self.shared_state.get(
             "autopilot_navigation_readiness", {}) or {}
@@ -997,9 +1033,9 @@ class UltraPilotEngine:
                 packet=packet)
             if reason:
                 return reason
-        # Automatic Drive selection is not verified at the DLL/game boundary.
-        # Do not briefly grant control in Neutral and ask a worker to discover
-        # the direction by pulsing the selector after engagement.
+        # A selector write is not proof of a gear change at the DLL/game
+        # boundary. Only a fresh SDK forward-gear observation may grant
+        # control after the Engine-owned parked selection attempt.
         truck = ((self.shared_state.get("telemetry", {}) or {})
                  .get("truck", {}) or {})
         try:
@@ -1015,8 +1051,166 @@ class UltraPilotEngine:
                 or sdk_frame <= 0 or not 0.0 <= age <= 0.5):
             return "forward gear observation is missing or stale"
         if not forward_gear:
-            return "forward gear is not confirmed by vehicle telemetry"
+            if allow_neutral and int(truck.get("gear", 0)) == 0:
+                return ""
+            return ("forward gear is not confirmed by vehicle telemetry; "
+                    "Zaraďte D a potom stlačte N")
         return ""
+
+    def _begin_auto_drive_engagement(self, request_id):
+        """Queue one Engine-owned Drive edge; never grant steering authority yet."""
+        if getattr(self, "_selector_release_pending", False):
+            return "predošlý selector D ešte nie je potvrdene uvoľnený"
+        if getattr(self, "_drive_engagement", None) is not None:
+            return "výber D už prebieha"
+        truck = ((self.shared_state.get("telemetry", {}) or {})
+                 .get("truck", {}) or {})
+        try:
+            speed = float(truck["speed"])
+            stationary = math.isfinite(speed) and abs(speed) < 0.05
+            neutral = int(truck["gear"]) == 0
+            frame = int(truck["sdkFrameTimeUs"])
+        except (KeyError, TypeError, ValueError, OverflowError):
+            return "vehicle speed, gear or SDK frame is unavailable"
+        if not (stationary and neutral and frame > 0 and
+                truck.get("parkBrake") is True):
+            return "Pre automatické D zastavte a zatiahnite parkovaciu brzdu"
+        scs = getattr(self.controller, "scs", None)
+        if (getattr(self.controller, "mode", None) != "SCS_SDK"
+                or not getattr(scs, "connected", False)):
+            return "automatické D vyžaduje pripojený SCS backend"
+        self._release_controller()
+        now = time.monotonic()
+        snapshot = self.shared_state.get("lane_trajectory", {}) or {}
+        identity = tuple(snapshot.get(key) for key in (
+            "navigation_intent_id", "revision", "route_build_id",
+            "source_game_session_id", "source_map_key",
+            "source_dataset_fingerprint"))
+        self._drive_engagement = {
+            "request_id": request_id, "started_at": now,
+            "deadline_at": now + 2.5, "start_frame": frame,
+            "last_frame": frame, "pressed_at": None, "released": False,
+            "press_frame": None,
+            "identity": identity,
+        }
+        self.shared_state.update_batch({
+            "auto_drive_pending": True,
+            "auto_drive_park_hold": False,
+            "navigation_status": "Vyberám D – parkovaciu brzdu nechajte zatiahnutú",
+            "autopilot_disable_reason": "",
+        })
+        return ""
+
+    def _cancel_auto_drive_engagement(self, reason):
+        """Cancel under the Controller I/O lock so no late edge survives N."""
+        lock = getattr(self, "_controller_io_lock", None)
+        if lock is None:
+            return self._cancel_auto_drive_engagement_unlocked(reason)
+        with lock:
+            return self._cancel_auto_drive_engagement_unlocked(reason)
+
+    def _cancel_auto_drive_engagement_unlocked(self, reason):
+        if getattr(self, "_drive_engagement", None) is None:
+            return
+        if self.controller.select_drive(False) is not True:
+            self._selector_release_pending = True
+        self.controller.release_all()
+        self._drive_engagement = None
+        self.shared_state.update_batch({
+            "auto_drive_pending": False,
+            "auto_drive_park_hold": False,
+            "autopilot_active": False,
+            "autopilot_engagement_request": None,
+            CTL_SELECT_DRIVE: None, CTL_STEERING: 0.0,
+            CTL_THROTTLE: 0.0, CTL_BRAKE: 0.0,
+            "autopilot_disable_reason": reason,
+            "navigation_status": f"Automatické D zrušené: {reason}",
+        })
+
+    def _flush_auto_drive_engagement(self, truck):
+        """One press/release with zero propulsion; SDK gear is the only ACK."""
+        pending = getattr(self, "_drive_engagement", None)
+        if pending is None:
+            return False
+        now = time.monotonic()
+        try:
+            frame = int(truck["sdkFrameTimeUs"])
+            gear = int(truck["gear"])
+            speed = float(truck["speed"])
+            age = now - float(self.shared_state.get("telemetry_timestamp", 0.0))
+        except (KeyError, TypeError, ValueError, OverflowError):
+            self._cancel_auto_drive_engagement_unlocked("neúplná telemetria")
+            return True
+        reason = self._autopilot_activation_rejection_reason(allow_neutral=True)
+        snapshot = self.shared_state.get("lane_trajectory", {}) or {}
+        identity = tuple(snapshot.get(key) for key in (
+            "navigation_intent_id", "revision", "route_build_id",
+            "source_game_session_id", "source_map_key",
+            "source_dataset_fingerprint"))
+        if identity != pending["identity"]:
+            reason = "trasa alebo navigačná identita sa zmenila"
+        if (reason or self.shared_state.get("telemetry_valid") is not True
+                or not 0.0 <= age <= 0.5 or frame < pending["last_frame"]
+                or not math.isfinite(speed) or abs(speed) >= 0.05
+                or truck.get("parkBrake") is not True
+                or gear < 0 or now > pending["deadline_at"]):
+            self._cancel_auto_drive_engagement_unlocked(
+                reason or "D nebolo bezpečne potvrdené v časovom limite")
+            return True
+        pending["last_frame"] = frame
+        self.controller.set_steering(0.0)
+        self.controller.set_throttle(0.0)
+        self.controller.set_brake(0.0)
+        self.shared_state.update_batch({
+            CTL_STEERING: 0.0, CTL_THROTTLE: 0.0,
+            CTL_BRAKE: 0.0, CTL_SELECT_DRIVE: None,
+        })
+        if pending["pressed_at"] is not None and not pending["released"]:
+            if now - pending["pressed_at"] >= 0.15 or gear > 0:
+                returned = self.controller.select_drive(False)
+                self._record_drive_boundary(
+                    "release_drive_selector", truck, selector=False,
+                    returned=returned, steering=0.0, throttle=0.0, brake=0.0)
+                if returned is not True:
+                    self._selector_release_pending = True
+                    self._cancel_auto_drive_engagement_unlocked(
+                        "SCS backend nepotvrdil uvoľnenie selectoru D")
+                    return True
+                pending["released"] = True
+        if gear > 0 and (pending["press_frame"] is None
+                         or frame <= pending["press_frame"]):
+            self._cancel_auto_drive_engagement_unlocked(
+                "D nie je potvrdené novým SDK frame po požiadavke")
+            return True
+        if gear > 0:
+            if self._autopilot_activation_rejection_reason():
+                self._cancel_auto_drive_engagement_unlocked(
+                    "navigačná autorita sa pred potvrdením D zmenila")
+                return True
+            self._drive_engagement = None
+            self.shared_state.update_batch({
+                "auto_drive_pending": False,
+                "auto_drive_park_hold": True,
+                "autopilot_active": True,
+                "autopilot_engagement_request": pending["request_id"],
+                "autopilot_engagement_confirmed": None,
+                "navigation_status":
+                    "D potvrdené; autopilot zapnutý, uvoľnite parkovaciu brzdu",
+                "tts_message": "D potvrdené. Uvoľnite parkovaciu brzdu.",
+            })
+            return True
+        if pending["pressed_at"] is None and frame > pending["start_frame"]:
+            returned = self.controller.select_drive(True)
+            self._record_drive_boundary(
+                "press_drive_selector", truck, selector=True,
+                returned=returned, steering=0.0, throttle=0.0, brake=0.0)
+            if returned is not True:
+                self._cancel_auto_drive_engagement_unlocked(
+                    "SCS backend nepotvrdil zápis požiadavky D")
+                return True
+            pending["pressed_at"] = now
+            pending["press_frame"] = frame
+        return True
 
     def _process_autopilot_command(self):
         """Apply and acknowledge the UI's explicit master-switch command."""
@@ -1029,7 +1223,16 @@ class UltraPilotEngine:
         desired = bool(command.get("enabled", False))
         self._last_autopilot_command = seq
         rejection_reason = (
-            self._autopilot_activation_rejection_reason() if desired else "")
+            self._autopilot_activation_rejection_reason(allow_neutral=True)
+            if desired else "")
+        pending_started = False
+        if desired and not rejection_reason:
+            truck = ((self.shared_state.get("telemetry", {}) or {})
+                     .get("truck", {}) or {})
+            if truck.get("gear") == 0:
+                rejection_reason = self._begin_auto_drive_engagement(seq)
+                pending_started = not rejection_reason
+                desired = False
         if rejection_reason:
             desired = False
             self.shared_state.set("autopilot_disable_reason", rejection_reason)
@@ -1045,7 +1248,8 @@ class UltraPilotEngine:
                 "maneuver_approach_packet": {}}
                if not desired else {}),
         })
-        if not desired:
+        if not desired and not pending_started:
+            self._cancel_auto_drive_engagement("autopilot vypnutý")
             self._release_controller()
             self._was_active = False
             self._drive_selector_pressed = False
@@ -1264,11 +1468,17 @@ class UltraPilotEngine:
         set_hazard = getattr(self.controller, "set_hazard", None)
         if callable(set_hazard):
             set_hazard(safety_hazard)
+        if getattr(self, "_selector_release_pending", False):
+            if self.controller.select_drive(False) is True:
+                self._selector_release_pending = False
+        if self._flush_auto_drive_engagement(truck_telemetry):
+            return
         if not self.shared_state.get("autopilot_active", False):
+            self.shared_state.set("auto_drive_park_hold", False)
             # A plugin may have published a D pulse just before an automatic
             # disable. Discard that unconsumed intent even if the physical
             # backend was already released on an earlier inactive frame.
-            if self.shared_state.get(CTL_SELECT_DRIVE, None) is not None:
+            if self.shared_state.get(CTL_SELECT_DRIVE, None) is True:
                 self._record_drive_boundary(
                     "discard_unconsumed_selector_intent", truck_telemetry)
             self.shared_state.set(CTL_SELECT_DRIVE, None)
@@ -1374,6 +1584,13 @@ class UltraPilotEngine:
                 self._forward_throttle_suppressed = False
         else:
             self._forward_throttle_suppressed = False
+
+        if self.shared_state.get("auto_drive_park_hold") is True:
+            if truck_telemetry.get("parkBrake") is False:
+                self.shared_state.set("auto_drive_park_hold", False)
+            else:
+                throttle = 0.0
+                self.shared_state.set(CTL_THROTTLE, 0.0)
 
         # Speed-dependent steering clamp for legacy/vision steering. A valid
         # GPS LaneTrajectory has already produced a bounded, speed-aware and

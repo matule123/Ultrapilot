@@ -20,6 +20,7 @@ _ACTIVITY = (
     "starting", "started", "ready", "map", "dataset", "road network",
     "plugin", "connected", "install", "repair", "update", "error", "failed",
     "route", "navigation", "gps", "calculation",
+    "autopilot unavailable", "vyberám d",
 )
 _TECHNICAL_LOG_MARKERS = (
     "map: truck=", "nearest_seg=", "truckposition", "truck position",
@@ -38,6 +39,11 @@ _PROCESS_STARTED_RE = re.compile(r"^Process \w+ started \(PID: \d+\)$", re.I)
 def _friendly_activity_message(message):
     """Return concise user-facing activity text, or ``None`` for diagnostics."""
     low = message.lower()
+    if low.startswith("hotkey n -> vyberám d"):
+        return message.split(" -> ", 1)[1]
+    if (low.startswith("hotkey n -> autopilot unavailable:")
+            and "forward gear is not confirmed" in low):
+        return "Zaraďte D a potom stlačte N"
     # Child-process lifecycle remains in ultrapilot.log, not in the user-facing
     # island. A crash loop previously repeated "Process Engine started" here.
     if (_PROCESS_STARTED_RE.match(message.strip())

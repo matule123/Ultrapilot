@@ -2,6 +2,9 @@
 
 import time
 import unittest
+import sys
+from types import SimpleNamespace
+from unittest import mock
 
 from core.engine import UltraPilotEngine
 from sdk.plugin_sdk import PluginSDK, CTL_SELECT_DRIVE, CTL_THROTTLE
@@ -12,6 +15,44 @@ from tests.test_control_safety_regressions import (
 
 
 class DriveEngagementSafetyTests(unittest.TestCase):
+    def _parked_request(self, *, park_brake=True, backend="SCS_SDK"):
+        now = time.monotonic()
+        state = ready_navigation_state(autopilot_active=False, nav_active=True)
+        truck = {"gear": 0, "speed": 0.0, "parkBrake": park_brake,
+                 "sdkFrameTimeUs": 290205058}
+        state.set("telemetry", {"truck": truck})
+        state.set("telemetry_timestamp", now)
+        state.set("autopilot_navigation_readiness", {
+            "ready": True, "timestamp": now, "source": "gps_lane",
+            "revision": 7,
+        })
+        state.get("lane_match").update({
+            "valid": True, "confidence": 0.95,
+            "authority_confidence": 0.95,
+        })
+        state.set("nav_steering_debug", {
+            "controller": "frenet_bicycle",
+            "calculation_packet_schema_version": 1,
+            "authority_valid": True, "authority_revision": 7,
+            "navigation_intent_id": None, "route_build_id": "test-build",
+            "source_game_session_id": "test-session",
+            "source_map_key": "test-map",
+            "source_dataset_fingerprint": "test-fingerprint",
+            "computed_at": now, "observation_timestamp": now,
+            "sdk_frame_us": truck["sdkFrameTimeUs"],
+            "calculation_sequence": 1,
+            "output": 0.0, "local_curvature": 0.0,
+        })
+        engine = UltraPilotEngine.__new__(UltraPilotEngine)
+        engine.shared_state = state
+        engine.controller = Controller()
+        engine.controller.mode = backend
+        engine.controller.scs = type("ConnectedSCS", (), {"connected": True})()
+        engine._last_autopilot_command = None
+        engine._was_active = False
+        engine._drive_selector_pressed = False
+        return state, truck, engine
+
     def _runtime(self, gear=0, speed=0.0):
         state = ready_navigation_state(
             system_state="CRUISE", acc_throttle=0.5,
@@ -62,7 +103,27 @@ class DriveEngagementSafetyTests(unittest.TestCase):
         engine = UltraPilotEngine.__new__(UltraPilotEngine)
         engine.shared_state = state
 
-        self.assertIn("forward gear", engine._autopilot_activation_rejection_reason())
+        reason = engine._autopilot_activation_rejection_reason()
+        self.assertIn("forward gear", reason)
+        self.assertIn("Zaraďte D a potom stlačte N", reason)
+
+    def test_inactive_selector_release_is_not_a_pending_drive_request(self):
+        state, truck, plugin, engine = self._runtime(gear=0)
+        state.set("autopilot_active", False)
+        state.set(CTL_SELECT_DRIVE, None)
+        plugin.on_tick(0.05)
+        self.assertIsNone(state.get(CTL_SELECT_DRIVE))
+        engine._last_drive_observed_gear = 0
+        sequence = getattr(engine, "_drive_boundary_sequence", 0)
+        for _ in range(3):
+            engine._flush_controls()
+        self.assertEqual(getattr(engine, "_drive_boundary_sequence", 0),
+                         sequence)
+        state.set(CTL_SELECT_DRIVE, True)
+        engine._flush_controls()
+        self.assertEqual(state.get("drive_boundary_event")["action"],
+                         "discard_unconsumed_selector_intent")
+        self.assertIsNone(state.get(CTL_SELECT_DRIVE))
 
     def test_activation_rejects_old_forward_gear_frame(self):
         state = State({
@@ -78,6 +139,329 @@ class DriveEngagementSafetyTests(unittest.TestCase):
         engine = UltraPilotEngine.__new__(UltraPilotEngine)
         engine.shared_state = state
         self.assertIn("stale", engine._autopilot_activation_rejection_reason())
+
+    def test_auto_drive_rejects_invalid_gear_value_without_exception(self):
+        state, truck, engine = self._parked_request()
+        truck["gear"] = "unknown"
+        self.assertTrue(engine._autopilot_activation_rejection_reason(
+            allow_neutral=True))
+        state.set("autopilot_command", {"seq": 1, "enabled": True})
+        engine._process_autopilot_command()
+        self.assertFalse(state.get("auto_drive_pending", False))
+        self.assertNotIn(True, engine.controller.drive_events)
+
+    def test_one_activation_request_accepts_fresh_forward_gear_and_packet(self):
+        now = time.monotonic()
+        state = ready_navigation_state(autopilot_active=False, nav_active=True)
+        truck = {"gear": 4, "speed": 0.0, "sdkFrameTimeUs": 290205058}
+        state.set("telemetry", {"truck": truck})
+        state.set("telemetry_timestamp", now)
+        state.set("autopilot_navigation_readiness", {
+            "ready": True, "timestamp": now, "source": "gps_lane",
+            "revision": 7,
+        })
+        state.get("lane_match").update({
+            "valid": True, "confidence": 0.95,
+            "authority_confidence": 0.95,
+        })
+        state.set("nav_steering_debug", {
+            "controller": "frenet_bicycle",
+            "calculation_packet_schema_version": 1,
+            "authority_valid": True, "authority_revision": 7,
+            "navigation_intent_id": None, "route_build_id": "test-build",
+            "source_game_session_id": "test-session",
+            "source_map_key": "test-map",
+            "source_dataset_fingerprint": "test-fingerprint",
+            "computed_at": now, "observation_timestamp": now,
+            "sdk_frame_us": truck["sdkFrameTimeUs"],
+            "calculation_sequence": 1,
+            "output": 0.0, "local_curvature": 0.0,
+        })
+        engine = UltraPilotEngine.__new__(UltraPilotEngine)
+        engine.shared_state = state
+        engine.controller = Controller()
+        engine._last_autopilot_command = None
+        state.set("autopilot_command", {"seq": 1, "enabled": True})
+        engine._process_autopilot_command()
+        self.assertTrue(state.get("autopilot_active"))
+        self.assertEqual(state.get("autopilot_engagement_request"), 1)
+        self.assertNotIn(True, engine.controller.drive_events)
+        plugin = autopilot(truck, state)
+        plugin.on_tick(0.05)
+        self.assertTrue(state.get("autopilot_active"))
+        self.assertEqual(state.get("autopilot_engagement_confirmed"), 1)
+        self.assertNotIn(True, plugin.sdk.controller.drive_events)
+
+    def test_one_n_starts_single_parked_drive_request_without_propulsion(self):
+        state, truck, engine = self._parked_request()
+        state.set("autopilot_command", {"seq": 1, "enabled": True})
+        engine._process_autopilot_command()
+        self.assertFalse(state.get("autopilot_active"))
+        self.assertTrue(state.get("auto_drive_pending"))
+        self.assertNotIn(True, engine.controller.drive_events)
+        self.assertEqual(engine.controller.throttle, 0.0)
+        truck["sdkFrameTimeUs"] += 33_333
+        state.set("telemetry_timestamp", time.monotonic())
+        engine._flush_controls()
+        self.assertEqual(engine.controller.drive_events.count(True), 1)
+        self.assertEqual(engine.controller.throttle, 0.0)
+        self.assertFalse(state.get("autopilot_active"))
+        engine._drive_engagement["pressed_at"] -= 0.20
+        truck["sdkFrameTimeUs"] += 33_333
+        state.set("telemetry_timestamp", time.monotonic())
+        engine._flush_controls()
+        self.assertEqual(engine.controller.drive_events.count(True), 1)
+        truck["gear"] = 4
+        truck["sdkFrameTimeUs"] += 33_333
+        state.set("telemetry_timestamp", time.monotonic())
+        engine._flush_controls()
+        self.assertTrue(state.get("autopilot_active"))
+        self.assertFalse(state.get("auto_drive_pending"))
+        self.assertEqual(state.get("autopilot_engagement_request"), 1)
+        self.assertEqual(engine.controller.throttle, 0.0)
+        plugin = autopilot(truck, state)
+        plugin.on_tick(0.05)
+        self.assertIn("parkovaciu brzdu", state.get("navigation_status"))
+        self.assertTrue(state.get("autopilot_active"))
+        engine._flush_controls()
+        self.assertEqual(engine.controller.throttle, 0.0)
+
+    def test_auto_drive_requires_park_brake_and_scs_backend(self):
+        for brake, backend in ((False, "SCS_SDK"), (None, "SCS_SDK"),
+                               (True, "VJOY")):
+            with self.subTest(brake=brake, backend=backend):
+                state, _truck, engine = self._parked_request(
+                    park_brake=brake, backend=backend)
+                state.set("autopilot_command", {"seq": 1, "enabled": True})
+                engine._process_autopilot_command()
+                self.assertFalse(state.get("autopilot_active"))
+                self.assertFalse(state.get("auto_drive_pending", False))
+                self.assertNotIn(True, engine.controller.drive_events)
+
+    def test_auto_drive_rejects_reverse_changed_route_and_manual_cancel(self):
+        for fault in ("reverse", "route", "manual"):
+            with self.subTest(fault=fault):
+                state, truck, engine = self._parked_request()
+                state.set("autopilot_command", {"seq": 1, "enabled": True})
+                engine._process_autopilot_command()
+                truck["sdkFrameTimeUs"] += 33_333
+                state.set("telemetry_timestamp", time.monotonic())
+                engine._flush_controls()
+                self.assertEqual(engine.controller.drive_events.count(True), 1)
+                if fault == "reverse":
+                    truck["gear"] = -1
+                elif fault == "route":
+                    state.get("lane_trajectory")["route_build_id"] = "new-build"
+                else:
+                    state.set("autopilot_command", {"seq": 2, "enabled": False})
+                    engine._process_autopilot_command()
+                truck["sdkFrameTimeUs"] += 33_333
+                state.set("telemetry_timestamp", time.monotonic())
+                engine._flush_controls()
+                self.assertFalse(state.get("autopilot_active"))
+                self.assertFalse(state.get("auto_drive_pending"))
+                self.assertEqual(engine.controller.throttle, 0.0)
+                self.assertEqual(engine.controller.drive_events.count(True), 1)
+
+    def test_auto_drive_timeout_never_reengages_on_late_gear(self):
+        state, truck, engine = self._parked_request()
+        state.set("autopilot_command", {"seq": 1, "enabled": True})
+        engine._process_autopilot_command()
+        truck["sdkFrameTimeUs"] += 33_333
+        state.set("telemetry_timestamp", time.monotonic())
+        engine._flush_controls()
+        engine._drive_engagement["deadline_at"] = time.monotonic() - 0.01
+        truck["sdkFrameTimeUs"] += 33_333
+        state.set("telemetry_timestamp", time.monotonic())
+        engine._flush_controls()
+        self.assertFalse(state.get("auto_drive_pending"))
+        truck["gear"] = 4
+        truck["sdkFrameTimeUs"] += 33_333
+        state.set("telemetry_timestamp", time.monotonic())
+        engine._flush_controls()
+        self.assertFalse(state.get("autopilot_active"))
+        self.assertEqual(engine.controller.throttle, 0.0)
+        self.assertEqual(engine.controller.drive_events.count(True), 1)
+
+    def test_auto_drive_requires_new_sdk_frame_for_gear_confirmation(self):
+        state, truck, engine = self._parked_request()
+        state.set("autopilot_command", {"seq": 1, "enabled": True})
+        engine._process_autopilot_command()
+        truck["sdkFrameTimeUs"] += 33_333
+        state.set("telemetry_timestamp", time.monotonic())
+        engine._flush_controls()
+        press_frame = truck["sdkFrameTimeUs"]
+        truck["gear"] = 4
+        state.set("telemetry_timestamp", time.monotonic())
+        engine._flush_controls()
+        self.assertEqual(truck["sdkFrameTimeUs"], press_frame)
+        self.assertFalse(state.get("autopilot_active"))
+
+    def test_auto_drive_does_not_engage_when_selector_release_fails(self):
+        state, truck, engine = self._parked_request()
+        original = engine.controller.select_drive
+        engine.controller.select_drive = lambda pressed=True: (
+            False if not pressed else original(True))
+        state.set("autopilot_command", {"seq": 1, "enabled": True})
+        engine._process_autopilot_command()
+        truck["sdkFrameTimeUs"] += 33_333
+        state.set("telemetry_timestamp", time.monotonic())
+        engine._flush_controls()
+        truck["gear"] = 4
+        truck["sdkFrameTimeUs"] += 33_333
+        state.set("telemetry_timestamp", time.monotonic())
+        engine._flush_controls()
+        self.assertFalse(state.get("autopilot_active"))
+        self.assertFalse(state.get("auto_drive_pending"))
+        self.assertEqual(engine.controller.throttle, 0.0)
+
+    def test_failed_selector_release_is_retried_only_as_false(self):
+        state, truck, engine = self._parked_request()
+        original = engine.controller.select_drive
+        release_failures = []
+
+        def selector(pressed=True):
+            if not pressed and release_failures:
+                release_failures.pop()
+                return False
+            return original(pressed)
+
+        engine.controller.select_drive = selector
+        state.set("autopilot_command", {"seq": 1, "enabled": True})
+        engine._process_autopilot_command()
+        truck["sdkFrameTimeUs"] += 33_333
+        state.set("telemetry_timestamp", time.monotonic())
+        engine._flush_controls()
+        release_failures.append(True)
+        truck["gear"] = 4
+        truck["sdkFrameTimeUs"] += 33_333
+        state.set("telemetry_timestamp", time.monotonic())
+        engine._flush_controls()
+        self.assertFalse(state.get("autopilot_active"))
+        self.assertTrue(engine._selector_release_pending)
+        engine._flush_controls()
+        self.assertFalse(engine._selector_release_pending)
+        self.assertEqual(engine.controller.drive_events.count(True), 1)
+
+    def test_new_n_cannot_start_while_selector_release_is_unconfirmed(self):
+        state, _truck, engine = self._parked_request()
+        engine._selector_release_pending = True
+        state.set("autopilot_command", {"seq": 1, "enabled": True})
+        engine._process_autopilot_command()
+        self.assertFalse(state.get("autopilot_active"))
+        self.assertFalse(state.get("auto_drive_pending", False))
+        self.assertNotIn(True, engine.controller.drive_events)
+
+    def test_cancelled_drive_with_failed_release_blocks_next_n(self):
+        state, truck, engine = self._parked_request()
+        original = engine.controller.select_drive
+        engine.controller.select_drive = lambda pressed=True: (
+            False if not pressed else original(True))
+        state.set("autopilot_command", {"seq": 1, "enabled": True})
+        engine._process_autopilot_command()
+        truck["sdkFrameTimeUs"] += 33_333
+        state.set("telemetry_timestamp", time.monotonic())
+        engine._flush_controls()
+        self.assertEqual(engine.controller.drive_events.count(True), 1)
+        state.set("autopilot_command", {"seq": 2, "enabled": False})
+        engine._process_autopilot_command()
+        self.assertTrue(engine._selector_release_pending)
+        state.set("autopilot_command", {"seq": 3, "enabled": True})
+        engine._process_autopilot_command()
+        self.assertFalse(state.get("auto_drive_pending"))
+        self.assertEqual(engine.controller.drive_events.count(True), 1)
+
+    def test_confirmed_drive_holds_throttle_until_park_brake_released(self):
+        state, truck, engine = self._parked_request()
+        state.set("autopilot_control_heartbeat", time.monotonic())
+        state.set("autopilot_command", {"seq": 1, "enabled": True})
+        engine._process_autopilot_command()
+        truck["sdkFrameTimeUs"] += 33_333
+        state.set("telemetry_timestamp", time.monotonic())
+        engine._flush_controls()
+        truck["gear"] = 4
+        truck["sdkFrameTimeUs"] += 33_333
+        state.set("telemetry_timestamp", time.monotonic())
+        engine._flush_controls()
+        self.assertTrue(state.get("auto_drive_park_hold"))
+        state.set(CTL_THROTTLE, 0.4)
+        engine._flush_controls()
+        self.assertEqual(engine.controller.throttle, 0.0)
+        self.assertTrue(state.get("auto_drive_park_hold"))
+        truck["parkBrake"] = False
+        truck["sdkFrameTimeUs"] += 33_333
+        state.set("telemetry_timestamp", time.monotonic())
+        state.set(CTL_THROTTLE, 0.4)
+        engine._flush_controls()
+        self.assertFalse(state.get("auto_drive_park_hold"))
+        self.assertGreater(engine.controller.throttle, 0.0)
+
+    def test_auto_drive_rejects_loss_of_park_brake_or_stale_telemetry(self):
+        for fault in ("park", "stale", "invalid_speed"):
+            with self.subTest(fault=fault):
+                state, truck, engine = self._parked_request()
+                state.set("autopilot_command", {"seq": 1, "enabled": True})
+                engine._process_autopilot_command()
+                if fault == "park":
+                    truck["parkBrake"] = False
+                elif fault == "stale":
+                    state.set("telemetry_timestamp", time.monotonic() - 0.8)
+                else:
+                    truck["speed"] = float("nan")
+                truck["sdkFrameTimeUs"] += 33_333
+                engine._flush_controls()
+                self.assertFalse(state.get("auto_drive_pending"))
+                self.assertFalse(state.get("autopilot_active"))
+                self.assertNotIn(True, engine.controller.drive_events)
+                self.assertEqual(engine.controller.throttle, 0.0)
+
+    def test_auto_drive_cancels_on_stale_packet_or_map_heartbeat(self):
+        for fault in ("packet", "heartbeat"):
+            with self.subTest(fault=fault):
+                state, truck, engine = self._parked_request()
+                state.set("autopilot_command", {"seq": 1, "enabled": True})
+                engine._process_autopilot_command()
+                truck["sdkFrameTimeUs"] += 33_333
+                state.set("telemetry_timestamp", time.monotonic())
+                engine._flush_controls()
+                self.assertEqual(engine.controller.drive_events.count(True), 1)
+                if fault == "packet":
+                    state.get("nav_steering_debug")[
+                        "observation_timestamp"] = time.monotonic() - 0.8
+                else:
+                    state.set("lane_trajectory_heartbeat",
+                              time.monotonic() - 0.8)
+                truck["sdkFrameTimeUs"] += 33_333
+                state.set("telemetry_timestamp", time.monotonic())
+                engine._flush_controls()
+                self.assertFalse(state.get("auto_drive_pending"))
+                self.assertFalse(state.get("autopilot_active"))
+                self.assertEqual(engine.controller.throttle, 0.0)
+                self.assertEqual(engine.controller.drive_events.count(True), 1)
+
+    def test_second_n_cancels_pending_drive_without_second_press(self):
+        state, truck, engine = self._parked_request()
+        engine._has_win32 = True
+        engine._hotkey_vk = 78
+        engine._hotkey_was_down = False
+        engine._game_window_active = lambda: True
+        key = {"down": True}
+        fake = SimpleNamespace(GetAsyncKeyState=lambda _vk: 0x8000 if
+                               key["down"] else 0)
+        with mock.patch.dict(sys.modules, {"win32api": fake}):
+            engine._check_hotkey()
+            self.assertTrue(state.get("auto_drive_pending"))
+            truck["sdkFrameTimeUs"] += 33_333
+            state.set("telemetry_timestamp", time.monotonic())
+            engine._flush_controls()
+            self.assertEqual(engine.controller.drive_events.count(True), 1)
+            key["down"] = False
+            engine._check_hotkey()
+            key["down"] = True
+            engine._check_hotkey()
+            self.assertFalse(state.get("auto_drive_pending"))
+            self.assertFalse(state.get("autopilot_active"))
+            self.assertEqual(engine.controller.drive_events.count(True), 1)
 
     def test_manual_forward_gear_is_only_path_to_active_output(self):
         state, truck, plugin, engine = self._runtime(gear=4)
