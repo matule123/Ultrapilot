@@ -57,13 +57,16 @@ class UiChromeTests(unittest.TestCase):
         self.assertIn("Jednoduchá automatická", page.transmission_mode_combo.currentText())
         self.assertEqual(page.transmission_mode_combo.currentData(), "auto")
         self.assertEqual(page.transmission_mode_badge.text(), "AUTOMATICKY")
-        self.assertIn("config_local.cfg", page.transmission_mode_label.text())
+        self.assertEqual(page.transmission_mode_label.text(),
+                         "Automaticky: Jednoduchá automatická")
+        self.assertNotIn("config_local.cfg", page.transmission_mode_label.text())
+        self.assertNotIn("g_trans", page.transmission_mode_label.text())
         state.set("ets2_transmission_mode", {"status": "unknown",
                                            "configured_mode": 0,
                                            "reason": "config disagrees with log"})
         page.refresh_transmission_mode()
         self.assertIn("čaká na potvrdenie", page.transmission_mode_combo.currentText())
-        self.assertIn("Nepotvrdené", page.transmission_mode_label.text())
+        self.assertIn("nepotvrdené", page.transmission_mode_label.text())
         page.close()
 
     def test_gearbox_options_persist_explicit_selection(self):
@@ -79,11 +82,21 @@ class UiChromeTests(unittest.TestCase):
         with mock.patch("core.settings.manager.SettingsManager", return_value=saved):
             page = SettingsMenu(state)
             self.assertEqual(page.transmission_mode_combo.count(), 5)
-            self.assertIn("odporúčané", page.transmission_mode_combo.itemText(0))
+            self.assertEqual(page.transmission_mode_combo.currentData(), "auto")
+            self.assertFalse(page.transmission_mode_combo.isEditable())
+            page.show()
+            page._show_settings_section("sdk")
+            QTest.mouseClick(page.transmission_mode_combo,
+                             Qt.MouseButton.LeftButton,
+                             pos=QPoint(page.transmission_mode_combo.width() - 8,
+                                        page.transmission_mode_combo.height() // 2))
+            QTest.keyClick(page.transmission_mode_combo, Qt.Key.Key_Down)
+            self.assertEqual(page.transmission_mode_combo.currentData(), "0")
             page.transmission_mode_combo.setCurrentIndex(4)
             self.assertEqual(saved.get("transmission_mode_preference"), "3")
             self.assertEqual(state.get("transmission_mode_preference"), "3")
             self.assertEqual(page.transmission_mode_badge.text(), "ZVOLENÉ")
+            self.assertIn("odporúčané", page.transmission_mode_combo.itemText(0))
             page.close()
 
     def test_update_notice_shows_installed_commit_once(self):

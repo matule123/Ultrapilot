@@ -373,8 +373,9 @@ class SettingsMenu(QWidget):
         self.transmission_mode_combo.addItem("Sekvenčná", "1")
         self.transmission_mode_combo.addItem("H radenie", "2")
         self.transmission_mode_combo.addItem("Reálna automatická", "3")
-        self.transmission_mode_combo.setEditable(True)
-        self.transmission_mode_combo.lineEdit().setReadOnly(True)
+        # A read-only line edit swallowed mouse clicks, so the choices could
+        # not be opened. Keep this a real, non-editable combo box.
+        self.transmission_mode_combo.setEditable(False)
         self.transmission_mode_combo.setStyleSheet(
             "QComboBox{border:none;background:transparent;padding:6px;"
             "font-size:14px;font-weight:700;}")
@@ -422,7 +423,6 @@ class SettingsMenu(QWidget):
 
     def refresh_transmission_mode(self):
         """Show the selected option and the game's independently observed mode."""
-        from datetime import datetime
         from core.transmission_mode import confirmed_mode
         evidence = self.state.get("ets2_transmission_mode", {}) or {}
         names = {0: "Jednoduchá automatická", 1: "Sekvenčná",
@@ -434,11 +434,13 @@ class SettingsMenu(QWidget):
         candidate = evidence.get("configured_mode")
         display_mode = mode if mode is not None else candidate
         if preference == "auto":
-            self.transmission_mode_combo.setEditText(
-                names.get(display_mode, "Nepotvrdený režim")
-                + (" · čaká na potvrdenie ETS2" if mode is None and display_mode is not None else ""))
+            display = names.get(display_mode, "Nepotvrdený režim")
+            if mode is None and display_mode is not None:
+                display += " · čaká na potvrdenie ETS2"
+            self.transmission_mode_combo.setItemText(0, display)
         else:
-            self.transmission_mode_combo.setEditText(names.get(int(preference), "Nepotvrdený režim"))
+            self.transmission_mode_combo.setItemText(
+                0, "Automatické zistenie (odporúčané)")
         if mode is None:
             reasons = {
                 "active ETS2 profile is not confirmed": "Čakám na aktívny profil ETS2.",
@@ -446,13 +448,10 @@ class SettingsMenu(QWidget):
                 "g_trans is missing or ambiguous": "Režim chýba v profile alebo hernom logu.",
                 "game profile has not been observed": "Čakám na údaje z hry.",
             }
-            detail = "Nepotvrdené hernými dátami. " + reasons.get(
+            detail = "Automaticky: nepotvrdené. " + reasons.get(
                 evidence.get("reason"), "Automatický rozjazd zostáva zablokovaný.")
         else:
-            stamp = evidence.get("detected_wall_time")
-            detected = datetime.fromtimestamp(stamp).strftime("%d.%m.%Y %H:%M:%S") if stamp else "?"
-            detail = (f"Zistené: {names[mode]} (g_trans={mode}) · "
-                      f"zdroj: {evidence.get('source', '?')} · {detected}")
+            detail = f"Automaticky: {names[mode]}"
             if preference != "auto" and preference != str(mode):
                 detail += " · Zvolený režim nesúhlasí s ETS2; rozjazd je zablokovaný."
         self.transmission_mode_label.setText(
