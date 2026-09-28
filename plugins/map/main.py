@@ -2487,6 +2487,7 @@ class Plugin(BasePlugin):
                     "truck_altitude", 0.0) or 0.0)
                 if self._schedule_live_map_scene(pos, altitude):
                     self._live_map_t = 0.0
+        presentation_finished_at = time.monotonic()
 
         # Localization diagnostics: every ~2 s, log where the truck is and where
         # the map thinks the nearest road is. If the distance is huge (hundreds
@@ -2519,6 +2520,7 @@ class Plugin(BasePlugin):
         # motorways/expressways. Drives the "nech ide pomalšie na poľných /
         # úzkych cestách" behaviour.
         self._publish_road_type(pos)
+        road_type_finished_at = time.monotonic()
 
         # Recording: drop a breadcrumb every ~10 m.
         if self.recording is not None:
@@ -2663,6 +2665,7 @@ class Plugin(BasePlugin):
                         route, snapshot, reference_packet, pos, heading,
                         time.monotonic(), steering_frame_us,
                         bool(self.sdk.get("autopilot_active", False)))
+                reference_finished_at = time.monotonic()
                 reference_payload = active_reference_payload(
                     reference_selection, snapshot, steering_frame_us)
                 self.sdk.set(
@@ -2803,6 +2806,9 @@ class Plugin(BasePlugin):
                     # spent time without refreshing its safety timestamp.
                     "map_tick_started_at": map_tick_started_at,
                     "map_lane_update_finished_at": lane_update_finished_at,
+                    "map_presentation_finished_at": presentation_finished_at,
+                    "map_road_type_finished_at": road_type_finished_at,
+                    "map_reference_finished_at": reference_finished_at,
                     "map_calculation_started_at": calculation_started_at,
                     "sdk_frame_us": vehicle_observation.get("sdk_frame_us"),
                     "observation_interval_s": observation_dt,
@@ -2869,6 +2875,8 @@ class Plugin(BasePlugin):
                                  "map dataset may not match the game. Switch maps on the Map page.")
                     self.tags.nav_steering = 0.0
                 else:
+                    steering_debug["map_packet_publish_started_at"] = (
+                        time.monotonic())
                     self.sdk.shared_state.update_batch({
                         "nav_steering": float(steer), "nav_active": True,
                         "nav_steering_debug": steering_debug,
@@ -2877,6 +2885,12 @@ class Plugin(BasePlugin):
                         "path_curve_distance_m": curve_profile["distance_m"],
                         "path_curve_signed_curvature": (
                             curve_profile["signed_curvature"]),
+                    })
+                    # Separate receipt is diagnostic only. The bound steering
+                    # packet above remains the sole command authority.
+                    self.sdk.shared_state.set("map_steering_publish_receipt", {
+                        "sequence": steering_debug.get("calculation_sequence"),
+                        "completed_at": time.monotonic(),
                     })
                 # Curvature radius (m) of the road ahead — lets the autopilot
                 # anticipate bends (brake before, not during).

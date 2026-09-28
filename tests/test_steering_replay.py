@@ -148,6 +148,8 @@ class SteeringReplayBufferTests(unittest.TestCase):
             "autopilot_active": True,
             "nav_active": True,
             "engine_applied_steering": -0.20,
+            "map_steering_publish_receipt": {
+                "sequence": 7, "completed_at": 40.012},
             "navigation_intent_id": "intent-9",
             "lane_match": lane_match,
             "lane_trajectory": trajectory,
@@ -156,6 +158,8 @@ class SteeringReplayBufferTests(unittest.TestCase):
         plugin = AutopilotPlugin.__new__(AutopilotPlugin)
         plugin.sdk = type("SDK", (), {"shared_state": state})()
         plugin._last_control_dt = 0.016
+        plugin._control_tick_started_at = 40.020
+        plugin._packet_read_finished_at = 40.025
         plugin._steering_dynamics_debug = {
             "raw_target": -0.12, "bounded_target": -0.12,
             "rate_per_s": -0.2, "acceleration_per_s2": 0.4,
@@ -196,6 +200,9 @@ class SteeringReplayBufferTests(unittest.TestCase):
         self.assertEqual(row["accepted_packet_sdk_frame_us"], 123455)
         self.assertTrue(row["packet_binding_valid"])
         self.assertEqual(row["calculation_sequence"], 7)
+        self.assertEqual(row["map_packet_publish_completed_at"], 40.012)
+        self.assertEqual(row["autopilot_tick_started_at"], 40.020)
+        self.assertEqual(row["autopilot_packet_read_finished_at"], 40.025)
         self.assertAlmostEqual(row["controller_steer_raw"], -0.121)
 
     def test_replay_uses_accepted_packet_not_next_live_map_tick(self):

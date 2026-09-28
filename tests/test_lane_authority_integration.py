@@ -10,6 +10,7 @@ from core.navigation.route import Route
 from core.navigation.lane_model import LaneId
 from plugins.autopilot.main import (
     Plugin as AutopilotPlugin, lane_authority_rejection_reason,
+    navigation_command,
 )
 from plugins.map.main import (
     LANE_MATCH_GRACE_FRAMES, RUNTIME_ROUTE_HORIZON_M,
@@ -120,11 +121,56 @@ class LaneAuthorityIntegrationTests(unittest.TestCase):
         self.assertLessEqual(packet["map_tick_started_at"],
                              packet["map_lane_update_finished_at"])
         self.assertLessEqual(packet["map_lane_update_finished_at"],
+                             packet["map_presentation_finished_at"])
+        self.assertLessEqual(packet["map_presentation_finished_at"],
+                             packet["map_road_type_finished_at"])
+        self.assertLessEqual(packet["map_road_type_finished_at"],
+                             packet["map_reference_finished_at"])
+        self.assertLessEqual(packet["map_reference_finished_at"],
                              packet["map_calculation_started_at"])
         self.assertLessEqual(packet["map_calculation_started_at"],
                              packet["computed_at"])
+        self.assertLessEqual(packet["computed_at"],
+                             packet["map_packet_publish_started_at"])
+        receipt = sdk.get("map_steering_publish_receipt", {})
+        self.assertEqual(receipt["sequence"], packet["calculation_sequence"])
+        self.assertGreaterEqual(receipt["completed_at"],
+                                packet["map_packet_publish_started_at"])
         self.assertLessEqual(packet["observation_timestamp"],
                              packet["computed_at"])
+
+    def test_delayed_map_step_is_identified_without_authorizing_old_pose(self):
+        plugin, sdk, point = build_map_plugin()
+        plugin.tags = Tags()
+        sdk.set("truck_world_pos", (point.x, point.z))
+        sdk.set("truck_heading", point.heading)
+        sdk.set("truck_speed_ms", 0.0)
+        sdk.set("telemetry_valid", True)
+        sdk.set("vehicle_envelope_snapshot", {
+            "timestamp": time.monotonic(), "sdk_frame_us": 1_000_000,
+            "tractor_position": (point.x, point.y, point.z),
+            "tractor_heading": point.heading, "tractor_speed_ms": 0.0,
+            "tractor_reference_geometry": dict(
+                valid=True, source="synthetic_4x2", wheelbase_m=3.8,
+                reference_ahead_m=2.1),
+        })
+        with mock.patch.object(plugin, "_publish_road_type",
+                               side_effect=lambda _pos: time.sleep(0.52)):
+            plugin.on_tick(0.02)
+        packet = sdk.get("nav_steering_debug", {})
+        self.assertGreaterEqual(
+            packet["map_road_type_finished_at"]
+            - packet["map_presentation_finished_at"], 0.5)
+        snapshot = dict(sdk.get("lane_trajectory"))
+        for key, value in (("source_game_session_id", 1),
+                           ("source_map_key", "test-map"),
+                           ("source_dataset_fingerprint", "test-dataset")):
+            packet[key] = snapshot[key] = value
+        _steer, _curvature, reason = navigation_command(
+            sdk.shared_state, snapshot, gps_active=True,
+            packet=packet)
+        self.assertEqual(reason,
+                         "steering command observation_timestamp is stale")
 
     def test_stale_locator_callback_releases_input_for_fresh_gps_build(self):
         """17:10 regression: stale rolling GPS work is not a completed input."""

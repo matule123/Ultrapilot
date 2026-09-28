@@ -718,6 +718,10 @@ class Plugin(BasePlugin):
                             - int(accepted.get("sdk_frame_us")))
         except (TypeError, ValueError, OverflowError):
             frame_lag_us = None
+        publish_receipt = self.sdk.shared_state.get(
+            "map_steering_publish_receipt", {}) or {}
+        if publish_receipt.get("sequence") != accepted.get("calculation_sequence"):
+            publish_receipt = {}
         replay.append({
             "control_dt_s": getattr(self, "_last_control_dt", None),
             "calculation_packet_schema_version": accepted.get(
@@ -743,8 +747,22 @@ class Plugin(BasePlugin):
             "map_tick_started_at": accepted.get("map_tick_started_at"),
             "map_lane_update_finished_at": accepted.get(
                 "map_lane_update_finished_at"),
+            "map_presentation_finished_at": accepted.get(
+                "map_presentation_finished_at"),
+            "map_road_type_finished_at": accepted.get(
+                "map_road_type_finished_at"),
+            "map_reference_finished_at": accepted.get(
+                "map_reference_finished_at"),
             "map_calculation_started_at": accepted.get(
                 "map_calculation_started_at"),
+            "map_packet_publish_started_at": accepted.get(
+                "map_packet_publish_started_at"),
+            "map_packet_publish_completed_at": publish_receipt.get(
+                "completed_at"),
+            "autopilot_tick_started_at": getattr(
+                self, "_control_tick_started_at", None),
+            "autopilot_packet_read_finished_at": getattr(
+                self, "_packet_read_finished_at", None),
             "accepted_packet_sdk_frame_us": accepted.get("sdk_frame_us"),
             "accepted_packet_output": accepted.get("output"),
             "accepted_nav_command": accepted.get("command"),
@@ -866,6 +884,7 @@ class Plugin(BasePlugin):
         })
 
     def on_tick(self, delta_time: float):
+        control_tick_started_at = time.monotonic()
         self._last_control_dt = float(delta_time)
         # Longitudinal ramps also reject a scheduler-sized jump. Steering uses
         # its own 100 ms physical integration bound internally.
@@ -894,6 +913,9 @@ class Plugin(BasePlugin):
             self.sdk.shared_state, snapshot)
         accepted_packet = dict(self.sdk.shared_state.get(
             "nav_steering_debug", {}) or {})
+        packet_read_finished_at = time.monotonic()
+        self._control_tick_started_at = control_tick_started_at
+        self._packet_read_finished_at = packet_read_finished_at
         nav_command, nav_command_curvature, command_reason = navigation_command(
             self.sdk.shared_state, snapshot, gps_active=gps_navigation_present,
             packet=accepted_packet)
