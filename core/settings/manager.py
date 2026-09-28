@@ -158,4 +158,5 @@ class SettingsManager:
             "selected_map": "",
             # Startup chime (plays assets/sounds/boot.mp3 if present).
             "startup_sound": True,
+            "transmission_mode_preference": "auto",
         }

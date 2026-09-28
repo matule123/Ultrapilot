@@ -21,7 +21,8 @@ from core.navigation.runtime_preflight import build_runtime_preflight
 from core.navigation.maneuver_availability import production_data_availability
 from core.control_timing import CadenceMonitor, FrameGate, wait_for_next_tick
 from core.transmission_mode import (
-    TransmissionModeObserver, confirmed_mode, read_transmission_mode,
+    TransmissionModeObserver, read_transmission_mode,
+    selected_mode,
 )
 from core.navigation.navigation_intent import (
     NavigationBufferClass, NavigationIntentTracker,
@@ -258,10 +259,15 @@ class UltraPilotEngine:
         self._drive_engagement = None
         self._active_transmission_generation = None
         self._active_transmission_mode = None
+        self._active_transmission_preference = None
         self._selector_release_pending = False
         self.shared_state.set("ets2_transmission_mode", {
             "mode": None, "status": "unknown", "source": "Automaticky",
             "reason": "game profile has not been observed", "observed_at": 0.0})
+        preference = self.settings.get("transmission_mode_preference", "auto")
+        if preference not in ("auto", "0", "1", "2", "3"):
+            preference = "auto"
+        self.shared_state.set("transmission_mode_preference", preference)
         # Track autopilot on/off edges so we release controls only once on disable.
         self._was_active = False
         try:
@@ -1111,7 +1117,8 @@ class UltraPilotEngine:
         if not neutral or frame <= 0:
             return "Pre automatické D chýba čerstvý neutrál alebo SDK frame"
         evidence = self.shared_state.get("ets2_transmission_mode", {}) or {}
-        mode = confirmed_mode(evidence)
+        preference = self.shared_state.get("transmission_mode_preference", "auto")
+        mode = selected_mode(evidence, preference)
         if mode is None:
             return "Režim prevodovky ETS2 nie je potvrdený aktívnym profilom a herným logom"
         if mode in (1, 2):
@@ -1136,6 +1143,7 @@ class UltraPilotEngine:
             "pressed_at": None, "released": False,
             "press_frame": None, "mode": mode,
             "transmission_generation": evidence.get("generation"),
+            "transmission_preference": preference,
             "identity": identity,
         }
         self.shared_state.update_batch({
@@ -1151,8 +1159,10 @@ class UltraPilotEngine:
     def _pin_confirmed_transmission_mode(self):
         """Bind an already-moving engagement to any confirmed gearbox mode."""
         evidence = self.shared_state.get("ets2_transmission_mode", {}) or {}
-        mode = confirmed_mode(evidence)
+        preference = self.shared_state.get("transmission_mode_preference", "auto")
+        mode = selected_mode(evidence, preference)
         self._active_transmission_mode = mode
+        self._active_transmission_preference = preference
         self._active_transmission_generation = (
             evidence.get("generation") if mode is not None else None)
 
@@ -1215,7 +1225,11 @@ class UltraPilotEngine:
         if identity != pending["identity"]:
             reason = "trasa alebo navigačná identita sa zmenila"
         mode_evidence = self.shared_state.get("ets2_transmission_mode", {}) or {}
-        if (confirmed_mode(mode_evidence, now) != pending["mode"]
+        if (selected_mode(mode_evidence,
+                          self.shared_state.get("transmission_mode_preference", "auto"),
+                          now) != pending["mode"]
+                or self.shared_state.get("transmission_mode_preference", "auto")
+                != pending.get("transmission_preference", "auto")
                 or mode_evidence.get("generation")
                 != pending["transmission_generation"]):
             reason = "režim alebo aktívny profil prevodovky sa zmenil"
@@ -1292,6 +1306,7 @@ class UltraPilotEngine:
             self._drive_engagement = None
             self._active_transmission_generation = pending["transmission_generation"]
             self._active_transmission_mode = pending["mode"]
+            self._active_transmission_preference = pending.get("transmission_preference", "auto")
             park_hold = truck.get("parkBrake") is True
             self.shared_state.update_batch({
                 "auto_drive_pending": False,
@@ -1664,10 +1679,18 @@ class UltraPilotEngine:
             self._automatic_safety_stop("vehicle telemetry is invalid")
             return
         pinned_generation = getattr(self, "_active_transmission_generation", None)
-        if pinned_generation is not None:
+        pinned_preference = getattr(self, "_active_transmission_preference", None)
+        preference_changed = (
+            pinned_preference is not None and
+            self.shared_state.get("transmission_mode_preference", "auto")
+            != pinned_preference)
+        if pinned_generation is not None or preference_changed:
             evidence = self.shared_state.get("ets2_transmission_mode", {}) or {}
-            if (confirmed_mode(evidence) != self._active_transmission_mode
-                    or evidence.get("generation") != pinned_generation):
+            if (preference_changed or
+                    selected_mode(evidence,
+                                  self.shared_state.get("transmission_mode_preference", "auto"))
+                    != self._active_transmission_mode or
+                    evidence.get("generation") != pinned_generation):
                 self.shared_state.set("autopilot_active", False)
                 self.shared_state.set("autopilot_disable_reason",
                                       "aktívny režim prevodovky sa zmenil")

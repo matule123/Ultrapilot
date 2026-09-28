@@ -1,17 +1,4 @@
-"""
-Tiny sound helper for UltraPilot.
-
-Looks for ``assets/sounds/<name>.mp3`` (or .wav) and plays it. If no file is
-present — which is the default, since we ship no audio assets — it does nothing.
-Playback runs on a background thread so it can never stall the UI.
-
-Backend preference on Windows: ``winsound`` for .wav (built-in, instant), then
-``playsimple``/``pygame.mixer`` for .mp3 if available. Anything missing is a
-silent no-op, never an error.
-
-Drop a file at ``assets/sounds/boot.mp3`` to hear a chime when the app starts
-(``bootloader.py`` calls ``play("boot")`` after the UI is up).
-"""
+"""Non-blocking playback of bundled UltraPilot notification sounds."""
 
 import logging
 import os
@@ -19,7 +6,7 @@ import threading
 
 from core.paths import resource
 
-_EXTS = (".mp3", ".wav")
+_EXTS = (".wav", ".mp3")
 
 
 def _find(name: str) -> str:
@@ -37,7 +24,8 @@ def _find(name: str) -> str:
 def _play_wav(path: str):
     try:
         import winsound
-        winsound.PlaySound(path, winsound.SND_FILENAME | winsound.SND_ASYNC)
+        winsound.PlaySound(path, winsound.SND_FILENAME | winsound.SND_ASYNC
+                           | winsound.SND_NODEFAULT)
         return True
     except Exception:
         return False
@@ -89,3 +77,17 @@ def play(name: str, volume: float = 1.0) -> bool:
 
     threading.Thread(target=_run, daemon=True).start()
     return True
+
+
+def autopilot_event(previous_active, active, previous_reason, reason):
+    """Choose one cue for a real authority transition or a new rejection."""
+    if active and not previous_active:
+        return "engage"
+    if previous_active and not active:
+        if str(reason or "").lower() in ("manual hotkey", "manual command"):
+            return "disengage"
+        return "auto_off"
+    if not active and reason and reason != previous_reason:
+        if str(reason).lower() not in ("manual hotkey", "manual command"):
+            return "warning"
+    return None

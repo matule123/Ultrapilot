@@ -1106,6 +1106,8 @@ class UltraPilotApp(QMainWindow):
             self.island = DynamicIsland.install(self)
         except Exception as e:
             logging.debug("Dynamic Island unavailable: %s", e)
+        self._sound_previous_active = bool(state.get("autopilot_active", False))
+        self._sound_previous_reason = state.get("autopilot_disable_reason", "") or ""
 
     def _render_start_btn(self):
         from core.i18n import t
@@ -1291,6 +1293,16 @@ class UltraPilotApp(QMainWindow):
             logging.debug("native taskbar icon could not be set: %s", exc)
 
     def update_ui(self):
+        from core.sound import autopilot_event, play
+        sound_active = bool(self.state.get("autopilot_active", False))
+        sound_reason = self.state.get("autopilot_disable_reason", "") or ""
+        cue = autopilot_event(
+            getattr(self, "_sound_previous_active", sound_active), sound_active,
+            getattr(self, "_sound_previous_reason", sound_reason), sound_reason)
+        self._sound_previous_active = sound_active
+        self._sound_previous_reason = sound_reason
+        if cue:
+            play(cue)
         if self.pages.currentIndex() == 4:
             import time
             now = time.monotonic()

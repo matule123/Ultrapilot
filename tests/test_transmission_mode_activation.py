@@ -10,6 +10,7 @@ from tempfile import TemporaryDirectory
 from core.engine import UltraPilotEngine
 from core.transmission_mode import (
     TransmissionModeObserver, confirmed_mode, read_transmission_mode,
+    selected_mode,
 )
 from sdk.plugin_sdk import CTL_BRAKE
 from tests.test_drive_engagement_safety import DriveEngagementSafetyTests as _Fixture
@@ -37,7 +38,7 @@ class ProfileModeEvidenceTests(unittest.TestCase):
             self.assertEqual(confirmed_mode(found), 0)
             self.assertIn("steam_profiles/", found["source"])
             os.utime(config, (time.time() + 10, time.time() + 10))
-            self.assertIsNone(confirmed_mode(read_transmission_mode(root)))
+            self.assertEqual(confirmed_mode(read_transmission_mode(root)), 0)
             config.write_text('uset g_trans "3"\n', encoding="utf-8")
             self.assertIsNone(confirmed_mode(read_transmission_mode(root)))
             config.write_text('uset g_trans "oops"\n', encoding="utf-8")
@@ -45,17 +46,25 @@ class ProfileModeEvidenceTests(unittest.TestCase):
             config.unlink()
             self.assertIsNone(confirmed_mode(read_transmission_mode(root)))
 
-    def test_config_edit_requires_new_game_confirmation(self):
+    def test_same_mode_rewrite_does_not_invalidate_game_confirmation(self):
         observer = TransmissionModeObserver()
         old = {"mode": 0, "status": "confirmed", "profile": "p",
                "observed_at": time.monotonic(), "log_identity": "log:a",
                "config_mtime_ns": 1}
         self.assertEqual(confirmed_mode(observer.accept(old)), 0)
         changed = dict(old, config_mtime_ns=2)
-        self.assertIsNone(confirmed_mode(observer.accept(changed)))
-        self.assertIsNone(confirmed_mode(observer.accept(changed)))
+        self.assertEqual(confirmed_mode(observer.accept(changed)), 0)
+        self.assertEqual(confirmed_mode(observer.accept(changed)), 0)
         self.assertEqual(confirmed_mode(observer.accept(dict(
             changed, log_identity="log:b"))), 0)
+
+    def test_manual_choice_cannot_override_unknown_or_conflicting_game_mode(self):
+        evidence = {"mode": 0, "status": "confirmed",
+                    "observed_at": time.monotonic()}
+        self.assertEqual(selected_mode(evidence, "auto"), 0)
+        self.assertEqual(selected_mode(evidence, "0"), 0)
+        self.assertIsNone(selected_mode(evidence, "3"))
+        self.assertIsNone(selected_mode(dict(evidence, status="unknown"), "0"))
 
     def test_profile_change_does_not_inherit_old_log_mode(self):
         with TemporaryDirectory(dir=Path(__file__).resolve().parents[1]
@@ -258,6 +267,32 @@ class SimpleAutomaticEngagementTests(unittest.TestCase):
         self.assertTrue(state.get("autopilot_active"))
         state.set("ets2_transmission_mode", dict(
             state.get("ets2_transmission_mode"), generation="new-profile:0"))
+        engine._flush_controls()
+        self.assertFalse(state.get("autopilot_active"))
+        self.assertEqual(engine.controller.throttle, 0.0)
+
+    def test_manual_mode_choice_cannot_start_or_keep_conflicting_authority(self):
+        state, truck, engine = _Fixture()._parked_request(park_brake=False)
+        state.set("transmission_mode_preference", "3")
+        state.set("ets2_transmission_mode", dict(
+            state.get("ets2_transmission_mode"), mode=0,
+            generation="test-profile:0"))
+        state.set("autopilot_command", {"seq": 1, "enabled": True})
+        engine._process_autopilot_command()
+        self.assertFalse(state.get("auto_drive_pending", False))
+        self.assertEqual(engine.controller.throttle, 0.0)
+        state.set("transmission_mode_preference", "auto")
+        state.set("autopilot_command", {"seq": 2, "enabled": True})
+        engine._process_autopilot_command()
+        truck["sdkFrameTimeUs"] += 33_333
+        state.set("telemetry_timestamp", time.monotonic())
+        engine._flush_controls()
+        truck["gear"] = 4
+        truck["sdkFrameTimeUs"] += 33_333
+        state.set("telemetry_timestamp", time.monotonic())
+        engine._flush_controls()
+        self.assertTrue(state.get("autopilot_active"))
+        state.set("transmission_mode_preference", "0")
         engine._flush_controls()
         self.assertFalse(state.get("autopilot_active"))
         self.assertEqual(engine.controller.throttle, 0.0)

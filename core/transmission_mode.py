@@ -63,6 +63,8 @@ def read_transmission_mode(root=None, *, now=None):
             result["reason"] = "g_trans is missing or ambiguous"
             return result
         config_mode, log_mode = modes[0], logged[-1].group(1)
+        if config_mode in {"0", "1", "2", "3"}:
+            result["configured_mode"] = int(config_mode)
         if config_mode != log_mode:
             result["reason"] = "active profile g_trans disagrees with game log"
             return result
@@ -82,10 +84,12 @@ def read_transmission_mode(root=None, *, now=None):
                 hours=int(clock[1]), minutes=int(clock[2]),
                 seconds=int(clock[3]),
                 milliseconds=int(clock[4][:3].ljust(3, "0")))
-            # Files written after ETS2 logged g_trans cannot be treated as
-            # accepted by the game merely because the values still match.
-            if after.st_mtime > event_at.timestamp() + 2.0:
-                result["reason"] = "profile config is newer than game confirmation"
+            # ETS2 rewrites config_local.cfg while running. Its mtime is not
+            # the time the gearbox mode changed. The game-log observation of
+            # this active profile and the current g_trans value must agree;
+            # a different value remains unknown until the game logs it.
+            if event_at.timestamp() > time.time() + 2.0:
+                result["reason"] = "game log transmission time is in the future"
                 return result
         except (TypeError, ValueError, OverflowError):
             result["reason"] = "game log transmission time is invalid"
@@ -94,8 +98,7 @@ def read_transmission_mode(root=None, *, now=None):
                         + str(previous_profile_end + logged[-1].start())
                         + ":" + str(profiles[-1].start()) + ":" + encoded
                         + ":" + log_event)
-        generation = (log_identity
-                      + ":" + str(after.st_mtime_ns) + ":" + config_mode)
+        generation = log_identity + ":" + config_mode
         result.update(mode=int(config_mode), status="confirmed",
                       source=f"{directory}/{encoded}/config_local.cfg + game.log.txt",
                       detected_wall_time=time.time(), generation=generation,
@@ -121,8 +124,18 @@ def confirmed_mode(snapshot, now=None):
     return mode if mode in (0, 1, 2, 3) and 0 <= age <= 2.0 else None
 
 
+def selected_mode(snapshot, preference="auto", now=None):
+    """A manual choice can only agree with fresh game evidence, never replace it."""
+    mode = confirmed_mode(snapshot, now)
+    if preference == "auto":
+        return mode
+    if preference not in ("0", "1", "2", "3"):
+        return None
+    return mode if mode is not None and str(mode) == preference else None
+
+
 class TransmissionModeObserver:
-    """Invalidate a changed config until ETS2 logs a new mode observation."""
+    """Track game-confirmed mode, unaffected by same-value config rewrites."""
 
     def __init__(self):
         self.previous = None
@@ -134,13 +147,12 @@ class TransmissionModeObserver:
         if (old and evidence.get("status") == "confirmed"
                 and evidence.get("log_identity") == old.get("log_identity")
                 and evidence.get("profile") == old.get("profile")
-                and evidence.get("config_mtime_ns")
-                != old.get("config_mtime_ns")):
+                and evidence.get("mode") != old.get("mode")):
             self.blocked_log_identity = evidence.get("log_identity")
         if (self.blocked_log_identity is not None
                 and evidence.get("log_identity") == self.blocked_log_identity):
             evidence.update(mode=None, status="unknown",
-                            reason="profile config changed without a new game-log confirmation")
+                            reason="profile mode changed without a new game-log confirmation")
         elif evidence.get("log_identity") != self.blocked_log_identity:
             self.blocked_log_identity = None
         self.previous = evidence

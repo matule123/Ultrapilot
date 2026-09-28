@@ -355,6 +355,37 @@ class SettingsMenu(QWidget):
         sdk_info.setStyleSheet("font-size:12px;color:" + self._pal['muted'] + ";")
         self._themed_captions.append(sdk_info)
         sdk_layout.addWidget(sdk_info)
+        transmission_title = QLabel("Režim prevodovky ETS2")
+        transmission_title.setStyleSheet(_title_qss(self._pal))
+        self._themed_titles.append(transmission_title)
+        sdk_layout.addWidget(transmission_title)
+        transmission_box = QFrame()
+        transmission_box.setObjectName("ETS2TransmissionBox")
+        transmission_box.setStyleSheet(
+            "QFrame#ETS2TransmissionBox{border:1px solid " + self._pal['border']
+            + ";border-radius:10px;background:" + self._pal['card'] + ";}")
+        transmission_row = QHBoxLayout(transmission_box)
+        transmission_row.setContentsMargins(9, 5, 9, 5)
+        self.transmission_mode_combo = QComboBox()
+        self.transmission_mode_combo.setObjectName("ETS2TransmissionChoice")
+        self.transmission_mode_combo.addItem("Automatické zistenie (odporúčané)", "auto")
+        self.transmission_mode_combo.addItem("Jednoduchá automatická", "0")
+        self.transmission_mode_combo.addItem("Sekvenčná", "1")
+        self.transmission_mode_combo.addItem("H radenie", "2")
+        self.transmission_mode_combo.addItem("Reálna automatická", "3")
+        self.transmission_mode_combo.setEditable(True)
+        self.transmission_mode_combo.lineEdit().setReadOnly(True)
+        self.transmission_mode_combo.setStyleSheet(
+            "QComboBox{border:none;background:transparent;padding:6px;"
+            "font-size:14px;font-weight:700;}")
+        transmission_row.addWidget(self.transmission_mode_combo, 1)
+        self.transmission_mode_badge = QLabel("AUTOMATICKY")
+        self.transmission_mode_badge.setObjectName("ETS2TransmissionBadge")
+        self.transmission_mode_badge.setStyleSheet(
+            "font-size:9px;font-weight:750;color:#2563EB;"
+            "background:#EFF6FF;border-radius:5px;padding:3px 5px;")
+        transmission_row.addWidget(self.transmission_mode_badge)
+        sdk_layout.addWidget(transmission_box)
         self.transmission_mode_label = QLabel()
         self.transmission_mode_label.setObjectName("ETS2TransmissionMode")
         self.transmission_mode_label.setWordWrap(True)
@@ -363,6 +394,11 @@ class SettingsMenu(QWidget):
             "Zistené automaticky. Meňte len pri problémoch so zapnutím autopilota.")
         transmission_hint.setWordWrap(True)
         sdk_layout.addWidget(transmission_hint)
+        preference = self.state.get("transmission_mode_preference", "auto")
+        index = self.transmission_mode_combo.findData(preference)
+        self.transmission_mode_combo.setCurrentIndex(max(0, index))
+        self.transmission_mode_combo.currentIndexChanged.connect(
+            self._set_transmission_preference)
         self.refresh_transmission_mode()
         grid.addWidget(sdk_frame, 2, 0, 1, 2)
         self._sdk_frame = sdk_frame
@@ -385,23 +421,63 @@ class SettingsMenu(QWidget):
         self.update_language(self.lang_combo.currentIndex())
 
     def refresh_transmission_mode(self):
-        """Display the observer's evidence, never grant gearbox authority."""
+        """Show the selected option and the game's independently observed mode."""
         from datetime import datetime
         from core.transmission_mode import confirmed_mode
         evidence = self.state.get("ets2_transmission_mode", {}) or {}
-        names = {0: "jednoduchá automatická", 1: "sekvenčná",
-                 2: "H radenie", 3: "reálna automatická"}
+        names = {0: "Jednoduchá automatická", 1: "Sekvenčná",
+                 2: "H radenie", 3: "Reálna automatická"}
         mode = confirmed_mode(evidence)
+        preference = self.transmission_mode_combo.currentData()
+        self.transmission_mode_badge.setText(
+            "AUTOMATICKY" if preference == "auto" else "ZVOLENÉ")
+        candidate = evidence.get("configured_mode")
+        display_mode = mode if mode is not None else candidate
+        if preference == "auto":
+            self.transmission_mode_combo.setEditText(
+                names.get(display_mode, "Nepotvrdený režim")
+                + (" · čaká na potvrdenie ETS2" if mode is None and display_mode is not None else ""))
+        else:
+            self.transmission_mode_combo.setEditText(names.get(int(preference), "Nepotvrdený režim"))
         if mode is None:
-            detail = "nepotvrdený" + (
-                " – " + str(evidence.get("reason")) if evidence.get("reason") else "")
+            reasons = {
+                "active ETS2 profile is not confirmed": "Čakám na aktívny profil ETS2.",
+                "active profile g_trans disagrees with game log": "Nastavenie profilu nesúhlasí s herným logom.",
+                "g_trans is missing or ambiguous": "Režim chýba v profile alebo hernom logu.",
+                "game profile has not been observed": "Čakám na údaje z hry.",
+            }
+            detail = "Nepotvrdené hernými dátami. " + reasons.get(
+                evidence.get("reason"), "Automatický rozjazd zostáva zablokovaný.")
         else:
             stamp = evidence.get("detected_wall_time")
             detected = datetime.fromtimestamp(stamp).strftime("%d.%m.%Y %H:%M:%S") if stamp else "?"
-            detail = (f"{names[mode]} (g_trans={mode}); "
-                      f"zdroj: {evidence.get('source', '?')}; zistené: {detected}")
+            detail = (f"Zistené: {names[mode]} (g_trans={mode}) · "
+                      f"zdroj: {evidence.get('source', '?')} · {detected}")
+            if preference != "auto" and preference != str(mode):
+                detail += " · Zvolený režim nesúhlasí s ETS2; rozjazd je zablokovaný."
         self.transmission_mode_label.setText(
-            "Režim prevodovky ETS2: Automaticky – " + detail)
+            detail)
+
+    def _set_transmission_preference(self):
+        """Persist an explicit choice; it never overrides conflicting game evidence."""
+        from core.settings.manager import SettingsManager
+        preference = self.transmission_mode_combo.currentData()
+        if preference not in ("auto", "0", "1", "2", "3"):
+            return
+        manager = SettingsManager()
+        old = manager.get("transmission_mode_preference", "auto")
+        manager.settings["transmission_mode_preference"] = preference
+        if not manager.save():
+            manager.settings["transmission_mode_preference"] = old
+            index = self.transmission_mode_combo.findData(old)
+            self.transmission_mode_combo.blockSignals(True)
+            self.transmission_mode_combo.setCurrentIndex(max(0, index))
+            self.transmission_mode_combo.blockSignals(False)
+            self.refresh_transmission_mode()
+            return
+        self.state.set("transmission_mode_preference", preference)
+        logging.info("ETS2 transmission mode preference selected: %s", preference)
+        self.refresh_transmission_mode()
 
     def _show_settings_section(self, section, selected_button=None):
         """Switch the nested settings board without rebuilding live controls."""

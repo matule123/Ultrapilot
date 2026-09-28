@@ -54,13 +54,48 @@ class UiChromeTests(unittest.TestCase):
             "observed_at": time.monotonic(),
         }})
         page = SettingsMenu(state)
-        self.assertIn("jednoduchá automatická", page.transmission_mode_label.text())
+        self.assertIn("Jednoduchá automatická", page.transmission_mode_combo.currentText())
+        self.assertEqual(page.transmission_mode_combo.currentData(), "auto")
+        self.assertEqual(page.transmission_mode_badge.text(), "AUTOMATICKY")
         self.assertIn("config_local.cfg", page.transmission_mode_label.text())
         state.set("ets2_transmission_mode", {"status": "unknown",
+                                           "configured_mode": 0,
                                            "reason": "config disagrees with log"})
         page.refresh_transmission_mode()
-        self.assertIn("nepotvrdený", page.transmission_mode_label.text())
+        self.assertIn("čaká na potvrdenie", page.transmission_mode_combo.currentText())
+        self.assertIn("Nepotvrdené", page.transmission_mode_label.text())
         page.close()
+
+    def test_gearbox_options_persist_explicit_selection(self):
+        class Settings:
+            def __init__(self):
+                self.settings = {}
+            def get(self, key, default=None):
+                return self.settings.get(key, default)
+            def save(self):
+                return True
+        saved = Settings()
+        state = State({"transmission_mode_preference": "auto"})
+        with mock.patch("core.settings.manager.SettingsManager", return_value=saved):
+            page = SettingsMenu(state)
+            self.assertEqual(page.transmission_mode_combo.count(), 5)
+            self.assertIn("odporúčané", page.transmission_mode_combo.itemText(0))
+            page.transmission_mode_combo.setCurrentIndex(4)
+            self.assertEqual(saved.get("transmission_mode_preference"), "3")
+            self.assertEqual(state.get("transmission_mode_preference"), "3")
+            self.assertEqual(page.transmission_mode_badge.text(), "ZVOLENÉ")
+            page.close()
+
+    def test_update_notice_shows_installed_commit_once(self):
+        host = QWidget()
+        host.state = State({"update_startup_commit": "9f179cb"})
+        island = DynamicIsland(host)
+        island._poll_log()
+        self.assertIn("Aktualizované úspešne", island.msg_lbl.text())
+        self.assertIn("9f179cb", island.msg_lbl.text())
+        self.assertTrue(island._update_notice_seen)
+        island.close()
+        host.close()
 
     def test_window_controls_match_reference_order_and_have_real_hitboxes(self):
         host = QWidget()

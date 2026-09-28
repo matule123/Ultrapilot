@@ -2,6 +2,7 @@
 
 import os
 import re
+import time
 
 from PyQt6.QtCore import Qt, QTimer, QPropertyAnimation, QEasingCurve, QPoint, QEvent
 from PyQt6.QtWidgets import QWidget, QHBoxLayout, QVBoxLayout, QLabel, QFrame, QProgressBar
@@ -85,6 +86,8 @@ class DynamicIsland(QWidget):
         self._navigation_was_active = False
         self._map_load_was_active = False
         self._map_load_generation = None
+        self._update_notice_until = 0.0
+        self._update_notice_seen = False
         self._build()
         self.hide()
 
@@ -152,6 +155,16 @@ class DynamicIsland(QWidget):
 
     def _poll_log(self):
         """Read new records written by the engine, UI, HUD and all plugins."""
+        state = getattr(self.parentWidget(), "state", None)
+        if not self._update_notice_seen and state is not None:
+            commit = state.get("update_startup_commit", "")
+            if commit:
+                self._update_notice_seen = True
+                self._update_notice_until = time.monotonic() + 5.0
+                self.show_record(f"Aktualizované úspešne · verzia {commit}",
+                                 "INFO", "", "UltraPilot")
+        if time.monotonic() < self._update_notice_until:
+            return
         # Dataset loading owns the map and invalidates navigation while it is
         # in progress. Show its concrete roads/prefabs phases first; otherwise
         # the expected transient GPS rebuild masks the map status as NAV 0%.

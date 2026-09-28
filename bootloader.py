@@ -104,6 +104,8 @@ def run_splash(shared_dict):
         pass
     if update_notice:
         splash.show_update_installation()
+        from core.update_check import git_commit
+        state.set("update_startup_commit", git_commit())
     splash.show()
 
     def finish_when_ready():
