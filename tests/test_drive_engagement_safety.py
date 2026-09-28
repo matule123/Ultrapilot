@@ -7,7 +7,9 @@ from types import SimpleNamespace
 from unittest import mock
 
 from core.engine import UltraPilotEngine
-from sdk.plugin_sdk import PluginSDK, CTL_SELECT_DRIVE, CTL_THROTTLE
+from sdk.plugin_sdk import (
+    PluginSDK, CTL_SELECT_DRIVE, CTL_STEERING, CTL_THROTTLE,
+)
 from plugins.autopilot.main import Plugin as AutopilotPlugin
 from tests.test_control_safety_regressions import (
     Controller, State, autopilot, ready_navigation_state,
@@ -226,8 +228,65 @@ class DriveEngagementSafetyTests(unittest.TestCase):
         engine._flush_controls()
         self.assertEqual(engine.controller.throttle, 0.0)
 
-    def test_auto_drive_requires_park_brake_and_scs_backend(self):
-        for brake, backend in ((False, "SCS_SDK"), (None, "SCS_SDK"),
+    def test_stationary_neutral_without_park_brake_can_request_one_d(self):
+        state, truck, engine = self._parked_request(park_brake=False)
+        state.set("autopilot_command", {"seq": 1, "enabled": True})
+        engine._process_autopilot_command()
+        self.assertTrue(state.get("auto_drive_pending"))
+        self.assertFalse(state.get("autopilot_active"))
+        truck["sdkFrameTimeUs"] += 33_333
+        state.set("telemetry_timestamp", time.monotonic())
+        engine._flush_controls()
+        self.assertEqual(engine.controller.drive_events.count(True), 1)
+        self.assertEqual((engine.controller.throttle,
+                          engine.controller.brake,
+                          engine.controller.steering), (0.0, 0.0, 0.0))
+
+    def test_releasing_park_brake_during_d_handshake_does_not_cancel(self):
+        state, truck, engine = self._parked_request()
+        state.set("autopilot_command", {"seq": 1, "enabled": True})
+        engine._process_autopilot_command()
+        truck["sdkFrameTimeUs"] += 33_333
+        state.set("telemetry_timestamp", time.monotonic())
+        engine._flush_controls()
+        truck["parkBrake"] = False
+        truck["gear"] = 4
+        truck["sdkFrameTimeUs"] += 33_333
+        state.set("telemetry_timestamp", time.monotonic())
+        engine._flush_controls()
+        self.assertTrue(state.get("autopilot_active"))
+        self.assertEqual(engine.controller.drive_events.count(True), 1)
+        self.assertFalse(state.get("auto_drive_park_hold"))
+        state.set(CTL_THROTTLE, 0.25)
+        state.set("autopilot_control_heartbeat", time.monotonic())
+        engine._flush_controls()
+        self.assertGreater(engine.controller.throttle, 0.0)
+
+    def test_one_n_at_50_kmh_in_confirmed_drive_uses_current_controls(self):
+        state, truck, engine = self._parked_request(park_brake=False)
+        truck["gear"] = 4
+        truck["speed"] = 50.0 / 3.6
+        state.set("acc_throttle", 0.5)
+        state.set("acc_brake", 0.0)
+        state.set("autopilot_control_heartbeat", time.monotonic())
+        state.set("autopilot_command", {"seq": 1, "enabled": True})
+        engine._process_autopilot_command()
+        self.assertTrue(state.get("autopilot_active"))
+        self.assertFalse(state.get("auto_drive_pending", False))
+        plugin = autopilot(truck, state)
+        plugin.on_tick(0.05)
+        state.set(CTL_THROTTLE, 0.3)
+        state.set(CTL_STEERING, 0.12)
+        state.set("autopilot_control_heartbeat", time.monotonic())
+        engine._flush_controls()
+        self.assertTrue(state.get("autopilot_active"))
+        self.assertNotIn(True, engine.controller.drive_events)
+        self.assertGreater(engine.controller.throttle, 0.0)
+        self.assertNotEqual(engine.controller.steering, 0.0)
+        self.assertGreaterEqual(engine.controller.brake, 0.0)
+
+    def test_auto_drive_requires_scs_backend_even_without_park_brake(self):
+        for brake, backend in ((False, "VJOY"), (None, "VJOY"),
                                (True, "VJOY")):
             with self.subTest(brake=brake, backend=backend):
                 state, _truck, engine = self._parked_request(
@@ -396,15 +455,13 @@ class DriveEngagementSafetyTests(unittest.TestCase):
         self.assertFalse(state.get("auto_drive_park_hold"))
         self.assertGreater(engine.controller.throttle, 0.0)
 
-    def test_auto_drive_rejects_loss_of_park_brake_or_stale_telemetry(self):
-        for fault in ("park", "stale", "invalid_speed"):
+    def test_auto_drive_rejects_stale_telemetry_or_invalid_speed(self):
+        for fault in ("stale", "invalid_speed"):
             with self.subTest(fault=fault):
                 state, truck, engine = self._parked_request()
                 state.set("autopilot_command", {"seq": 1, "enabled": True})
                 engine._process_autopilot_command()
-                if fault == "park":
-                    truck["parkBrake"] = False
-                elif fault == "stale":
+                if fault == "stale":
                     state.set("telemetry_timestamp", time.monotonic() - 0.8)
                 else:
                     truck["speed"] = float("nan")

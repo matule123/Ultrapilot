@@ -950,7 +950,7 @@ class UltraPilotEngine:
                     self.shared_state.set(
                         "navigation_status",
                         f"Autopilot zablokovaný: {rejection_reason}")
-            msg = ("Vyberám D – parkovaciu brzdu nechajte zatiahnutú"
+            msg = ("Vyberám D – čakám na potvrdenie prevodu"
                    if pending_started else
                    f"Autopilot unavailable: {rejection_reason}"
                    if rejection_reason else
@@ -1039,10 +1039,12 @@ class UltraPilotEngine:
         truck = ((self.shared_state.get("telemetry", {}) or {})
                  .get("truck", {}) or {})
         try:
-            forward_gear = int(truck.get("gear", 0)) > 0
+            observed_gear = int(truck.get("gear", 0))
+            forward_gear = observed_gear > 0
             sdk_frame = int(truck.get("sdkFrameTimeUs", 0))
             observed_at = float(self.shared_state.get("telemetry_timestamp", 0.0))
         except (TypeError, ValueError, OverflowError):
+            observed_gear = 0
             forward_gear = False
             sdk_frame = 0
             observed_at = 0.0
@@ -1051,7 +1053,9 @@ class UltraPilotEngine:
                 or sdk_frame <= 0 or not 0.0 <= age <= 0.5):
             return "forward gear observation is missing or stale"
         if not forward_gear:
-            if allow_neutral and int(truck.get("gear", 0)) == 0:
+            if observed_gear < 0:
+                return "pozorovaná spiatočka; automatické D je zakázané"
+            if allow_neutral and observed_gear == 0:
                 return ""
             return ("forward gear is not confirmed by vehicle telemetry; "
                     "Zaraďte D a potom stlačte N")
@@ -1072,9 +1076,10 @@ class UltraPilotEngine:
             frame = int(truck["sdkFrameTimeUs"])
         except (KeyError, TypeError, ValueError, OverflowError):
             return "vehicle speed, gear or SDK frame is unavailable"
-        if not (stationary and neutral and frame > 0 and
-                truck.get("parkBrake") is True):
-            return "Pre automatické D zastavte a zatiahnite parkovaciu brzdu"
+        if not stationary:
+            return "Pre automatické D musí vozidlo stáť"
+        if not neutral or frame <= 0:
+            return "Pre automatické D chýba čerstvý neutrál alebo SDK frame"
         scs = getattr(self.controller, "scs", None)
         if (getattr(self.controller, "mode", None) != "SCS_SDK"
                 or not getattr(scs, "connected", False)):
@@ -1096,7 +1101,7 @@ class UltraPilotEngine:
         self.shared_state.update_batch({
             "auto_drive_pending": True,
             "auto_drive_park_hold": False,
-            "navigation_status": "Vyberám D – parkovaciu brzdu nechajte zatiahnutú",
+            "navigation_status": "Vyberám D – čakám na potvrdenie prevodu",
             "autopilot_disable_reason": "",
         })
         return ""
@@ -1149,13 +1154,25 @@ class UltraPilotEngine:
             "source_dataset_fingerprint"))
         if identity != pending["identity"]:
             reason = "trasa alebo navigačná identita sa zmenila"
-        if (reason or self.shared_state.get("telemetry_valid") is not True
-                or not 0.0 <= age <= 0.5 or frame < pending["last_frame"]
-                or not math.isfinite(speed) or abs(speed) >= 0.05
-                or truck.get("parkBrake") is not True
-                or gear < 0 or now > pending["deadline_at"]):
+        if reason:
+            self._cancel_auto_drive_engagement_unlocked(reason)
+            return True
+        if (self.shared_state.get("telemetry_valid") is not True
+                or not 0.0 <= age <= 0.5):
             self._cancel_auto_drive_engagement_unlocked(
-                reason or "D nebolo bezpečne potvrdené v časovom limite")
+                "pozorovanie vozidla je zastarané")
+            return True
+        if frame < pending["last_frame"]:
+            self._cancel_auto_drive_engagement_unlocked(
+                "SDK frame sa vrátil späť")
+            return True
+        if not math.isfinite(speed) or abs(speed) >= 0.05:
+            self._cancel_auto_drive_engagement_unlocked(
+                "vozidlo sa počas výberu D pohlo alebo rýchlosť nie je platná")
+            return True
+        if now > pending["deadline_at"]:
+            self._cancel_auto_drive_engagement_unlocked(
+                f"po jedinom pulze D neprišlo potvrdenie včas (SDK gear {gear})")
             return True
         pending["last_frame"] = frame
         self.controller.set_steering(0.0)
@@ -1188,15 +1205,19 @@ class UltraPilotEngine:
                     "navigačná autorita sa pred potvrdením D zmenila")
                 return True
             self._drive_engagement = None
+            park_hold = truck.get("parkBrake") is True
             self.shared_state.update_batch({
                 "auto_drive_pending": False,
-                "auto_drive_park_hold": True,
+                "auto_drive_park_hold": park_hold,
                 "autopilot_active": True,
                 "autopilot_engagement_request": pending["request_id"],
                 "autopilot_engagement_confirmed": None,
-                "navigation_status":
-                    "D potvrdené; autopilot zapnutý, uvoľnite parkovaciu brzdu",
-                "tts_message": "D potvrdené. Uvoľnite parkovaciu brzdu.",
+                "navigation_status": (
+                    "D potvrdené; autopilot zapnutý, uvoľnite parkovaciu brzdu"
+                    if park_hold else "D potvrdené; autopilot zapnutý"),
+                "tts_message": (
+                    "D potvrdené. Uvoľnite parkovaciu brzdu."
+                    if park_hold else "D potvrdené. Autopilot zapnutý."),
             })
             return True
         if pending["pressed_at"] is None and frame > pending["start_frame"]:

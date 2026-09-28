@@ -267,8 +267,8 @@ class UiChromeTests(unittest.TestCase):
 
     def test_dynamic_island_hides_repeated_process_lifecycle_noise(self):
         self.assertEqual(_friendly_activity_message(
-            "Hotkey N -> Vyberám D – parkovaciu brzdu nechajte zatiahnutú"),
-            "Vyberám D – parkovaciu brzdu nechajte zatiahnutú")
+            "Hotkey N -> Vyberám D – čakám na potvrdenie prevodu"),
+            "Vyberám D – čakám na potvrdenie prevodu")
         self.assertEqual(_friendly_activity_message(
             "Hotkey N -> Autopilot unavailable: forward gear is not "
             "confirmed by vehicle telemetry; Zaraďte D a potom stlačte N"),
