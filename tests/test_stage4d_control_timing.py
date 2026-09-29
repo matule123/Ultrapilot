@@ -394,7 +394,9 @@ class MapFrameIntegrationTests(unittest.TestCase):
 
         sdk.set("vehicle_envelope_snapshot",
                 observation(166_664, now + 0.066664))
-        plugin.on_tick(0.002)
+        with mock.patch("plugins.map.main.time.monotonic",
+                        return_value=now + 0.066664):
+            plugin.on_tick(0.002)
         second = sdk.get("nav_steering_debug")
         self.assertEqual(second["calculation_sequence"],
                          first["calculation_sequence"] + 1)
@@ -402,7 +404,9 @@ class MapFrameIntegrationTests(unittest.TestCase):
 
         sdk.set("vehicle_envelope_snapshot",
                 observation(150_000, now + 0.07))
-        plugin.on_tick(0.01)
+        with mock.patch("plugins.map.main.time.monotonic",
+                        return_value=now + 0.07):
+            plugin.on_tick(0.01)
         self.assertFalse(sdk.get("nav_active"))
         self.assertIn("regressed", sdk.get("steering_observation_failure"))
 

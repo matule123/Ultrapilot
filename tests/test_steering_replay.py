@@ -1,6 +1,7 @@
 import json
 import io
 import unittest
+import time
 from unittest import mock
 
 from core.steering_replay import (
@@ -283,7 +284,7 @@ class SteeringReplayBufferTests(unittest.TestCase):
         sdk.set("truck_heading", point.heading)
         sdk.set("truck_speed_ms", 8.0)
         sdk.set("vehicle_envelope_snapshot", {
-            "timestamp": 100.0, "sdk_frame_us": 123000,
+            "timestamp": time.monotonic(), "sdk_frame_us": 123000,
             "tractor_position": [point.x, point.y, point.z],
             "tractor_heading": point.heading, "tractor_speed_ms": 8.0,
             "road_wheel_angles_rad": [0.0],

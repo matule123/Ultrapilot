@@ -161,19 +161,13 @@ class LaneAuthorityIntegrationTests(unittest.TestCase):
                                side_effect=lambda _pos: time.sleep(0.52)):
             plugin.on_tick(0.02)
         packet = sdk.get("nav_steering_debug", {})
-        self.assertGreaterEqual(
-            packet["map_road_type_finished_at"]
-            - packet["map_presentation_finished_at"], 0.5)
-        snapshot = dict(sdk.get("lane_trajectory"))
-        for key, value in (("source_game_session_id", 1),
-                           ("source_map_key", "test-map"),
-                           ("source_dataset_fingerprint", "test-dataset")):
-            packet[key] = snapshot[key] = value
-        _steer, _curvature, reason = navigation_command(
-            sdk.shared_state, snapshot, gps_active=True,
-            packet=packet)
-        self.assertEqual(reason,
-                         "steering command observation_timestamp is stale")
+        # Map now refuses this expired input before calling Route or
+        # publishing a calculated packet, instead of leaving rejection to AP.
+        self.assertFalse(sdk.get("nav_active"))
+        self.assertFalse(packet["authority_valid"])
+        self.assertEqual(packet["control_failure"],
+                         "steering SDK observation is missing or stale")
+        self.assertNotIn("computed_at", packet)
 
     def test_stale_locator_callback_releases_input_for_fresh_gps_build(self):
         """17:10 regression: stale rolling GPS work is not a completed input."""

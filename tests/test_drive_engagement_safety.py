@@ -612,6 +612,8 @@ class DriveEngagementSafetyTests(unittest.TestCase):
         state, truck, plugin, engine = self._runtime(gear=4)
         state.set("autopilot_active", False)
         now = time.monotonic()
+        # Isolate the stale steering packet with a genuinely fresh gear frame.
+        state.set("telemetry_timestamp", now)
         state.set("autopilot_navigation_readiness", {
             "ready": True, "source": "gps_lane", "revision": 7,
             "timestamp": now,

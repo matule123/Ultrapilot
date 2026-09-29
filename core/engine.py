@@ -1035,6 +1035,31 @@ class UltraPilotEngine:
             timestamp = 0.0
         if timestamp <= 0.0 or time.monotonic() - timestamp > 0.5:
             return "potvrdenie navigačnej autority je zastarané"
+        # A selector write is not proof of a gear change at the DLL/game
+        # boundary. Only a fresh SDK forward-gear observation may grant
+        # control after the Engine-owned parked selection attempt.
+        truck = ((self.shared_state.get("telemetry", {}) or {})
+                 .get("truck", {}) or {})
+        try:
+            observed_gear = int(truck.get("gear", 0))
+            forward_gear = observed_gear > 0
+            sdk_frame = int(truck.get("sdkFrameTimeUs", 0))
+            observed_at = float(self.shared_state.get("telemetry_timestamp", 0.0))
+        except (TypeError, ValueError, OverflowError):
+            observed_gear = 0
+            forward_gear = False
+            sdk_frame = 0
+            observed_at = 0.0
+        age = time.monotonic() - observed_at
+        if (self.shared_state.get("telemetry_valid") is not True
+                or sdk_frame <= 0 or not 0.0 <= age <= 0.5):
+            return "forward gear observation is missing or stale"
+        if not forward_gear:
+            if observed_gear < 0:
+                return "pozorovaná spiatočka; automatické D je zakázané"
+            if not (allow_neutral and observed_gear == 0):
+                return ("forward gear is not confirmed by vehicle telemetry; "
+                        "Zaraďte D a potom stlačte N")
         # Autopilot readiness and a finished Map steering packet are published
         # by different processes. A fresh readiness sample can therefore
         # outlive its packet at the exact moment N is pressed. Recheck the
@@ -1069,32 +1094,14 @@ class UltraPilotEngine:
                 packet=packet)
             if reason:
                 return reason
-        # A selector write is not proof of a gear change at the DLL/game
-        # boundary. Only a fresh SDK forward-gear observation may grant
-        # control after the Engine-owned parked selection attempt.
-        truck = ((self.shared_state.get("telemetry", {}) or {})
-                 .get("truck", {}) or {})
-        try:
-            observed_gear = int(truck.get("gear", 0))
-            forward_gear = observed_gear > 0
-            sdk_frame = int(truck.get("sdkFrameTimeUs", 0))
-            observed_at = float(self.shared_state.get("telemetry_timestamp", 0.0))
-        except (TypeError, ValueError, OverflowError):
-            observed_gear = 0
-            forward_gear = False
-            sdk_frame = 0
-            observed_at = 0.0
-        age = time.monotonic() - observed_at
-        if (self.shared_state.get("telemetry_valid") is not True
-                or sdk_frame <= 0 or not 0.0 <= age <= 0.5):
-            return "forward gear observation is missing or stale"
-        if not forward_gear:
-            if observed_gear < 0:
-                return "pozorovaná spiatočka; automatické D je zakázané"
-            if allow_neutral and observed_gear == 0:
-                return ""
-            return ("forward gear is not confirmed by vehicle telemetry; "
-                    "Zaraďte D a potom stlačte N")
+            # Preserve the existing 500 ms expiry, but do not engage using a
+            # packet that cannot survive even one bounded control step.
+            from core.steering_dynamics import STEERING_DYNAMICS_MAX_DT_S
+            activation_at = time.monotonic()
+            if any(activation_at + STEERING_DYNAMICS_MAX_DT_S
+                   > float(packet[key]) + .5
+                   for key in ("observation_timestamp", "computed_at")):
+                return "steering packet cannot survive the next control tick; waiting for a fresh SDK frame"
         return ""
 
     def _begin_auto_drive_engagement(self, request_id):

@@ -4,9 +4,11 @@ import math
 import time
 import json
 import tempfile
+import threading
 from sdk.base_plugin import BasePlugin
 from core.navigation.route import Route
 from core.steering_calibration import steering_calibration_from_settings
+from core.steering_dynamics import STEERING_DYNAMICS_MAX_DT_S
 from core.navigation.lane_trajectory import build_lane_trajectory
 from core.navigation.drivable_surface import lane_path_fingerprint
 from core.navigation.maneuver_reference import (
@@ -133,6 +135,7 @@ class Plugin(BasePlugin):
         self._last_logged_lane_failure = None
         self._lane_retry_at = 0.0
         self._last_failed_route_diagnostic = None
+        self._diagnostic_export_running = False
         self._build_guard = NavigationBuildGuard()
         self._build_tokens = {}
         if not isinstance(self.sdk.get("map_load_progress"), dict):
@@ -746,6 +749,28 @@ class Plugin(BasePlugin):
         })
         self._remember_route_diagnostic(
             diagnostic, "stale", complete_input=False)
+
+    def _schedule_diagnostic_export(self):
+        """At most one optional disk export; never serialize on the Map tick."""
+        if (self._diagnostic_export_running
+                or not self.sdk.get("route_diagnostic_export_request")):
+            return
+        self._diagnostic_export_running = True
+
+        def export():
+            try:
+                self._handle_diagnostic_export()
+            except Exception:
+                logging.exception("Optional route diagnostic export failed")
+            finally:
+                self._diagnostic_export_running = False
+
+        try:
+            threading.Thread(target=export, daemon=True,
+                             name="route-diagnostic-export").start()
+        except Exception:
+            self._diagnostic_export_running = False
+            raise
 
     def _handle_diagnostic_export(self):
         request = self.sdk.get("route_diagnostic_export_request")
@@ -2267,87 +2292,109 @@ class Plugin(BasePlugin):
             self.sdk.set("road_lanes", lanes)
             logging.info("Road type: %s (%d lanes) -> speed cap %d km/h", rtype, lanes, cap)
 
-    # --- Tick -----------------------------------------------------------------
-    def on_tick(self, delta_time: float):
-        if not self.enabled:
-            return
-        map_tick_started_at = time.monotonic()
+    def _reject_steering_observation(self, reason):
+        packet = dict(self.sdk.get("nav_steering_debug", {}) or {})
+        packet.update({"authority_valid": False, "control_failure": reason})
+        self.sdk.shared_state.update_batch({
+            "nav_active": False, "nav_steering": 0.0,
+            "nav_steering_debug": packet, "navigation_unreliable": True,
+            "navigation_failure_reason": reason,
+            "steering_observation_failure": reason,
+        })
 
-        pos = self.sdk.get("truck_world_pos")
-        heading = self.sdk.get("truck_heading", 0.0) or 0.0
-        speed = self.sdk.get("truck_speed_ms", 0.0) or 0.0
-        settings = self.sdk.get("settings", {}) or {}
-        autopilot_settings = (settings.get("autopilot", {})
-                              if isinstance(settings, dict) else {}) or {}
-        actuator_calibration = steering_calibration_from_settings(
-            autopilot_settings)
-        calibration_payload = actuator_calibration.as_dict()
-        self.sdk.shared_state.set(
-            "steering_actuator_calibration", calibration_payload)
-        steering_lock_rad = (
-            actuator_calibration.tyre_angle_per_input_rad
-            if actuator_calibration.valid else float("nan"))
-        curvature_preview_s = (
-            actuator_calibration.preview_horizon_s
-            if actuator_calibration.valid else float("nan"))
-        observation_altitude = None
-        # One IPC value is one telemetry observation. Separate scalar reads
-        # can straddle an Engine update and pair position n with heading n+1.
+    def _refresh_steering_observation(self, snapshot, prepared, delta_time):
+        """Re-read one physical frame after preparation; never renew an old pose.
+
+        Route geometry is immutable. A new observation is localized only on
+        its validated LaneSegments; this step cannot build a route or chord.
+        """
+        def identity_reason():
+            if int(self.sdk.get("lane_trajectory_revision", -1) or -1) != int(snapshot.get("revision", -2)):
+                return "trajectory revision changed during steering preparation"
+            return self._snapshot_identity_mismatch(
+                snapshot, snapshot.get("source_gps_uids", ()),
+                self.sdk.get("nav_recalc_request"))
+
+        latest_snapshot = self.sdk.get("lane_trajectory", {}) or {}
+        identity_fields = ("navigation_intent_id", "route_build_id", "revision",
+            "source_game_session_id", "source_map_key", "source_dataset_fingerprint",
+            "lane_path_fingerprint", "request_id")
+        reason = identity_reason()
+        if not reason and any(latest_snapshot.get(key) != snapshot.get(key)
+                              for key in identity_fields):
+            reason = "route build changed during steering preparation"
+        if reason:
+            self._reject_steering_observation(reason)
+            return None
+        generation_before = self.sdk.get("telemetry_generation", 0)
         vehicle_observation = self.sdk.get("vehicle_envelope_snapshot", {}) or {}
+        # Compatibility for pre-frame offline adapters only. Runtime Engine
+        # always supplies a session and an explicit SDK frame/timestamp.
+        framed = ("sdk_frame_us" in vehicle_observation
+                  or snapshot.get("source_game_session_id") is not None)
+        if framed:
+            try:
+                timestamp = float(vehicle_observation["timestamp"])
+                frame = int(vehicle_observation["sdk_frame_us"])
+                age = time.monotonic() - timestamp
+                xyz = tuple(float(v) for v in vehicle_observation["tractor_position"])
+                heading = float(vehicle_observation["tractor_heading"])
+                speed = float(vehicle_observation["tractor_speed_ms"])
+                if (frame <= 0 or timestamp <= 0.0 or not 0.0 <= age <= .5
+                        or len(xyz) != 3
+                        or not all(math.isfinite(v) for v in (*xyz, heading, speed))
+                        or self.sdk.get("telemetry_valid", True) is False):
+                    raise ValueError("invalid fresh observation")
+            except (KeyError, TypeError, ValueError, OverflowError):
+                self._reject_steering_observation("steering SDK observation is missing or stale")
+                return None
+            pos = (xyz[0], xyz[2])
+            if (vehicle_observation.get("sdk_frame_us") == prepared.get("sdk_frame_us")
+                    and any(vehicle_observation.get(key) != prepared.get(key) for key in (
+                        "timestamp", "tractor_position", "tractor_heading",
+                        "tractor_speed_ms", "tractor_reference_geometry",
+                        "road_wheel_angles_rad", "trailer_attached",
+                        "trailer_position", "trailer_heading"))):
+                self._reject_steering_observation("one SDK frame changed during steering preparation")
+                return None
+            if (frame == prepared.get("sdk_frame_us")
+                    and age > STEERING_DYNAMICS_MAX_DT_S):
+                # A scheduler-sized preparation requires an advancing SDK
+                # frame, not another read of the same old observation.
+                self._reject_steering_observation(
+                    "SDK frame did not advance after steering preparation")
+                return None
+            if (vehicle_observation.get("sdk_frame_us") != prepared.get("sdk_frame_us")
+                    or vehicle_observation.get("tractor_position") != prepared.get("tractor_position")):
+                locator = getattr(self.road_net, "_runtime_lane_locator", None)
+                if locator is None:
+                    self._reject_steering_observation("fresh LaneLocator is unavailable")
+                    return None
+                match = locator.locate(
+                    xyz, heading, snapshot.get("covered_gps_uids", ())
+                    or snapshot.get("source_gps_uids", ()), self._lane_match,
+                    authoritative_segments=tuple(self._lane_path.segments))
+                if not self._publish_preserved_snapshot_liveness(snapshot, match):
+                    return None
+        else:
+            # This branch preserves the existing offline/recorded test API;
+            # it is unreachable for a session-bound production observation.
+            vehicle_observation = prepared
+            xyz = vehicle_observation.get("tractor_position")
+            pos = ((xyz[0], xyz[2]) if xyz else self.sdk.get("truck_world_pos"))
+            heading = vehicle_observation.get("tractor_heading", self.sdk.get("truck_heading", 0.0))
+            speed = vehicle_observation.get("tractor_speed_ms", self.sdk.get("truck_speed_ms", 0.0))
+        reason = identity_reason()
+        if self.sdk.get("telemetry_generation", 0) != generation_before:
+            reason = "telemetry generation changed during steering preparation"
+        if reason:
+            self._reject_steering_observation(reason)
+            return None
+        return self._accept_steering_frame(
+            vehicle_observation, pos, heading, speed, delta_time)
+
+    def _accept_steering_frame(self, vehicle_observation, pos, heading, speed, delta_time):
         reference_geometry = vehicle_observation.get("tractor_reference_geometry") or {}
-        if "tractor_speed_ms" in vehicle_observation:
-            observed_position = vehicle_observation.get("tractor_position")
-            if isinstance(observed_position, (list, tuple)) and len(observed_position) == 3:
-                pos = (observed_position[0], observed_position[2])
-                heading = vehicle_observation["tractor_heading"]
-                speed = vehicle_observation["tractor_speed_ms"]
-                observation_altitude = observed_position[1]
-
-        self._handle_command(pos)
-        try:
-            self._handle_diagnostic_export()
-        except Exception:
-            # A diagnostics/export defect cannot suppress this navigation tick.
-            pass
-
-        # GPS and replay are mutually exclusive states.  Disarming (rather
-        # than merely suspending) is intentional: after a GPS target is
-        # removed an old recorded route may restart only after a new explicit
-        # UI ``load`` command.
-        gps_navigation_present = self._game_gps_navigation_present()
-        if (gps_navigation_present
-                and (getattr(self, "active_route", None) is not None
-                     or self.sdk.get("navigation_source") == "recorded_route")):
-            self._deactivate_recorded_route(
-                clear_outputs=(
-                    self.sdk.get("navigation_source") == "recorded_route"),
-                reason="game GPS became authoritative")
-
-        if self.sdk.get("telemetry_valid", True) is False:
-            self._deactivate_recorded_route(clear_outputs=True)
-            # A failed SDK read is not evidence that the waypoint was removed.
-            # Keep the immutable GPS snapshot/UID window, but revoke live
-            # control authority atomically. GameWatcher performs the immediate
-            # hard invalidation for a real process/session shutdown.
-            self.sdk.shared_state.update_batch({
-                "lane_trajectory_heartbeat": 0.0,
-                "lane_match": {
-                    "revision": self.sdk.get(
-                        "lane_trajectory_revision", -1),
-                    "valid": False,
-                    "failure_reason": "telemetry temporarily unavailable",
-                },
-                "nav_active": False, "nav_steering": 0.0,
-                "navigation_unreliable": True,
-                "navigation_failure_reason":
-                    "Telemetria vozidla nie je dostupná",
-                "recorded_route_active": False,
-            })
-            return
-
-        if not pos:
-            return
-
         # A Route command is calculated exactly once for each authoritative
         # SDK observation.  Repeating a Manager snapshot is not a new physical
         # measurement; calculating again with a different plugin dt produced
@@ -2438,6 +2485,95 @@ class Plugin(BasePlugin):
             steering_frame_us if steering_frame_us > 0 else None)
         self._last_steering_observation_timestamp = (
             observation_timestamp if observation_timestamp > 0.0 else None)
+
+        return (vehicle_observation, pos, heading, speed, reference_geometry,
+                steering_frame_us, observation_dt, control_dt_s, observation_timestamp)
+
+    # --- Tick -----------------------------------------------------------------
+    def on_tick(self, delta_time: float):
+        if not self.enabled:
+            return
+        map_tick_started_at = time.monotonic()
+
+        pos = self.sdk.get("truck_world_pos")
+        heading = self.sdk.get("truck_heading", 0.0) or 0.0
+        speed = self.sdk.get("truck_speed_ms", 0.0) or 0.0
+        settings = self.sdk.get("settings", {}) or {}
+        autopilot_settings = (settings.get("autopilot", {})
+                              if isinstance(settings, dict) else {}) or {}
+        actuator_calibration = steering_calibration_from_settings(
+            autopilot_settings)
+        calibration_payload = actuator_calibration.as_dict()
+        if calibration_payload != getattr(self, "_published_calibration", None):
+            self.sdk.shared_state.set("steering_actuator_calibration", calibration_payload)
+            self._published_calibration = calibration_payload
+        steering_lock_rad = (
+            actuator_calibration.tyre_angle_per_input_rad
+            if actuator_calibration.valid else float("nan"))
+        curvature_preview_s = (
+            actuator_calibration.preview_horizon_s
+            if actuator_calibration.valid else float("nan"))
+        observation_altitude = None
+        # One IPC value is one telemetry observation. Separate scalar reads
+        # can straddle an Engine update and pair position n with heading n+1.
+        vehicle_observation = self.sdk.get("vehicle_envelope_snapshot", {}) or {}
+        reference_geometry = vehicle_observation.get("tractor_reference_geometry") or {}
+        if "tractor_speed_ms" in vehicle_observation:
+            observed_position = vehicle_observation.get("tractor_position")
+            if isinstance(observed_position, (list, tuple)) and len(observed_position) == 3:
+                pos = (observed_position[0], observed_position[2])
+                heading = vehicle_observation["tractor_heading"]
+                speed = vehicle_observation["tractor_speed_ms"]
+                observation_altitude = observed_position[1]
+
+        self._handle_command(pos)
+        try:
+            self._schedule_diagnostic_export()
+        except Exception:
+            # A diagnostics/export defect cannot suppress this navigation tick.
+            pass
+
+        # GPS and replay are mutually exclusive states.  Disarming (rather
+        # than merely suspending) is intentional: after a GPS target is
+        # removed an old recorded route may restart only after a new explicit
+        # UI ``load`` command.
+        gps_navigation_present = self._game_gps_navigation_present()
+        if (gps_navigation_present
+                and (getattr(self, "active_route", None) is not None
+                     or self.sdk.get("navigation_source") == "recorded_route")):
+            self._deactivate_recorded_route(
+                clear_outputs=(
+                    self.sdk.get("navigation_source") == "recorded_route"),
+                reason="game GPS became authoritative")
+
+        if self.sdk.get("telemetry_valid", True) is False:
+            self._deactivate_recorded_route(clear_outputs=True)
+            # A failed SDK read is not evidence that the waypoint was removed.
+            # Keep the immutable GPS snapshot/UID window, but revoke live
+            # control authority atomically. GameWatcher performs the immediate
+            # hard invalidation for a real process/session shutdown.
+            self.sdk.shared_state.update_batch({
+                "lane_trajectory_heartbeat": 0.0,
+                "lane_match": {
+                    "revision": self.sdk.get(
+                        "lane_trajectory_revision", -1),
+                    "valid": False,
+                    "failure_reason": "telemetry temporarily unavailable",
+                },
+                "nav_active": False, "nav_steering": 0.0,
+                "navigation_unreliable": True,
+                "navigation_failure_reason":
+                    "Telemetria vozidla nie je dostupná",
+                "recorded_route_active": False,
+            })
+            return
+
+        if not pos:
+            return
+
+        # Preparation may use this observation, but it cannot own the later
+        # control calculation. Its frame is re-read after all preparation.
+        steering_frame_us = int(vehicle_observation.get("sdk_frame_us", 0) or 0)
 
         # Lazily load the downloaded road network (engine process) the first
         # time we have a position. Cheap no-op once attempted.
@@ -2533,6 +2669,11 @@ class Plugin(BasePlugin):
         gps_navigation_present = self._game_gps_navigation_present()
         if (not gps_navigation_present and self.active_route is not None
                 and len(self.active_route) >= 2):
+            # Keep recorded-route SDK deduplication exactly as before. The
+            # refreshed GPS path below uses this same gate after preparation.
+            if self._accept_steering_frame(
+                    vehicle_observation, pos, heading, speed, delta_time) is None:
+                return
             if self.active_route.is_finished(pos):
                 self.sdk.set("tts_message", "Destination reached.")
                 logging.info("Navigation: destination reached.")
@@ -2648,10 +2789,20 @@ class Plugin(BasePlugin):
                         "stage5e_observed_traffic": evidence.legacy_traffic,
                     })
                     self._maneuver_evidence_candidate = evidence
-                evidence_worker.offer(
-                    self.road_net, self._lane_path, snapshot,
-                    self.sdk.get("vehicle_profile_snapshot"),
-                    self.sdk.get("maneuver_traffic_capture"))
+                self._maneuver_reference_mux.offer(reference_packet, snapshot)
+                preparation = self._maneuver_reference_mux.preparation_payload()
+                if preparation != getattr(self, "_published_reference_preparation", None):
+                    self.sdk.set("maneuver_reference_preparation", preparation)
+                    self._published_reference_preparation = preparation
+                fresh = self._refresh_steering_observation(
+                    snapshot, vehicle_observation, delta_time)
+                if fresh is None:
+                    return
+                (vehicle_observation, pos, heading, speed, reference_geometry,
+                 steering_frame_us, observation_dt, control_dt_s,
+                 observation_timestamp) = fresh
+                live_match = self._lane_match_payload(self._lane_match, snapshot["revision"])
+                metadata = self._lane_runtime_metadata(self._lane_match.lane_id)
                 evidence_reason = ""
                 if (reference_packet.get("state") in ("LOCAL_EXECUTING", "RETURN_TO_GLOBAL")
                         or self.sdk.get("active_navigation_reference", {}).get("mode")
@@ -2668,9 +2819,6 @@ class Plugin(BasePlugin):
                 reference_finished_at = time.monotonic()
                 reference_payload = active_reference_payload(
                     reference_selection, snapshot, steering_frame_us)
-                self.sdk.set(
-                    "maneuver_reference_preparation",
-                    self._maneuver_reference_mux.preparation_payload())
                 if not reference_selection.authority_valid:
                     rejected_debug = {
                         "authority_valid": False,
@@ -2828,6 +2976,7 @@ class Plugin(BasePlugin):
                     "actuator_calibration": calibration_payload,
                     "navigation_intent_id": snapshot.get("navigation_intent_id"),
                     "route_build_id": snapshot.get("route_build_id"),
+                    "lane_path_fingerprint": snapshot.get("lane_path_fingerprint"),
                     "source_game_session_id": snapshot.get(
                         "source_game_session_id"),
                     "source_map_key": snapshot.get("source_map_key"),
@@ -2845,6 +2994,18 @@ class Plugin(BasePlugin):
                     "production_evidence_receipt": reference_payload.get(
                         "production_evidence_receipt"),
                 })
+                identity_failure = self._snapshot_identity_mismatch(
+                    snapshot, snapshot.get("source_gps_uids", ()),
+                    self.sdk.get("nav_recalc_request"))
+                if (identity_failure
+                        or int(self.sdk.get("lane_trajectory_revision", -1) or -1) != int(snapshot["revision"])
+                        or self.sdk.get("telemetry_generation", 0) != self._last_steering_frame_identity[0]
+                        or (observation_timestamp > 0.0
+                            and calculation_finished_at - observation_timestamp > .5)
+                        or self.sdk.get("telemetry_valid", True) is False):
+                    self._reject_steering_observation(identity_failure or
+                        "steering observation or revision expired during calculation")
+                    return
                 self._steering_packet_sequence = int(getattr(
                     self, "_steering_packet_sequence", 0)) + 1
                 steering_debug = bind_steering_calculation(
@@ -2897,6 +3058,12 @@ class Plugin(BasePlugin):
                             "source_map_key", "source_dataset_fingerprint")},
                         "completed_at": time.monotonic(),
                     })
+                # Diagnostic profile/traffic serialization is preparation
+                # for a later tick, never a prerequisite of this fresh packet.
+                evidence_worker.offer(
+                    self.road_net, self._lane_path, snapshot,
+                    self.sdk.get("vehicle_profile_snapshot"),
+                    self.sdk.get("maneuver_traffic_capture"))
                 # Curvature radius (m) of the road ahead — lets the autopilot
                 # anticipate bends (brake before, not during).
                 self.tags.nav_steering = round(steer, 3)

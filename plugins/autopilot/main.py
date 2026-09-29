@@ -982,8 +982,44 @@ class Plugin(BasePlugin):
             "application_trajectory_identity": application_identity,
         })
 
+    def _read_navigation_inputs(self):
+        """Read the atomic packet first, transfer immutable LanePath only once.
+
+        The cache is bound to all route identity fields and the geometry hash.
+        Live revision/intent/session/localization checks still run each tick.
+        Legacy packets without that complete key never use this optimization.
+        """
+        packet = dict(self.sdk.shared_state.get("nav_steering_debug", {}) or {})
+        fields = ("navigation_intent_id", "route_build_id", "source_game_session_id",
+                  "source_map_key", "source_dataset_fingerprint", "lane_path_fingerprint")
+        key = (packet.get("authority_revision"), *(packet.get(k) for k in fields))
+        cached = getattr(self, "_navigation_geometry_cache", None)
+        complete = all(value is not None for value in key)
+        if complete and cached is not None and cached[0] == key:
+            return cached[1], packet
+        snapshot = self.sdk.shared_state.get("lane_trajectory", {}) or {}
+        snapshot_key = (snapshot.get("revision"), *(snapshot.get(k) for k in fields))
+        self._navigation_geometry_cache = ((key, snapshot)
+            if complete and key == snapshot_key and snapshot.get("valid") else None)
+        return snapshot, packet
+
     def on_tick(self, delta_time: float):
+        self._passive_timing_input = None
+        try:
+            self._control_tick(delta_time)
+        finally:
+            # Optional observational IPC/copies run after command acceptance
+            # and output publication, including the inactive early return.
+            sample = self._passive_timing_input
+            if sample is not None:
+                self._record_passive_steering_timing(*sample)
+
+    def _control_tick(self, delta_time: float):
         control_tick_started_at = time.monotonic()
+        # Observe the packet before unrelated telemetry/UI IPC. Geometry is
+        # transferred only when its immutable identity actually changes.
+        snapshot, accepted_packet = self._read_navigation_inputs()
+        packet_read_finished_at = time.monotonic()
         self._last_control_dt = float(delta_time)
         # Longitudinal ramps also reject a scheduler-sized jump. Steering uses
         # its own 100 ms physical integration bound internally.
@@ -1002,7 +1038,6 @@ class Plugin(BasePlugin):
         system_state = self.sdk.shared_state.get("system_state")
         danger_level = self.sdk.shared_state.get("danger_level", 0) or 0
         lane_offset = self.sdk.shared_state.get("lane_offset", 0) or 0
-        snapshot = self.sdk.shared_state.get("lane_trajectory", {}) or {}
         try:
             snapshot_revision = int(snapshot.get("revision", -1) or -1)
             snapshot_confidence = float(snapshot.get("confidence", 0.0) or 0.0)
@@ -1010,12 +1045,9 @@ class Plugin(BasePlugin):
             snapshot_revision, snapshot_confidence = -1, 0.0
         gps_navigation_present = game_gps_navigation_present(
             self.sdk.shared_state, snapshot)
-        accepted_packet = dict(self.sdk.shared_state.get(
-            "nav_steering_debug", {}) or {})
-        packet_read_finished_at = time.monotonic()
         self._control_tick_started_at = control_tick_started_at
         self._packet_read_finished_at = packet_read_finished_at
-        self._record_passive_steering_timing(
+        self._passive_timing_input = (
             truck, snapshot, accepted_packet, control_tick_started_at,
             packet_read_finished_at)
         nav_command, nav_command_curvature, command_reason = navigation_command(
