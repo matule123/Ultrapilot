@@ -2890,6 +2890,11 @@ class Plugin(BasePlugin):
                     # packet above remains the sole command authority.
                     self.sdk.shared_state.set("map_steering_publish_receipt", {
                         "sequence": steering_debug.get("calculation_sequence"),
+                        "sdk_frame_us": steering_debug.get("sdk_frame_us"),
+                        "identity": {key: steering_debug.get(key) for key in (
+                            "navigation_intent_id", "route_build_id",
+                            "authority_revision", "source_game_session_id",
+                            "source_map_key", "source_dataset_fingerprint")},
                         "completed_at": time.monotonic(),
                     })
                 # Curvature radius (m) of the road ahead — lets the autopilot

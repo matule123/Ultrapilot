@@ -134,6 +134,9 @@ class LaneAuthorityIntegrationTests(unittest.TestCase):
                              packet["map_packet_publish_started_at"])
         receipt = sdk.get("map_steering_publish_receipt", {})
         self.assertEqual(receipt["sequence"], packet["calculation_sequence"])
+        self.assertEqual(receipt["sdk_frame_us"], packet["sdk_frame_us"])
+        self.assertEqual(receipt["identity"]["route_build_id"],
+                         packet["route_build_id"])
         self.assertGreaterEqual(receipt["completed_at"],
                                 packet["map_packet_publish_started_at"])
         self.assertLessEqual(packet["observation_timestamp"],

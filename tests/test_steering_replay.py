@@ -149,7 +149,12 @@ class SteeringReplayBufferTests(unittest.TestCase):
             "nav_active": True,
             "engine_applied_steering": -0.20,
             "map_steering_publish_receipt": {
-                "sequence": 7, "completed_at": 40.012},
+                "sequence": 7, "sdk_frame_us": 123455,
+                "identity": {key: steering_debug.get(key) for key in (
+                    "navigation_intent_id", "route_build_id",
+                    "authority_revision", "source_game_session_id",
+                    "source_map_key", "source_dataset_fingerprint")},
+                "completed_at": 40.012},
             "navigation_intent_id": "intent-9",
             "lane_match": lane_match,
             "lane_trajectory": trajectory,

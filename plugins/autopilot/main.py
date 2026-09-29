@@ -16,7 +16,8 @@ from core.control_timing import MonotonicSequenceGate
 from core.steering_dynamics import SteeringDynamics
 from core.steering_executor import SteeringExecutor
 from core.steering_replay import (
-    SteeringReplayBuffer, diagnostic_copy, steering_packet_binding,
+    SteeringReplayBuffer, diagnostic_copy, publish_receipt_matches,
+    steering_packet_binding,
 )
 from core.paths import app_dir
 
@@ -523,11 +524,18 @@ class Plugin(BasePlugin):
         # Nothing in the controller reads this buffer.
         self._steering_replay = SteeringReplayBuffer()
         self._accepted_navigation_command = {}
+        # Compact passive phase trace. Dense replay rows are appended only
+        # after active control reaches the end of on_tick; a parked, inactive
+        # session therefore needs its own bounded, low-cadence trace.
+        self._passive_steering_timing = SteeringReplayBuffer(2400)
+        self._last_passive_timing_at = 0.0
+        self._last_passive_timing_sequence = None
 
     def on_stop(self):
         executor = getattr(self, "_steering_executor", None)
         if executor is not None:
             executor.stop()
+        self._export_passive_steering_timing("plugin_stop")
         self._export_steering_replay("plugin_stop")
         logging.info("Autopilot Plugin stopped.")
         self.enabled = False
@@ -687,6 +695,97 @@ class Plugin(BasePlugin):
             self._steering_replay = SteeringReplayBuffer(capacity)
         return path
 
+    def _export_passive_steering_timing(self, event):
+        trace = getattr(self, "_passive_steering_timing", None)
+        if trace is None or len(trace) == 0:
+            return None
+        try:
+            path = trace.export(
+                os.path.join(app_dir(), "route-diagnostics"),
+                reason=event, identity=self._steering_replay_identity(),
+                filename_prefix="steering-timing",
+                sample_kind="passive_phase_timing")
+            logging.info("Passive steering timing exported: samples=%d path=%s",
+                         len(trace), path)
+            return path
+        except Exception as error:
+            logging.warning("Passive steering timing export failed: %s", error)
+            return None
+
+    def _record_passive_steering_timing(self, truck, snapshot, packet,
+                                       tick_started_at, read_finished_at):
+        """Keep a small, frame-bound phase row even with autopilot disabled."""
+        trace = getattr(self, "_passive_steering_timing", None)
+        if trace is None:
+            return
+        sequence = packet.get("calculation_sequence")
+        packet_available = bool(
+            packet.get("controller") == "frenet_bicycle"
+            and type(sequence) is int and sequence > 0)
+        if not packet_available:
+            sequence = None
+        now = read_finished_at
+        try:
+            observation_age = now - float(packet["observation_timestamp"])
+            packet_age = now - float(packet["computed_at"])
+            phase_gap = (float(packet["map_calculation_started_at"])
+                         - float(packet["map_lane_update_finished_at"]))
+        except (KeyError, TypeError, ValueError, OverflowError):
+            observation_age = packet_age = phase_gap = float("inf")
+        interval = 0.5 if packet_available else 1.0
+        if (now - self._last_passive_timing_at < interval
+                and not (packet_available
+                         and sequence != self._last_passive_timing_sequence
+                         and (observation_age >= 0.3 or packet_age >= 0.2
+                              or phase_gap >= 0.15))):
+            return
+        self._last_passive_timing_at = now
+        self._last_passive_timing_sequence = sequence
+        receipt = (self.sdk.shared_state.get(
+            "map_steering_publish_receipt", {}) or {}) if packet_available else {}
+        if not packet_available or not publish_receipt_matches(receipt, packet):
+            receipt = {}
+        identity_keys = (
+            "navigation_intent_id", "route_build_id", "source_game_session_id",
+            "source_map_key", "source_dataset_fingerprint")
+        trace.append({
+            "autopilot_active": bool(self.sdk.shared_state.get(
+                "autopilot_active", False)),
+            "packet_available": packet_available,
+            "calculation_sequence": sequence,
+            "sdk_frame_us": packet.get("sdk_frame_us"),
+            "application_sdk_frame_us": truck.get("sdkFrameTimeUs"),
+            "revision": packet.get("authority_revision"),
+            "application_revision": snapshot.get("revision"),
+            "identity_matches": bool(
+                packet_available
+                and packet.get("authority_revision") == snapshot.get("revision")
+                and all(packet.get(key) == snapshot.get(key)
+                        for key in identity_keys)),
+            **{key: (packet if packet_available else snapshot).get(key)
+               for key in identity_keys},
+            "observation_timestamp": packet.get("observation_timestamp"),
+            "map_tick_started_at": packet.get("map_tick_started_at"),
+            "map_lane_update_finished_at": packet.get(
+                "map_lane_update_finished_at"),
+            "map_presentation_finished_at": packet.get(
+                "map_presentation_finished_at"),
+            "map_road_type_finished_at": packet.get(
+                "map_road_type_finished_at"),
+            "map_reference_finished_at": packet.get(
+                "map_reference_finished_at"),
+            "map_calculation_started_at": packet.get(
+                "map_calculation_started_at"),
+            "computed_at": packet.get("computed_at"),
+            "map_packet_publish_started_at": packet.get(
+                "map_packet_publish_started_at"),
+            "map_packet_publish_completed_at": receipt.get("completed_at"),
+            "autopilot_tick_started_at": tick_started_at,
+            "autopilot_packet_read_finished_at": read_finished_at,
+            "observation_age_at_read_s": observation_age,
+            "packet_age_at_read_s": packet_age,
+        })
+
     def _record_steering_replay_tick(self, truck, snapshot, steering_val,
                                      observed_game_steering, speed_kmh,
                                      authority_reason):
@@ -720,7 +819,7 @@ class Plugin(BasePlugin):
             frame_lag_us = None
         publish_receipt = self.sdk.shared_state.get(
             "map_steering_publish_receipt", {}) or {}
-        if publish_receipt.get("sequence") != accepted.get("calculation_sequence"):
+        if not publish_receipt_matches(publish_receipt, accepted):
             publish_receipt = {}
         replay.append({
             "control_dt_s": getattr(self, "_last_control_dt", None),
@@ -916,6 +1015,9 @@ class Plugin(BasePlugin):
         packet_read_finished_at = time.monotonic()
         self._control_tick_started_at = control_tick_started_at
         self._packet_read_finished_at = packet_read_finished_at
+        self._record_passive_steering_timing(
+            truck, snapshot, accepted_packet, control_tick_started_at,
+            packet_read_finished_at)
         nav_command, nav_command_curvature, command_reason = navigation_command(
             self.sdk.shared_state, snapshot, gps_active=gps_navigation_present,
             packet=accepted_packet)

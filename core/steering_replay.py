@@ -26,6 +26,23 @@ DEFAULT_CAPACITY = 3600
 EXECUTION_CAPACITY_MULTIPLIER = 3
 MAX_EXECUTION_CAPACITY = 20000
 
+PUBLISH_IDENTITY_FIELDS = (
+    "navigation_intent_id", "route_build_id", "authority_revision",
+    "source_game_session_id", "source_map_key",
+    "source_dataset_fingerprint",
+)
+
+
+def publish_receipt_matches(receipt, packet):
+    """Pair a diagnostic publish completion with its exact Map packet."""
+    return bool(
+        isinstance(receipt, dict) and isinstance(packet, dict)
+        and receipt.get("sequence") == packet.get("calculation_sequence")
+        and receipt.get("sdk_frame_us") == packet.get("sdk_frame_us")
+        and isinstance(receipt.get("identity"), dict)
+        and all(receipt["identity"].get(key) == packet.get(key)
+                for key in PUBLISH_IDENTITY_FIELDS))
+
 _TRAJECTORY_IDENTITY_FIELDS = (
     "navigation_intent_id",
     "route_build_id",
@@ -209,7 +226,8 @@ class SteeringReplayBuffer:
             return tuple(diagnostic_copy(row)
                          for row in self._execution_samples)
 
-    def export(self, directory, *, reason, identity=None):
+    def export(self, directory, *, reason, identity=None,
+               filename_prefix="steering-replay", sample_kind="dense_steering"):
         """Write the current immutable snapshot using an atomic replacement."""
         # Copy both streams and their counters under one lock.  An execution
         # tick must not land between the copied rows and the dropped-row
@@ -228,11 +246,14 @@ class SteeringReplayBuffer:
         stamp = now.strftime("%Y%m%dT%H%M%S.%fZ")
         safe_reason = re.sub(r"[^A-Za-z0-9_.-]+", "-", str(reason or "event"))
         safe_reason = safe_reason.strip("-.")[:48] or "event"
+        if filename_prefix not in ("steering-replay", "steering-timing"):
+            raise ValueError("unsupported steering diagnostic filename prefix")
         path = os.path.join(
-            directory, f"steering-replay-{stamp}-{safe_reason}.json")
+            directory, f"{filename_prefix}-{stamp}-{safe_reason}.json")
         temporary = path + ".tmp-" + uuid.uuid4().hex
         payload = {
             "schema_version": SCHEMA_VERSION,
+            "sample_kind": sample_kind,
             "created_at": now.isoformat(),
             "reason": str(reason or "event"),
             "capacity": self.capacity,
