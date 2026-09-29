@@ -20,6 +20,7 @@ from core.steering_replay import (
     steering_packet_binding,
 )
 from core.paths import app_dir
+from core.transmission_mode import selected_mode, simple_auto_forward_transition
 
 
 # --- Tuning (kept here, mirrored into settings under "autopilot" section) -----
@@ -1316,12 +1317,19 @@ class Plugin(BasePlugin):
             self._publish_control_tags(speed_kmh, False)
             return
 
-        # The 27 Sep trace contains short D pulses followed by a forward gear
-        # observation only after automatic disable. Neither shared-memory
-        # write success nor a 450 ms timer proves that ETS2 selected Drive.
-        # Require the driver to select a forward ratio before engagement;
-        # losing it later revokes authority without another selector pulse.
-        if autopilot_engaged and gear == 0:
+        # A zero engaged ratio is not a measured selector position. Only the
+        # simple-auto mode can bridge it, using Engine's activation-bound,
+        # time-limited evidence and the same rule as the physical output gate.
+        ratio_reason = "forward gear is no longer confirmed"
+        if autopilot_engaged and selected_mode(
+                self.sdk.shared_state.get("ets2_transmission_mode", {}) or {},
+                self.sdk.shared_state.get("transmission_mode_preference", "auto")) == 0:
+            _history, ratio_reason = simple_auto_forward_transition(
+                self.sdk.shared_state, truck,
+                self.sdk.shared_state.get("simple_auto_forward_history"))
+        else:
+            ratio_reason = ratio_reason if gear == 0 else ""
+        if autopilot_engaged and ratio_reason:
             self.sdk.controller.set_throttle(0.0)
             self._last_throttle = 0.0
             self.sdk.controller.set_brake(0.0)
@@ -1330,7 +1338,7 @@ class Plugin(BasePlugin):
             self._last_steering = 0.0
             self._write_steering_output(0.0)
             self._publish_automatic_disable(
-                "forward gear is no longer confirmed")
+                ratio_reason)
             self.sdk.shared_state.set(
                 "navigation_status", "Autopilot vypnutý: jazda dopredu nebola potvrdená")
             self._publish_control_tags(speed_kmh, False)

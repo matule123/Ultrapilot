@@ -22,7 +22,7 @@ from core.navigation.maneuver_availability import production_data_availability
 from core.control_timing import CadenceMonitor, FrameGate, wait_for_next_tick
 from core.transmission_mode import (
     TransmissionModeObserver, read_transmission_mode,
-    selected_mode,
+    selected_mode, simple_auto_forward_transition,
 )
 from core.navigation.navigation_intent import (
     NavigationBufferClass, NavigationIntentTracker,
@@ -414,9 +414,11 @@ class UltraPilotEngine:
         """Release physical controls, including narrow ``__new__`` fixtures."""
         lock = getattr(self, "_controller_io_lock", None)
         if lock is None:
+            self._clear_simple_auto_forward_history()
             self.controller.release_all()
             return
         with lock:
+            self._clear_simple_auto_forward_history()
             self.controller.release_all()
 
     @staticmethod
@@ -1172,6 +1174,34 @@ class UltraPilotEngine:
         self._active_transmission_preference = preference
         self._active_transmission_generation = (
             evidence.get("generation") if mode is not None else None)
+        self._start_simple_auto_forward_history()
+
+    def _start_simple_auto_forward_history(self):
+        """Only a new engagement may seed the shared forward-ratio evidence."""
+        self._clear_simple_auto_forward_history()
+        if getattr(self, "_active_transmission_mode", None) != 0:
+            return
+        self._simple_auto_activation_sequence = getattr(
+            self, "_simple_auto_activation_sequence", 0) + 1
+        self.shared_state.set("simple_auto_activation_token", (
+            time.monotonic(), self._simple_auto_activation_sequence))
+        self._simple_auto_history_cleared = False
+        truck = ((self.shared_state.get("telemetry", {}) or {})
+                 .get("truck", {}) or {})
+        history, _reason = simple_auto_forward_transition(
+            self.shared_state, truck, None)
+        self._simple_auto_forward_history = history
+        self.shared_state.set("simple_auto_forward_history", history)
+
+    def _clear_simple_auto_forward_history(self):
+        if getattr(self, "_simple_auto_history_cleared", False):
+            return
+        self._simple_auto_forward_history = None
+        self.shared_state.update_batch({
+            "simple_auto_forward_history": None,
+            "simple_auto_activation_token": None,
+        })
+        self._simple_auto_history_cleared = True
 
     def _cancel_auto_drive_engagement(self, reason):
         """Cancel under the Controller I/O lock so no late edge survives N."""
@@ -1314,6 +1344,7 @@ class UltraPilotEngine:
             self._active_transmission_generation = pending["transmission_generation"]
             self._active_transmission_mode = pending["mode"]
             self._active_transmission_preference = pending.get("transmission_preference", "auto")
+            self._start_simple_auto_forward_history()
             park_hold = truck.get("parkBrake") is True
             self.shared_state.update_batch({
                 "auto_drive_pending": False,
@@ -1636,6 +1667,7 @@ class UltraPilotEngine:
         if self._flush_auto_drive_engagement(truck_telemetry):
             return
         if not self.shared_state.get("autopilot_active", False):
+            self._clear_simple_auto_forward_history()
             self._active_transmission_generation = None
             self._active_transmission_mode = None
             self.shared_state.set("auto_drive_park_hold", False)
@@ -1702,6 +1734,7 @@ class UltraPilotEngine:
                 self.shared_state.set("autopilot_disable_reason",
                                       "aktívny režim prevodovky sa zmenil")
                 self.controller.release_all()
+                self._clear_simple_auto_forward_history()
                 self._was_active = False
                 return
         active_reference = self.shared_state.get("active_navigation_reference", {}) or {}
@@ -1746,16 +1779,40 @@ class UltraPilotEngine:
         else:
             self._gps_propulsion_suppressed = False
 
-        # The plugin and Engine run on different clocks. A stale positive
-        # throttle intent must not pass through after the SDK reports Neutral
-        # or Reverse, even before the plugin consumes that new frame.
+        simple_auto_forward = False
+        if getattr(self, "_active_transmission_mode", None) == 0:
+            history, ratio_reason = simple_auto_forward_transition(
+                self.shared_state, truck_telemetry,
+                getattr(self, "_simple_auto_forward_history", None))
+            if ratio_reason:
+                self.shared_state.update_batch({
+                    "autopilot_active": False,
+                    "autopilot_engagement_request": None,
+                    "autopilot_disable_reason": ratio_reason,
+                    CTL_THROTTLE: 0.0, CTL_BRAKE: 0.0,
+                    CTL_STEERING: 0.0, CTL_SELECT_DRIVE: None,
+                })
+                self.controller.release_all()
+                self._clear_simple_auto_forward_history()
+                self._was_active = False
+                self._record_drive_boundary(
+                    "reject_simple_auto_forward_observation", truck_telemetry,
+                    steering=0.0, throttle=0.0, brake=0.0, reason=ratio_reason)
+                return
+            self._simple_auto_forward_history = history
+            self.shared_state.set("simple_auto_forward_history", history)
+            simple_auto_forward = True
+
+        # The plugin and Engine run on different clocks. Block an unconfirmed
+        # ratio or Reverse before the plugin consumes the new frame; only the
+        # bounded, activation-bound simple-auto transition may bridge zero.
         if throttle and truck_telemetry:
             try:
                 forward_ratio = int(truck_telemetry.get("gear", 0)) > 0
                 forward_motion = float(truck_telemetry.get("speed", 0.0)) >= -0.10
             except (TypeError, ValueError, OverflowError):
                 forward_ratio = forward_motion = False
-            if not (forward_ratio and forward_motion):
+            if not ((forward_ratio or simple_auto_forward) and forward_motion):
                 if not getattr(self, "_forward_throttle_suppressed", False):
                     self._record_drive_boundary(
                         "suppress_unconfirmed_forward_throttle", truck_telemetry,

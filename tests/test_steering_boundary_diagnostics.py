@@ -85,6 +85,9 @@ def test_parked_manual_branch_never_writes_drive_throttle_or_steering():
         def set(self, key, value):
             self[key] = value
 
+        def update_batch(self, values):
+            self.update(values)
+
     class Controller(EngineRealtimeBoundaryTests.FakeController):
         def set_steering(self, _value):
             raise AssertionError("manual diagnostic wrote steering")

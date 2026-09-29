@@ -1,5 +1,6 @@
 """Read-only, off-tick evidence for the selected ETS2 profile's gearbox mode."""
 
+import math
 import re
 import time
 from datetime import datetime, timedelta
@@ -132,6 +133,81 @@ def selected_mode(snapshot, preference="auto", now=None):
     if preference not in ("0", "1", "2", "3"):
         return None
     return mode if mode is not None and str(mode) == preference else None
+
+
+SIMPLE_AUTO_ZERO_RATIO_MAX_S = 0.5
+_FORWARD_IDENTITY_KEYS = (
+    "navigation_intent_id", "revision", "route_build_id",
+    "source_game_session_id", "source_map_key", "source_dataset_fingerprint",
+)
+
+
+def simple_auto_forward_transition(state, truck, history, now=None):
+    """Evaluate one ratio observation, without writing controls or shared state.
+
+    Engine alone commits the returned history. The plugin uses that same history
+    and rule even when it sees a new frame before Engine. A zero ratio is NOT a
+    measured selector position: permission is limited to a moving, previously
+    confirmed activation, with a deadline anchored to the first zero observation.
+    """
+    now = time.monotonic() if now is None else now
+    evidence = state.get("ets2_transmission_mode", {}) or {}
+    preference = state.get("transmission_mode_preference", "auto")
+    if selected_mode(evidence, preference, now) != 0:
+        return None, "simple automatic mode is no longer confirmed"
+    token = state.get("simple_auto_activation_token")
+    snapshot = state.get("lane_trajectory", {}) or {}
+    context = (token, evidence.get("generation"), preference,
+               *(snapshot.get(key) for key in _FORWARD_IDENTITY_KEYS))
+    if token is None or (history and history.get("context") != context):
+        return None, "simple automatic activation or route identity changed"
+    try:
+        frame = int(truck["sdkFrameTimeUs"])
+        gear = int(truck["gear"])
+        speed = float(truck["speed"])
+        observed_at = float(state.get("telemetry_timestamp", 0.0))
+    except (KeyError, TypeError, ValueError, OverflowError):
+        return None, "simple automatic vehicle observation is incomplete"
+    if (state.get("telemetry_valid") is not True or frame <= 0
+            or observed_at <= 0 or not math.isfinite(speed)
+            or not 0.0 <= now - observed_at <= 0.5):
+        return None, "simple automatic vehicle observation is invalid or stale"
+    if gear < 0 or speed < -0.10:
+        return None, "simple automatic reverse gear or backward motion observed"
+    signature = (gear, speed, truck.get("parkBrake"))
+    if history:
+        if frame < history["last_frame"]:
+            return None, "simple automatic SDK frame regressed"
+        if frame == history["last_frame"]:
+            if signature != history["signature"]:
+                return None, "simple automatic SDK frame changed without advancing"
+            # Re-reading a frame cannot renew its observation or confirmation.
+            observed_at = history["last_observed_at"]
+            if not 0.0 <= now - observed_at <= 0.5:
+                return None, "simple automatic SDK frame is stale"
+        deadline = history.get("zero_deadline_at")
+        if deadline is not None and now > deadline:
+            return None, "simple automatic zero-ratio transition expired"
+    result = dict(history or {})
+    result.update(context=context, last_frame=frame,
+                  last_observed_at=observed_at, signature=signature)
+    if gear > 0:
+        result.update(confirmed_frame=frame, confirmed_at=observed_at,
+                      zero_deadline_at=None, phase="forward_confirmed")
+        return result, ""
+    if (not history or frame <= history["confirmed_frame"]
+            or (history.get("zero_deadline_at") is None
+                and not 0.0 <= now - history["confirmed_at"] <= 0.5)):
+        return None, "simple automatic zero ratio has no fresh forward confirmation"
+    if speed <= 0.05 or truck.get("parkBrake") is not False:
+        return None, "simple automatic zero ratio lacks continuing forward motion"
+    deadline = history.get("zero_deadline_at")
+    if deadline is None:
+        deadline = observed_at + SIMPLE_AUTO_ZERO_RATIO_MAX_S
+    if now > deadline:
+        return None, "simple automatic zero-ratio transition expired"
+    result.update(zero_deadline_at=deadline, phase="zero_ratio_transition")
+    return result, ""
 
 
 class TransmissionModeObserver:
