@@ -3040,6 +3040,7 @@ class Plugin(BasePlugin):
                         time.monotonic())
                     self.sdk.shared_state.update_batch({
                         "nav_steering": float(steer), "nav_active": True,
+                        "nav_trajectory_revision": int(snapshot["revision"]),
                         "nav_steering_debug": steering_debug,
                         "active_navigation_reference": reference_payload,
                         "path_curvature_radius": curve_profile["radius_m"],

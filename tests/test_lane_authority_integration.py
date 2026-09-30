@@ -100,6 +100,29 @@ def build_map_plugin(y=3.0):
 
 
 class LaneAuthorityIntegrationTests(unittest.TestCase):
+    def test_gps_steering_publishes_its_revision_with_active_packet(self):
+        plugin, sdk, point = build_map_plugin()
+        plugin.tags = Tags()
+        sdk.set("nav_trajectory_revision", -1)
+        sdk.set("truck_world_pos", (point.x, point.z))
+        sdk.set("truck_heading", point.heading)
+        sdk.set("truck_speed_ms", 0.0)
+        sdk.set("telemetry_valid", True)
+        sdk.set("vehicle_envelope_snapshot", {
+            "timestamp": time.monotonic(), "sdk_frame_us": 1_000_000,
+            "tractor_position": (point.x, point.y, point.z),
+            "tractor_heading": point.heading, "tractor_speed_ms": 0.0,
+            "tractor_reference_geometry": dict(
+                valid=True, source="synthetic_4x2", wheelbase_m=3.8,
+                reference_ahead_m=2.1),
+        })
+        plugin.on_tick(0.02)
+        packet = next(batch for batch in sdk.shared_state.batches
+                      if batch.get("nav_active") is True
+                      and "nav_steering_debug" in batch)
+        self.assertEqual(packet["nav_trajectory_revision"],
+                         sdk.get("lane_trajectory")["revision"])
+
     def test_map_packet_records_monotonic_phase_boundaries(self):
         plugin, sdk, point = build_map_plugin()
         plugin.tags = Tags()
