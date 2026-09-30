@@ -12,7 +12,9 @@ from core.navigation.route import curve_speed_limit_ms
 from core.navigation.maneuver_reference import (
     REFERENCE_SCHEMA_VERSION, approach_packet_rejection_reason,
 )
-from core.control_timing import MonotonicSequenceGate
+from core.control_timing import (
+    MonotonicSequenceGate, record_control_fault, first_control_fault,
+)
 from core.steering_dynamics import SteeringDynamics
 from core.steering_executor import SteeringExecutor
 from core.steering_replay import (
@@ -628,7 +630,17 @@ class Plugin(BasePlugin):
 
     def _publish_automatic_disable(self, reason):
         """Publish one atomic disable event for UI and main-console relay."""
-        reason = str(reason or "unknown safety reason")
+        epoch = self.sdk.shared_state.get("autopilot_failure_epoch")
+        if getattr(self, "_control_failure_epoch", epoch) != epoch:
+            # An in-flight tick from before a manual N must not disable a new
+            # request or replace the driver's explicit manual-off message.
+            return
+        terminal_reason = str(reason or "unknown safety reason")
+        record_control_fault(self.sdk.shared_state, "autopilot", terminal_reason)
+        reason = first_control_fault(self.sdk.shared_state, terminal_reason)
+        display_reason = (
+            f"jazda dopredu nebola potvrdená ({reason})"
+            if reason == "forward gear is no longer confirmed" else reason)
         seq = time.monotonic_ns()
         self.sdk.shared_state.update_batch({
             "autopilot_active": False,
@@ -636,6 +648,8 @@ class Plugin(BasePlugin):
             "nav_steering": 0.0,
             "safety_hazard_active": True,
             "autopilot_disable_reason": reason,
+            "autopilot_terminal_reason": terminal_reason,
+            "navigation_status": f"Autopilot vypnutý: {display_reason}",
             "autopilot_log_event": {
                 "seq": seq,
                 "level": "WARNING",
@@ -1036,6 +1050,8 @@ class Plugin(BasePlugin):
 
     def _control_tick(self, delta_time: float):
         control_tick_started_at = time.monotonic()
+        self._control_failure_epoch = self.sdk.shared_state.get(
+            "autopilot_failure_epoch")
         # Observe the packet before unrelated telemetry/UI IPC. Geometry is
         # transferred only when its immutable identity actually changes.
         snapshot, accepted_packet = self._read_navigation_inputs()
@@ -1285,6 +1301,8 @@ class Plugin(BasePlugin):
         # fall back to vision driving. While moving we perform a controlled
         # stop; once stationary we release all automation and disengage.
         if autopilot_engaged and not navigation_authority_safe:
+            if self._control_failure_epoch == self.sdk.shared_state.get("autopilot_failure_epoch"):
+                record_control_fault(self.sdk.shared_state, "autopilot", authority_reason)
             authority_reason_key = _authority_reason_key(authority_reason)
             if authority_reason_key != self._last_authority_stop_reason:
                 logging.warning(
@@ -1297,7 +1315,8 @@ class Plugin(BasePlugin):
             self._last_steering = self._ramp_steering(0.0, dt)
             self._write_steering_output(self._last_steering)
             self.sdk.shared_state.set(
-                "navigation_status", f"Autopilot zablokovany: {authority_reason}")
+                "navigation_status", "Autopilot zablokovany: " +
+                first_control_fault(self.sdk.shared_state, authority_reason))
             if speed_kmh > 1.0:
                 self._set_brake(0.70, dt)
             else:
@@ -1340,8 +1359,6 @@ class Plugin(BasePlugin):
             self._publish_automatic_disable("unexpected reverse gear")
             logging.warning(
                 "Autopilot automatically disengaged: unexpected reverse gear")
-            self.sdk.shared_state.set(
-                "navigation_status", "Autopilot vypnutý po spiatočke")
             self._reverse_recovery = False
             self._reverse_recovery_owned = False
             self._automatic_brake_stop = False
@@ -1370,8 +1387,6 @@ class Plugin(BasePlugin):
             self._write_steering_output(0.0)
             self._publish_automatic_disable(
                 ratio_reason)
-            self.sdk.shared_state.set(
-                "navigation_status", "Autopilot vypnutý: jazda dopredu nebola potvrdená")
             self._publish_control_tags(speed_kmh, False)
             return
         # 2. Safety states — these still brake hard, but through the ramp so

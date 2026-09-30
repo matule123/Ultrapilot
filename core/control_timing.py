@@ -14,6 +14,31 @@ import time
 from typing import Hashable, Optional
 
 
+def record_control_fault(state, producer, reason):
+    """Remember each producer's first rejection in this engagement.
+
+    Separate producer slots avoid a read/modify/write race over one shared
+    record. This is diagnostic state only; it never grants control authority.
+    The engagement epoch survives token cleanup and resets on an explicit N.
+    """
+    epoch = state.get("autopilot_failure_epoch")
+    key = "autopilot_first_fault_" + producer
+    previous = state.get(key)
+    if not isinstance(previous, dict) or previous.get("epoch") != epoch:
+        state.set(key, {"epoch": epoch, "reason": str(reason),
+                        "observed_at": time.monotonic(), "producer": producer})
+
+
+def first_control_fault(state, fallback):
+    epoch = state.get("autopilot_failure_epoch")
+    faults = [state.get("autopilot_first_fault_" + producer)
+              for producer in ("engine", "autopilot")]
+    faults = [fault for fault in faults if isinstance(fault, dict)
+              and fault.get("epoch") == epoch and fault.get("reason")]
+    return (min(faults, key=lambda fault: fault["observed_at"])["reason"]
+            if faults else str(fallback))
+
+
 @dataclass(frozen=True)
 class SequenceDecision:
     accepted: bool

@@ -19,7 +19,10 @@ from core.planner import UltraPilotPlanner
 from core.camera import CameraSnapshotProducer
 from core.navigation.runtime_preflight import build_runtime_preflight
 from core.navigation.maneuver_availability import production_data_availability
-from core.control_timing import CadenceMonitor, FrameGate, wait_for_next_tick
+from core.control_timing import (
+    CadenceMonitor, FrameGate, wait_for_next_tick,
+    record_control_fault, first_control_fault,
+)
 from core.transmission_mode import (
     TransmissionModeObserver, read_transmission_mode,
     selected_mode, simple_auto_forward_transition,
@@ -1018,6 +1021,11 @@ class UltraPilotEngine:
                 "autopilot_active": new_state,
                 "autopilot_engagement_request": request_id,
                 "autopilot_engagement_confirmed": None,
+                "autopilot_failure_epoch": (
+                    self._drive_engagement["request_id"] if pending_started
+                    else request_id if new_state else time.monotonic_ns()),
+                "autopilot_first_fault_engine": None,
+                "autopilot_first_fault_autopilot": None,
                 "tts_message": msg,
                 **({"safety_hazard_active": False} if new_state else {}),
                 **({"maneuver_reference_packet": {},
@@ -1241,9 +1249,13 @@ class UltraPilotEngine:
 
     def _revoke_simple_auto_launch(self, truck, reason):
         """Revoke forward authority at the Engine's single physical boundary."""
+        record_control_fault(self.shared_state, "engine", reason)
+        first_reason = first_control_fault(self.shared_state, reason)
         self.shared_state.update_batch({
             "autopilot_active": False, "autopilot_engagement_request": None,
-            "autopilot_disable_reason": reason, "auto_drive_pending": False,
+            "autopilot_disable_reason": first_reason,
+            "autopilot_terminal_reason": reason, "auto_drive_pending": False,
+            "navigation_status": f"Autopilot vypnutý: {first_reason}",
             "auto_drive_park_hold": False,
             CTL_THROTTLE: 0.0, CTL_BRAKE: 0.0,
             CTL_STEERING: 0.0, CTL_SELECT_DRIVE: None,
@@ -1326,7 +1338,9 @@ class UltraPilotEngine:
         if (pending["mode"] == 0
                 and not isinstance(truck.get("parkBrake"), bool)):
             reason = "stratil sa stav parkovacej brzdy"
-        if reason:
+        waiting_for_packet = reason == (
+            "steering packet cannot survive the next control tick; waiting for a fresh SDK frame")
+        if reason and not waiting_for_packet:
             self._cancel_auto_drive_engagement_unlocked(reason)
             return True
         observation_reason = vehicle_control_observation_rejection(
@@ -1364,6 +1378,25 @@ class UltraPilotEngine:
                 f"nedošlo potvrdenie dopredného prevodu včas (SDK gear {gear})")
             return True
         pending["last_frame"] = frame
+        if waiting_for_packet:
+            # A still-valid packet lacking the next-tick reserve is a bounded
+            # wait, not another hotkey request. Never power on that packet.
+            # Neither the launch deadline nor the handoff deadline is renewed.
+            if now > pending.get("handoff_deadline_at", pending["deadline_at"]):
+                self._cancel_auto_drive_engagement_unlocked(
+                    "vypršalo čakanie na čerstvý steering packet")
+                return True
+            self.controller.release_all()
+            self.shared_state.update_batch({
+                CTL_STEERING: 0.0, CTL_THROTTLE: 0.0, CTL_BRAKE: 0.0,
+                CTL_SELECT_DRIVE: None,
+                "navigation_status": "Čakám na čerstvý steering packet – pohon vypnutý",
+            })
+            if not pending.get("packet_wait_recorded"):
+                pending["packet_wait_recorded"] = True
+                self._record_drive_boundary("wait_fresh_steering_packet", truck,
+                    steering=0.0, throttle=0.0, brake=0.0, reason=reason)
+            return True
         if pending.get("phase") == "handoff":
             # The original launch deadline and this single 500 ms receipt
             # deadline never renew. No partially published pedal intent is a
@@ -1597,6 +1630,9 @@ class UltraPilotEngine:
             "autopilot_active": desired,
             "autopilot_engagement_request": seq if desired else None,
             "autopilot_engagement_confirmed": None,
+            "autopilot_failure_epoch": seq,
+            "autopilot_first_fault_engine": None,
+            "autopilot_first_fault_autopilot": None,
             **({"safety_hazard_active": False} if desired else {}),
             **({"maneuver_reference_packet": {},
                 "maneuver_approach_packet": {}}
@@ -1669,6 +1705,7 @@ class UltraPilotEngine:
     # --- Control flush --------------------------------------------------------
     def _automatic_safety_stop(self, reason):
         """Return steering smoothly and ramp brake after producer loss."""
+        record_control_fault(self.shared_state, "engine", reason)
         now = time.monotonic()
         previous_time = float(getattr(self, "_last_control_flush", now - 0.02))
         dt = max(0.001, min(0.10, now - previous_time))
@@ -1700,7 +1737,8 @@ class UltraPilotEngine:
                 self.shared_state.set("autopilot_active", False)
         self._last_output_steering = steering
         self._last_output_brake = brake
-        self.shared_state.set("automatic_safety_stop_reason", str(reason))
+        self.shared_state.set("automatic_safety_stop_reason",
+                              first_control_fault(self.shared_state, reason))
         self.shared_state.set("safety_hazard_active", True)
         # HUD diagnostics must reflect the command actually applied by this
         # engine-owned fallback, not the stale last plugin intent.
@@ -1804,12 +1842,18 @@ class UltraPilotEngine:
                 current = self.shared_state.get(live_key)
                 if current is not None and snapshot[snapshot_key] != current:
                     return f"GPS steering packet {live_key} is stale"
-            heartbeat_age = now - float(self.shared_state.get(
+            heartbeat = float(self.shared_state.get(
                 "lane_trajectory_heartbeat", 0.0) or 0.0)
+            # IPC can deliver a Map publication newer than the clock captured
+            # before these reads. Evaluate age *after* receiving the data; do
+            # not relabel a newer heartbeat as stale because its age is negative.
+            # Actual future timestamps and expiry during IPC remain rejected.
+            checked_at = time.monotonic()
+            heartbeat_age = checked_at - heartbeat
             if not 0.0 <= heartbeat_age <= 0.5:
                 return "map plugin heartbeat is stale"
             for key in ("observation_timestamp", "computed_at"):
-                age = now - float(packet[key])
+                age = checked_at - float(packet[key])
                 if not math.isfinite(age) or not 0.0 <= age <= 0.5:
                     return f"GPS steering packet {key} is stale"
             for key in ("output", "local_curvature"):
@@ -1955,6 +1999,7 @@ class UltraPilotEngine:
             time.monotonic(), snapshot) if self.shared_state.get(
                 "navigation_source") == "gps_lane" else "")
         if gps_output_reason:
+            record_control_fault(self.shared_state, "engine", gps_output_reason)
             if not getattr(self, "_gps_propulsion_suppressed", False):
                 self._record_drive_boundary(
                     "suppress_invalid_gps_packet", truck_telemetry,

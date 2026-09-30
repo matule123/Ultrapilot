@@ -3042,6 +3042,13 @@ class Plugin(BasePlugin):
                         "nav_steering": float(steer), "nav_active": True,
                         "nav_trajectory_revision": int(snapshot["revision"]),
                         "nav_steering_debug": steering_debug,
+                        # Liveness belongs to this freshly localized and
+                        # identity-validated packet, not to the beginning of
+                        # a potentially expensive Map tick. SDK timestamp in
+                        # steering_debug remains the original observation.
+                        "lane_match": live_match,
+                        "lane_trajectory_heartbeat": steering_debug[
+                            "map_packet_publish_started_at"],
                         "active_navigation_reference": reference_payload,
                         "path_curvature_radius": curve_profile["radius_m"],
                         "path_curve_distance_m": curve_profile["distance_m"],

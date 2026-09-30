@@ -30,6 +30,8 @@ def drive():
         engine._process_autopilot_command()
         plugin = Plugin(PluginSDK(state.values, "autopilot"))
         plugin.on_start()
+        # Model the active producer before Engine's first control flush.
+        state.set("autopilot_control_heartbeat", clock[0])
 
         def sample(gear, speed=0.891608476638794, dt=0.033333):
             clock[0] += dt

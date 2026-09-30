@@ -20,6 +20,8 @@ import math
 import logging
 import heapq
 import time
+import threading
+from collections import OrderedDict
 from dataclasses import replace
 
 from core.navigation.lane_model import (
@@ -170,6 +172,9 @@ class RoadNetwork:
         self._map_feature_grid = {}  # (cx,cz) -> compact feature tuples
         self._map_feature_count = 0
         self._lane_cache = {}    # segment index -> tuple[LaneSegment, ...]
+        self._prefab_geometry_cache = OrderedDict()
+        self._prefab_geometry_cache_points = 0
+        self._prefab_geometry_cache_lock = threading.Lock()
         self._lane_id_index = {} # LaneId -> LaneSegment (populated lazily)
         self._lane_path_revision = 0
         self.loaded = False
@@ -1390,6 +1395,52 @@ class RoadNetwork:
         return False
 
     def _prefab_curve_chain_3d(self, instance, indices):
+        """Reuse exact immutable samples, not a positional/topology decision.
+
+        Live localization used to resample every distant prefab in the GPS
+        horizon, twice per Map tick. Key every transform/curve input by value
+        so source or placement changes cannot reuse another world's geometry.
+        The point and entry caps bound memory independently of route length.
+        Presentation workers share this network, hence the short cache lock;
+        actual geometry calculation remains outside it.
+        """
+        token, uids, origin_index = instance[:3]
+        desc = self._prefab_desc[token]
+        lane_data = self._prefab_lane_data[token]
+        indices = tuple(indices)
+        if not uids or not desc[0]:
+            return ()
+        key = (
+            token, tuple(uids), origin_index,
+            bool(instance[3]) if len(instance) > 3 else False,
+            tuple(tuple(node) for node in desc[0]),
+            tuple(node.get("y") for node in lane_data["nodes"]),
+            tuple((uid, self.nodes.get(uid), self.node_alt.get(uid),
+                   self.node_rot.get(uid)) for uid in uids),
+            tuple((index, tuple(desc[1][index]),
+                   lane_data["curves"][index]["start_y"],
+                   lane_data["curves"][index]["end_y"]) for index in indices),
+        )
+        with self._prefab_geometry_cache_lock:
+            cached = self._prefab_geometry_cache.get(key)
+            if cached is not None:
+                self._prefab_geometry_cache.move_to_end(key)
+                return cached
+        points = self._compute_prefab_curve_chain_3d(instance, indices)
+        if len(points) <= 65536:
+            with self._prefab_geometry_cache_lock:
+                # Another read-only worker may have completed the same key.
+                if key not in self._prefab_geometry_cache:
+                    while self._prefab_geometry_cache and (
+                            len(self._prefab_geometry_cache) >= 512
+                            or self._prefab_geometry_cache_points + len(points) > 65536):
+                        _, evicted = self._prefab_geometry_cache.popitem(last=False)
+                        self._prefab_geometry_cache_points -= len(evicted)
+                    self._prefab_geometry_cache[key] = points
+                    self._prefab_geometry_cache_points += len(points)
+        return points
+
+    def _compute_prefab_curve_chain_3d(self, instance, indices):
         token, uids, origin_index = instance[:3]
         descriptor_order = bool(instance[3]) if len(instance) > 3 else False
         desc = self._prefab_desc[token]
