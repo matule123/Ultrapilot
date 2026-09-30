@@ -1028,6 +1028,9 @@ class Plugin(BasePlugin):
         self.sdk.shared_state.set("autopilot_control_heartbeat", time.monotonic())
 
         # 1. Telemetry & state
+        # Read Engine history before the immutable truck value. A newer history
+        # must not make an earlier, still-valid captured frame look regressed.
+        forward_history = self.sdk.shared_state.get("simple_auto_forward_history")
         truck = self.sdk.telemetry.get("truck", {}) or {}
         speed = truck.get("speed", 0) or 0
         speed_kmh = abs(speed) * 3.6 if abs(speed) < 200 else abs(speed)
@@ -1326,7 +1329,7 @@ class Plugin(BasePlugin):
                 self.sdk.shared_state.get("transmission_mode_preference", "auto")) == 0:
             _history, ratio_reason = simple_auto_forward_transition(
                 self.sdk.shared_state, truck,
-                self.sdk.shared_state.get("simple_auto_forward_history"))
+                forward_history)
         else:
             ratio_reason = ratio_reason if gear == 0 else ""
         if autopilot_engaged and ratio_reason:

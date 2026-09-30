@@ -23,6 +23,7 @@ from core.control_timing import CadenceMonitor, FrameGate, wait_for_next_tick
 from core.transmission_mode import (
     TransmissionModeObserver, read_transmission_mode,
     selected_mode, simple_auto_forward_transition,
+    vehicle_control_observation, vehicle_control_observation_rejection,
 )
 from core.navigation.navigation_intent import (
     NavigationBufferClass, NavigationIntentTracker,
@@ -290,6 +291,7 @@ class UltraPilotEngine:
             self.shared_state.set("autopilot_active", False)
         if self.shared_state.get("telemetry_valid") is None:
             self.shared_state.set("telemetry_valid", False)
+        self.shared_state.set("telemetry_control_schema", 1)
 
     def start(self):
         self.running = True
@@ -492,7 +494,15 @@ class UltraPilotEngine:
                 trailer.get("wheelTrackM") if attached else None),
         }
         return {
-            "telemetry": data,
+            # Gear, speed, validity and acquisition time travel as one value.
+            # Do not mutate the SDK reader's input or the private sample cache.
+            "telemetry": {**data, "truck": {**truck, "_control_observation": {
+                "schema_version": 1,
+                "sdk_frame_us": truck.get("sdkFrameTimeUs", 0),
+                "observed_at": float(timestamp),
+                "valid": bool(truck.get("pose_valid", False)),
+            }}},
+            "telemetry_control_schema": 1,
             "telemetry_valid": bool(truck.get("pose_valid", False)),
             "telemetry_timestamp": float(timestamp),
             "telemetry_producer_heartbeat": float(timestamp),
@@ -592,6 +602,10 @@ class UltraPilotEngine:
                     telemetry_loss = _telemetry_loss_navigation_payload(
                         self.shared_state)
                     self.shared_state.update_batch({
+                        "telemetry": {"truck": {"sdkFrameTimeUs": 0,
+                            "_control_observation": {
+                                "schema_version": 1, "sdk_frame_us": 0,
+                                "observed_at": timestamp, "valid": False}}},
                         "game_in_truck": False,
                         "telemetry_valid": False,
                         "telemetry_timestamp": timestamp,
@@ -951,7 +965,7 @@ class UltraPilotEngine:
                         pending_started = not rejection_reason
                         new_state = False
                     else:
-                        self._pin_confirmed_transmission_mode()
+                        rejection_reason = self._pin_confirmed_transmission_mode(truck)
                 if rejection_reason:
                     readiness = self.shared_state.get(
                         "autopilot_navigation_readiness", {}) or {}
@@ -1023,7 +1037,8 @@ class UltraPilotEngine:
                 })
         self._hotkey_was_down = down
 
-    def _autopilot_activation_rejection_reason(self, *, allow_neutral=False):
+    def _autopilot_activation_rejection_reason(self, *, allow_neutral=False,
+                                              observed_truck=None):
         """Return why a new engagement is unsafe; empty means ready."""
         readiness = self.shared_state.get(
             "autopilot_navigation_readiness", {}) or {}
@@ -1040,22 +1055,23 @@ class UltraPilotEngine:
         # A selector write is not proof of a gear change at the DLL/game
         # boundary. Only a fresh SDK forward-gear observation may grant
         # control after the Engine-owned parked selection attempt.
-        truck = ((self.shared_state.get("telemetry", {}) or {})
-                 .get("truck", {}) or {})
+        truck = (observed_truck if observed_truck is not None else
+                 ((self.shared_state.get("telemetry", {}) or {})
+                  .get("truck", {}) or {}))
         try:
             observed_gear = int(truck.get("gear", 0))
             forward_gear = observed_gear > 0
             sdk_frame = int(truck.get("sdkFrameTimeUs", 0))
-            observed_at = float(self.shared_state.get("telemetry_timestamp", 0.0))
         except (TypeError, ValueError, OverflowError):
             observed_gear = 0
             forward_gear = False
             sdk_frame = 0
-            observed_at = 0.0
-        age = time.monotonic() - observed_at
-        if (self.shared_state.get("telemetry_valid") is not True
-                or sdk_frame <= 0 or not 0.0 <= age <= 0.5):
-            return "forward gear observation is missing or stale"
+        observation_reason = vehicle_control_observation_rejection(
+            self.shared_state, truck)
+        if observation_reason:
+            return "forward gear observation is missing or stale: " + observation_reason
+        if float(truck["speed"]) < -0.10:
+            return "backward motion observed; activation is forbidden"
         if not forward_gear:
             if observed_gear < 0:
                 return "pozorovaná spiatočka; automatické D je zakázané"
@@ -1165,8 +1181,14 @@ class UltraPilotEngine:
         })
         return ""
 
-    def _pin_confirmed_transmission_mode(self):
+    def _pin_confirmed_transmission_mode(self, truck=None):
         """Bind an already-moving engagement to any confirmed gearbox mode."""
+        truck = (truck if truck is not None else
+                 ((self.shared_state.get("telemetry", {}) or {})
+                  .get("truck", {}) or {}))
+        reason = vehicle_control_observation_rejection(self.shared_state, truck)
+        if reason:
+            return reason
         evidence = self.shared_state.get("ets2_transmission_mode", {}) or {}
         preference = self.shared_state.get("transmission_mode_preference", "auto")
         mode = selected_mode(evidence, preference)
@@ -1174,24 +1196,34 @@ class UltraPilotEngine:
         self._active_transmission_preference = preference
         self._active_transmission_generation = (
             evidence.get("generation") if mode is not None else None)
-        self._start_simple_auto_forward_history()
+        reason = self._start_simple_auto_forward_history(truck)
+        return reason or self._autopilot_activation_rejection_reason(observed_truck=truck)
 
-    def _start_simple_auto_forward_history(self):
+    def _start_simple_auto_forward_history(self, truck=None):
         """Only a new engagement may seed the shared forward-ratio evidence."""
         self._clear_simple_auto_forward_history()
         if getattr(self, "_active_transmission_mode", None) != 0:
-            return
+            return ""
         self._simple_auto_activation_sequence = getattr(
             self, "_simple_auto_activation_sequence", 0) + 1
         self.shared_state.set("simple_auto_activation_token", (
             time.monotonic(), self._simple_auto_activation_sequence))
         self._simple_auto_history_cleared = False
-        truck = ((self.shared_state.get("telemetry", {}) or {})
-                 .get("truck", {}) or {})
-        history, _reason = simple_auto_forward_transition(
+        truck = (truck if truck is not None else
+                 ((self.shared_state.get("telemetry", {}) or {})
+                  .get("truck", {}) or {}))
+        observation_reason = vehicle_control_observation_rejection(
+            self.shared_state, truck)
+        if observation_reason:
+            return observation_reason
+        history, reason = simple_auto_forward_transition(
             self.shared_state, truck, None)
+        if reason:
+            self._clear_simple_auto_forward_history()
+            return reason
         self._simple_auto_forward_history = history
         self.shared_state.set("simple_auto_forward_history", history)
+        return ""
 
     def _clear_simple_auto_forward_history(self):
         if getattr(self, "_simple_auto_history_cleared", False):
@@ -1244,16 +1276,15 @@ class UltraPilotEngine:
         pending = getattr(self, "_drive_engagement", None)
         if pending is None:
             return False
-        now = time.monotonic()
         try:
             frame = int(truck["sdkFrameTimeUs"])
             gear = int(truck["gear"])
             speed = float(truck["speed"])
-            age = now - float(self.shared_state.get("telemetry_timestamp", 0.0))
         except (KeyError, TypeError, ValueError, OverflowError):
             self._cancel_auto_drive_engagement_unlocked("neúplná telemetria")
             return True
-        reason = self._autopilot_activation_rejection_reason(allow_neutral=True)
+        reason = self._autopilot_activation_rejection_reason(
+            allow_neutral=True, observed_truck=truck)
         snapshot = self.shared_state.get("lane_trajectory", {}) or {}
         identity = tuple(snapshot.get(key) for key in (
             "navigation_intent_id", "revision", "route_build_id",
@@ -1263,8 +1294,8 @@ class UltraPilotEngine:
             reason = "trasa alebo navigačná identita sa zmenila"
         mode_evidence = self.shared_state.get("ets2_transmission_mode", {}) or {}
         if (selected_mode(mode_evidence,
-                          self.shared_state.get("transmission_mode_preference", "auto"),
-                          now) != pending["mode"]
+                          self.shared_state.get("transmission_mode_preference", "auto"))
+                != pending["mode"]
                 or self.shared_state.get("transmission_mode_preference", "auto")
                 != pending.get("transmission_preference", "auto")
                 or mode_evidence.get("generation")
@@ -1276,11 +1307,13 @@ class UltraPilotEngine:
         if reason:
             self._cancel_auto_drive_engagement_unlocked(reason)
             return True
-        if (self.shared_state.get("telemetry_valid") is not True
-                or not 0.0 <= age <= 0.5):
+        observation_reason = vehicle_control_observation_rejection(
+            self.shared_state, truck)
+        if observation_reason:
             self._cancel_auto_drive_engagement_unlocked(
-                "pozorovanie vozidla je zastarané")
+                observation_reason)
             return True
+        now = time.monotonic()
         if frame < pending["last_frame"]:
             self._cancel_auto_drive_engagement_unlocked(
                 "SDK frame sa vrátil späť")
@@ -1336,15 +1369,19 @@ class UltraPilotEngine:
                 "D nie je potvrdené novým SDK frame po požiadavke")
             return True
         if gear > 0 and frame > pending["start_frame"]:
-            if self._autopilot_activation_rejection_reason():
+            if self._autopilot_activation_rejection_reason(observed_truck=truck):
                 self._cancel_auto_drive_engagement_unlocked(
                     "navigačná autorita sa pred potvrdením D zmenila")
                 return True
-            self._drive_engagement = None
             self._active_transmission_generation = pending["transmission_generation"]
             self._active_transmission_mode = pending["mode"]
             self._active_transmission_preference = pending.get("transmission_preference", "auto")
-            self._start_simple_auto_forward_history()
+            reason = self._start_simple_auto_forward_history(truck)
+            reason = reason or self._autopilot_activation_rejection_reason(observed_truck=truck)
+            if reason:
+                self._cancel_auto_drive_engagement_unlocked(reason)
+                return True
+            self._drive_engagement = None
             park_hold = truck.get("parkBrake") is True
             self.shared_state.update_batch({
                 "auto_drive_pending": False,
@@ -1412,7 +1449,7 @@ class UltraPilotEngine:
                 pending_started = not rejection_reason
                 desired = False
             else:
-                self._pin_confirmed_transmission_mode()
+                rejection_reason = self._pin_confirmed_transmission_mode(truck)
         if rejection_reason:
             desired = False
             self.shared_state.set("autopilot_disable_reason", rejection_reason)
@@ -1576,6 +1613,17 @@ class UltraPilotEngine:
             "route_build_id": (self.shared_state.get("lane_trajectory", {}) or {}).get(
                 "route_build_id"),
         }
+        metadata, metadata_reason = vehicle_control_observation(self.shared_state, truck)
+        event.update({
+            "vehicle_observation_at": metadata.get("observed_at"),
+            "vehicle_observation_valid": metadata.get("valid"),
+            "vehicle_observation_binding_reason": metadata_reason,
+        })
+        try:
+            event["vehicle_observation_age_s"] = (
+                event["monotonic_s"] - float(metadata["observed_at"]))
+        except (KeyError, TypeError, ValueError, OverflowError):
+            event["vehicle_observation_age_s"] = None
         self.shared_state.set("drive_boundary_event", event)
         window_start = getattr(self, "_drive_boundary_log_window_start", 0.0)
         if event["monotonic_s"] - window_start >= 60.0:
@@ -1709,13 +1757,16 @@ class UltraPilotEngine:
                 None, self._last_control_flush,
                 application_sdk_frame_us=truck_telemetry.get("sdkFrameTimeUs"))
             return
-        if self.shared_state.get("telemetry_valid", True) is False:
+        metadata, metadata_reason = vehicle_control_observation(
+            self.shared_state, truck_telemetry)
+        if metadata_reason or metadata.get("valid") is False:
             # Never keep flushing the last acceleration/steering intent after
             # the telemetry producer disappears. The autopilot process will
             # normally request its ramped stop within one 100 Hz tick; this is
             # the engine-owned fail-safe for process scheduling or plugin loss.
             self._was_active = True
-            self._automatic_safety_stop("vehicle telemetry is invalid")
+            self._automatic_safety_stop(
+                metadata_reason or "vehicle observation telemetry_valid is false")
             return
         pinned_generation = getattr(self, "_active_transmission_generation", None)
         pinned_preference = getattr(self, "_active_transmission_preference", None)

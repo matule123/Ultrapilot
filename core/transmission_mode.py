@@ -142,6 +142,55 @@ _FORWARD_IDENTITY_KEYS = (
 )
 
 
+def vehicle_control_observation(state, truck):
+    """Read scalar metadata bound inside the SAME published truck dictionary.
+
+    Live Engine requires schema 1. The legacy adapter is only for pre-schema
+    offline clients; it cannot be used by an Engine running this producer.
+    """
+    metadata = truck.get("_control_observation")
+    if isinstance(metadata, dict):
+        if metadata.get("schema_version") != 1:
+            return {}, "vehicle observation schema is unsupported"
+        if metadata.get("sdk_frame_us") != truck.get("sdkFrameTimeUs"):
+            return {}, "vehicle observation SDK frame binding does not match"
+        return metadata, ""
+    if state.get("telemetry_control_schema") == 1:
+        return {}, "vehicle observation bound metadata is missing"
+    return {"valid": state.get("telemetry_valid"),
+            "observed_at": state.get("telemetry_timestamp", 0.0),
+            "sdk_frame_us": truck.get("sdkFrameTimeUs")}, ""
+
+
+def vehicle_control_observation_rejection(state, truck, now=None):
+    """Check age AFTER IPC reads, keeping the source timestamp unchanged."""
+    metadata, reason = vehicle_control_observation(state, truck)
+    if reason:
+        return reason
+    now = time.monotonic() if now is None else now
+    if metadata.get("valid") is not True:
+        return "vehicle observation telemetry_valid is false or missing"
+    try:
+        frame = int(metadata["sdk_frame_us"])
+        observed_at = float(metadata["observed_at"])
+        speed = float(truck["speed"])
+        int(truck["gear"])
+    except (KeyError, TypeError, ValueError, OverflowError):
+        return "vehicle observation gear, speed, SDK frame or timestamp is incomplete"
+    if frame <= 0:
+        return "vehicle observation SDK frame is not positive"
+    if not math.isfinite(speed):
+        return "vehicle observation speed is non-finite"
+    if not math.isfinite(observed_at) or observed_at <= 0:
+        return "vehicle observation timestamp is invalid"
+    age = now - observed_at
+    if age < 0:
+        return f"vehicle observation timestamp is in the future (age={age:.6f}s)"
+    if age > 0.5:
+        return f"vehicle observation is stale (age={age:.6f}s, limit=0.500000s)"
+    return ""
+
+
 def simple_auto_forward_transition(state, truck, history, now=None):
     """Evaluate one ratio observation, without writing controls or shared state.
 
@@ -150,11 +199,8 @@ def simple_auto_forward_transition(state, truck, history, now=None):
     measured selector position: permission is limited to a moving, previously
     confirmed activation, with a deadline anchored to the first zero observation.
     """
-    now = time.monotonic() if now is None else now
     evidence = state.get("ets2_transmission_mode", {}) or {}
     preference = state.get("transmission_mode_preference", "auto")
-    if selected_mode(evidence, preference, now) != 0:
-        return None, "simple automatic mode is no longer confirmed"
     token = state.get("simple_auto_activation_token")
     snapshot = state.get("lane_trajectory", {}) or {}
     context = (token, evidence.get("generation"), preference,
@@ -165,13 +211,20 @@ def simple_auto_forward_transition(state, truck, history, now=None):
         frame = int(truck["sdkFrameTimeUs"])
         gear = int(truck["gear"])
         speed = float(truck["speed"])
-        observed_at = float(state.get("telemetry_timestamp", 0.0))
+        metadata, reason = vehicle_control_observation(state, truck)
+        if reason:
+            return None, "simple automatic " + reason
+        observed_at = float(metadata.get("observed_at", 0.0))
     except (KeyError, TypeError, ValueError, OverflowError):
         return None, "simple automatic vehicle observation is incomplete"
-    if (state.get("telemetry_valid") is not True or frame <= 0
-            or observed_at <= 0 or not math.isfinite(speed)
-            or not 0.0 <= now - observed_at <= 0.5):
-        return None, "simple automatic vehicle observation is invalid or stale"
+    # All transport reads precede the decision clock. Never compare a newly
+    # published timestamp to a time captured before a slow RPC.
+    now = time.monotonic() if now is None else now
+    if selected_mode(evidence, preference, now) != 0:
+        return None, "simple automatic mode is no longer confirmed"
+    reason = vehicle_control_observation_rejection(state, truck, now)
+    if reason:
+        return None, "simple automatic " + reason
     if gear < 0 or speed < -0.10:
         return None, "simple automatic reverse gear or backward motion observed"
     signature = (gear, speed, truck.get("parkBrake"))

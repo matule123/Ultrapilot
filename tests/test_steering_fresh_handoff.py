@@ -202,7 +202,8 @@ def activation_reason_after_read(delay, packet_age):
     state.set("lane_trajectory_heartbeat", 100.)
     state.set("autopilot_navigation_readiness", {
         "ready": True, "timestamp": 100., "source": "gps_lane", "revision": 7})
-    state.set("telemetry", {"truck": {"gear": 4, "sdkFrameTimeUs": 1_000_000}})
+    state.set("telemetry", {"truck": {
+        "gear": 4, "speed": 0.0, "sdkFrameTimeUs": 1_000_000}})
     state.set("telemetry_timestamp", 100.)
     packet = dict(snapshot, controller="frenet_bicycle",
         calculation_packet_schema_version=1, authority_valid=True,
