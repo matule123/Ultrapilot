@@ -293,6 +293,24 @@ class EngineRealtimeBoundaryTests(unittest.TestCase):
         })
         engine = self.bare_engine(state)
         engine.controller = self.FakeController()
+        # Cadence is tested with the complete GPS packet used in production,
+        # rather than an unbound scalar that must now trigger a safety stop.
+        now = time.monotonic()
+        identity = {"navigation_intent_id": "test-intent",
+                    "route_build_id": "test-build", "source_game_session_id": 1,
+                    "source_map_key": "test-map", "source_dataset_fingerprint": "test-data"}
+        state.update_batch({
+            "lane_trajectory": {"valid": True, "revision": 4, **identity},
+            "lane_trajectory_heartbeat": now,
+            "nav_steering_debug": {
+                **identity, "controller": "frenet_bicycle",
+                "calculation_packet_schema_version": 1,
+                "authority_valid": True, "authority_revision": 4,
+                "sdk_frame_us": 1_000_000, "calculation_sequence": 1,
+                "computed_at": now, "observation_timestamp": now,
+                "output": .2, "local_curvature": .01,
+            },
+        })
         thread = threading.Thread(target=engine._control_loop)
         thread.start()
         time.sleep(0.12)

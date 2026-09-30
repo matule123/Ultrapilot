@@ -1113,7 +1113,10 @@ class UltraPilotApp(QMainWindow):
         from core.i18n import t
         lang = self.state.get("ui_language_code", "sk") or "sk"
         active = self.state.get("autopilot_active", False)
-        if active:
+        stopping = active and self.state.get("autopilot_control_state") == "controlled_stop"
+        if stopping:
+            self.start_btn.setText("Zastavujem – vypnúť autopilota")
+        elif active:
             self.start_btn.setText(t(lang, "app", "disable_ap").capitalize())
         else:
             self.start_btn.setText(t(lang, "app", "enable_ap").capitalize())
@@ -1359,7 +1362,10 @@ class UltraPilotApp(QMainWindow):
         raw = (self.state.get("telemetry", {}) or {}).get("raw", {}) or {}
         connected = bool(raw.get("sdkActive"))
         active = bool(self.state.get("autopilot_active", False))
-        if active:
+        if active and self.state.get("autopilot_control_state") == "controlled_stop":
+            self.side_conn.setText("● Bezpečne spomaľujem")
+            connection_state = "stopping"
+        elif active:
             self.side_conn.setText("● Autopilot aktívny")
             connection_state = "autopilot"
         elif connected:

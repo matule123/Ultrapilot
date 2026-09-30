@@ -110,6 +110,27 @@ class UiChromeTests(unittest.TestCase):
         island.close()
         host.close()
 
+    def test_controlled_stop_is_visible_instead_of_normal_active_mode(self):
+        from types import SimpleNamespace
+        state = State({"autopilot_active": True,
+                       "autopilot_control_state": "controlled_stop",
+                       "autopilot_stop_epoch": "incident",
+                       "navigation_status": "Bezpečne spomaľujem: staré pozorovanie"})
+        host = QWidget()
+        host.state = state
+        island = DynamicIsland(host)
+        button = QPushButton()
+        UltraPilotApp._render_start_btn(SimpleNamespace(state=state, start_btn=button))
+        self.assertIn("Zastavujem", button.text())
+        self.assertIn('connectionState="stopping"', stylesheet("light"))
+        island._poll_log()
+        self.assertIn("Bezpečne spomaľujem", island.msg_lbl.text())
+        self.assertFalse(island._hide_timer.isActive())
+        island._poll_log()
+        self.assertFalse(island._hide_timer.isActive())
+        island.close()
+        host.close()
+
     def test_window_controls_match_reference_order_and_have_real_hitboxes(self):
         host = QWidget()
         bar = MacTitleBar(host, palette("light"))

@@ -944,6 +944,21 @@ class ControlSafetyRegressionTests(unittest.TestCase):
             autopilot_lane_revision=7, truck_speed_ms=25.0,
             autopilot_control_heartbeat=time.monotonic(),
             ctl_steering=0.70, ctl_throttle=0.0, ctl_brake=0.0)
+        # A scalar wheel target alone is not a validated production packet.
+        now = time.monotonic()
+        snapshot = state.get("lane_trajectory")
+        snapshot["navigation_intent_id"] = "test-intent"
+        state.set("navigation_intent_id", "test-intent")
+        state.set("nav_steering_debug", {
+            **{key: snapshot[key] for key in (
+                "navigation_intent_id", "route_build_id", "source_game_session_id",
+                "source_map_key", "source_dataset_fingerprint")},
+            "controller": "frenet_bicycle", "calculation_packet_schema_version": 1,
+            "authority_valid": True, "authority_revision": 7,
+            "sdk_frame_us": 1_000_000, "calculation_sequence": 1,
+            "computed_at": now, "observation_timestamp": now,
+            "output": .70, "local_curvature": .02,
+        })
         engine = UltraPilotEngine.__new__(UltraPilotEngine)
         engine.shared_state = state
         engine.controller = Controller()

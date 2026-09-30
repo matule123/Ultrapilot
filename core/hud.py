@@ -605,7 +605,8 @@ class UltraPilotHUD(QWidget):
             "state": state,
             "speed_kmh": abs(speed) * 3.6 if abs(speed) < 200 else abs(speed),
             "gear": truck.get("gear", 0),
-            "active": bool(s.get("autopilot_active", False)),
+            "active": (bool(s.get("autopilot_active", False))
+                       and s.get("autopilot_control_state") != "controlled_stop"),
             "throttle": float(s.get("ctl_throttle", 0.0) or 0.0),
             "brake": float(s.get("ctl_brake", 0.0) or 0.0),
             "pos": s.get("truck_world_pos"),

@@ -1012,10 +1012,13 @@ class Plugin(BasePlugin):
         key = (packet.get("authority_revision"), *(packet.get(k) for k in fields))
         cached = getattr(self, "_navigation_geometry_cache", None)
         complete = all(value is not None for value in key)
+        publication = self.sdk.shared_state.get("lane_trajectory_publication_token")
+        key = (*key, publication)
         if complete and cached is not None and cached[0] == key:
             return cached[1], packet
         snapshot = self.sdk.shared_state.get("lane_trajectory", {}) or {}
-        snapshot_key = (snapshot.get("revision"), *(snapshot.get(k) for k in fields))
+        snapshot_key = (snapshot.get("revision"), *(snapshot.get(k) for k in fields),
+                        self.sdk.shared_state.get("lane_trajectory_publication_token"))
         self._navigation_geometry_cache = ((key, snapshot)
             if complete and key == snapshot_key and snapshot.get("valid") else None)
         return snapshot, packet
@@ -1157,6 +1160,12 @@ class Plugin(BasePlugin):
             authority_reason = command_reason
         if not authority_reason and approach_reason:
             authority_reason = "maneuver approach rejected: " + approach_reason
+        if (self.sdk.shared_state.get("autopilot_active", False)
+                and self.sdk.shared_state.get("autopilot_control_state") == "controlled_stop"
+                and self.sdk.shared_state.get("autopilot_stop_epoch")
+                == self._control_failure_epoch):
+            authority_reason = first_control_fault(
+                self.sdk.shared_state, authority_reason or "GPS control authority lost")
         active_requested = bool(self.sdk.shared_state.get(
             "autopilot_active", False))
         # Starting steering on a boundary or while facing a neighbouring arm
@@ -1303,6 +1312,10 @@ class Plugin(BasePlugin):
         if autopilot_engaged and not navigation_authority_safe:
             if self._control_failure_epoch == self.sdk.shared_state.get("autopilot_failure_epoch"):
                 record_control_fault(self.sdk.shared_state, "autopilot", authority_reason)
+                self.sdk.shared_state.update_batch({
+                    "autopilot_control_state": "controlled_stop",
+                    "autopilot_stop_epoch": self._control_failure_epoch,
+                })
             authority_reason_key = _authority_reason_key(authority_reason)
             if authority_reason_key != self._last_authority_stop_reason:
                 logging.warning(
@@ -1315,7 +1328,7 @@ class Plugin(BasePlugin):
             self._last_steering = self._ramp_steering(0.0, dt)
             self._write_steering_output(self._last_steering)
             self.sdk.shared_state.set(
-                "navigation_status", "Autopilot zablokovany: " +
+                "navigation_status", "Bezpečne spomaľujem: " +
                 first_control_fault(self.sdk.shared_state, authority_reason))
             if speed_kmh > 1.0:
                 self._set_brake(0.70, dt)

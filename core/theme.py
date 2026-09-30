@@ -89,6 +89,8 @@ QFrame#Sidebar QLabel#SidebarConnection[connectionState="connected"] {{
     color: #0E9F6E; }}
 QFrame#Sidebar QLabel#SidebarConnection[connectionState="autopilot"] {{
     color: #057A55; font-weight: 700; }}
+QFrame#Sidebar QLabel#SidebarConnection[connectionState="stopping"] {{
+    color: {c['warn']}; font-weight: 700; }}
 QFrame#Sidebar QPushButton#SidebarPerformance {{ background-color: {c['surface']};
     border: 1px solid {c['border']}; border-radius: 8px; padding: 5px 9px;
     margin: 0; color: {c['muted']}; font-size: 11px; font-weight: 650;

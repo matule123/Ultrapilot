@@ -163,6 +163,18 @@ class DynamicIsland(QWidget):
                 self._update_notice_until = time.monotonic() + 5.0
                 self.show_record(f"Aktualizované úspešne · verzia {commit}",
                                  "INFO", "", "UltraPilot")
+        if (state is not None and state.get("autopilot_active", False)
+                and state.get("autopilot_control_state") == "controlled_stop"):
+            epoch = state.get("autopilot_stop_epoch")
+            if getattr(self, "_shown_stop_epoch", None) != epoch:
+                self._shown_stop_epoch = epoch
+                self.show_record(state.get("navigation_status") or "Bezpečne spomaľujem",
+                                 "WARNING", "", "Autopilot")
+            self._hide_timer.stop()
+            return
+        if getattr(self, "_shown_stop_epoch", None) is not None:
+            self._shown_stop_epoch = None
+            self._hide_timer.start(4500)
         if time.monotonic() < self._update_notice_until:
             return
         # Dataset loading owns the map and invalidates navigation while it is

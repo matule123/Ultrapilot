@@ -1026,6 +1026,8 @@ class UltraPilotEngine:
                     else request_id if new_state else time.monotonic_ns()),
                 "autopilot_first_fault_engine": None,
                 "autopilot_first_fault_autopilot": None,
+                "autopilot_control_state": "normal" if new_state else "inactive",
+                "autopilot_stop_epoch": None,
                 "tts_message": msg,
                 **({"safety_hazard_active": False} if new_state else {}),
                 **({"maneuver_reference_packet": {},
@@ -1411,9 +1413,24 @@ class UltraPilotEngine:
                 brake_request = float(self.shared_state.get(CTL_BRAKE, 0.0))
             except (TypeError, ValueError, OverflowError):
                 brake_request = float("nan")
-            if not math.isfinite(brake_request) or brake_request > 0:
+            if not math.isfinite(brake_request):
                 self._cancel_auto_drive_engagement_unlocked(
                     "brzdenie počas rozjazdu jednoduchej automatiky")
+                return True
+            launch_output = self.shared_state.get("simple_auto_launch_output")
+            if brake_request > 0 and self.shared_state.get("telemetry_control_schema") != 1:
+                self._cancel_auto_drive_engagement_unlocked(
+                    "brzdenie počas rozjazdu jednoduchej automatiky")
+                return True
+            if brake_request > 0 and (not isinstance(launch_output, dict)
+                    or launch_output.get("brake") != brake_request):
+                # The scalar may be left by a preceding/in-flight tick. It is
+                # not a completed, request-bound launch output. Stop power
+                # while waiting; the completed receipt below still rejects
+                # any genuine brake request and the deadline never renews.
+                self.controller.release_all()
+                self.shared_state.set("navigation_status",
+                    "Čakám na dokončený rozjazdový povel – pohon vypnutý")
                 return True
             history, reason = simple_auto_forward_transition(
                 self.shared_state, truck, self._simple_auto_forward_history)
@@ -1633,6 +1650,8 @@ class UltraPilotEngine:
             "autopilot_failure_epoch": seq,
             "autopilot_first_fault_engine": None,
             "autopilot_first_fault_autopilot": None,
+            "autopilot_control_state": "normal" if desired else "inactive",
+            "autopilot_stop_epoch": None,
             **({"safety_hazard_active": False} if desired else {}),
             **({"maneuver_reference_packet": {},
                 "maneuver_approach_packet": {}}
@@ -1706,6 +1725,12 @@ class UltraPilotEngine:
     def _automatic_safety_stop(self, reason):
         """Return steering smoothly and ramp brake after producer loss."""
         record_control_fault(self.shared_state, "engine", reason)
+        first_reason = first_control_fault(self.shared_state, reason)
+        self.shared_state.update_batch({
+            "autopilot_control_state": "controlled_stop",
+            "autopilot_stop_epoch": self.shared_state.get("autopilot_failure_epoch"),
+            "navigation_status": f"Bezpečne spomaľujem: {first_reason}",
+        })
         now = time.monotonic()
         previous_time = float(getattr(self, "_last_control_flush", now - 0.02))
         dt = max(0.001, min(0.10, now - previous_time))
@@ -1746,6 +1771,7 @@ class UltraPilotEngine:
             CTL_STEERING: steering,
             CTL_THROTTLE: 0.0,
             CTL_BRAKE: brake,
+            "engine_applied_steering": steering,
         })
         self.controller.set_steering(steering)
         self.controller.set_throttle(0.0)
@@ -1813,6 +1839,7 @@ class UltraPilotEngine:
 
     def _gps_output_packet_rejection_reason(self, now, snapshot):
         """Bounded final check before a GPS packet can accompany propulsion."""
+        self._gps_output_expiry = None
         packet = self.shared_state.get("nav_steering_debug", {}) or {}
         if (not isinstance(snapshot, dict) or not snapshot.get("valid")
                 or not isinstance(packet, dict)
@@ -1861,6 +1888,14 @@ class UltraPilotEngine:
                     return f"GPS steering packet {key} is non-finite"
         except (TypeError, ValueError, KeyError, OverflowError):
             return "GPS steering packet metadata is malformed"
+        deadlines = (
+            (heartbeat + .5, "map plugin heartbeat is stale"),
+            (float(packet["observation_timestamp"]) + .5,
+             "GPS steering packet observation_timestamp is stale"),
+            (float(packet["computed_at"]) + .5,
+             "GPS steering packet computed_at is stale"),
+        )
+        self._gps_output_expiry = min(deadlines, key=lambda item: item[0])
         return ""
 
     def _flush_controls_unlocked(self):
@@ -1990,14 +2025,21 @@ class UltraPilotEngine:
             return
         self._was_active = True
 
+        if (self.shared_state.get("autopilot_control_state") == "controlled_stop"
+                and self.shared_state.get("autopilot_stop_epoch")
+                == self.shared_state.get("autopilot_failure_epoch")):
+            self._automatic_safety_stop(first_control_fault(
+                self.shared_state, "GPS control authority lost"))
+            return
+
         steering = self.shared_state.get(CTL_STEERING, 0.0)
         throttle = self.shared_state.get(CTL_THROTTLE, 0.0)
         brake = self.shared_state.get(CTL_BRAKE, 0.0)
         snapshot = self.shared_state.get("lane_trajectory", {}) or {}
 
+        gps_control = self.shared_state.get("navigation_source") == "gps_lane"
         gps_output_reason = (self._gps_output_packet_rejection_reason(
-            time.monotonic(), snapshot) if self.shared_state.get(
-                "navigation_source") == "gps_lane" else "")
+            time.monotonic(), snapshot) if gps_control else "")
         if gps_output_reason:
             record_control_fault(self.shared_state, "engine", gps_output_reason)
             if not getattr(self, "_gps_propulsion_suppressed", False):
@@ -2006,8 +2048,6 @@ class UltraPilotEngine:
                     steering=steering, throttle=0.0, brake=brake,
                     reason=gps_output_reason)
             self._gps_propulsion_suppressed = True
-            throttle = 0.0
-            self.shared_state.set(CTL_THROTTLE, 0.0)
             self.shared_state.set(CTL_SELECT_DRIVE, None)
         else:
             self._gps_propulsion_suppressed = False
@@ -2031,6 +2071,12 @@ class UltraPilotEngine:
             self._simple_auto_forward_history = history
             self.shared_state.set("simple_auto_forward_history", history)
             simple_auto_forward = True
+
+        if gps_output_reason:
+            # Gear/identity revocation above must not be bypassed by an earlier
+            # navigation failure. Neither branch may apply the stale wheel.
+            self._automatic_safety_stop(gps_output_reason)
+            return
 
         # The plugin and Engine run on different clocks. Block an unconfirmed
         # ratio or Reverse before the plugin consumes the new frame; only the
@@ -2134,6 +2180,14 @@ class UltraPilotEngine:
             "engine_applied_steering": float(steering),
             "trailer_articulation_guarded": bool(articulation_guarded),
         })
+
+        expiry = getattr(self, "_gps_output_expiry", None)
+        if (gps_control and expiry is not None
+                and time.monotonic() > expiry[0]):
+            # IPC/gear checks after validation cannot extend the lifetime of
+            # the captured packet. This O(1) check precedes physical writes.
+            self._automatic_safety_stop(expiry[1])
+            return
 
         self.controller.set_steering(steering)
         if not self.shared_state.get("autopilot_active", False):

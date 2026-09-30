@@ -20,6 +20,7 @@ This removes the race where multiple processes fought over the virtual joystick.
 """
 
 from typing import Any, Dict
+from core.ipc.shared_state import LaneSnapshotReader, lane_publication_batch
 
 
 # --- Control intent keys (the Engine reads these and applies them) ------------
@@ -36,18 +37,24 @@ class _SharedStateView:
 
     def __init__(self, state: Dict[str, Any]):
         self._state = state
+        self._lane_snapshot_reader = LaneSnapshotReader()
 
     def get(self, key: str, default: Any = None) -> Any:
         try:
+            if key == "lane_trajectory":
+                return self._lane_snapshot_reader.read(self._state, default)
             return self._state.get(key, default)
         except Exception:
             return default
 
     def set(self, key: str, value: Any):
-        self._state[key] = value
+        if key == "lane_trajectory":
+            self._state.update(lane_publication_batch({key: value}))
+        else:
+            self._state[key] = value
 
     def update_batch(self, data: Dict[str, Any]):
-        self._state.update(data)
+        self._state.update(lane_publication_batch(data))
 
     def get_all(self) -> Dict[str, Any]:
         return dict(self._state)
