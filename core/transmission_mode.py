@@ -196,8 +196,8 @@ def simple_auto_forward_transition(state, truck, history, now=None):
 
     Engine alone commits the returned history. The plugin uses that same history
     and rule even when it sees a new frame before Engine. A zero ratio is NOT a
-    measured selector position: permission is limited to a moving, previously
-    confirmed activation, with a deadline anchored to the first zero observation.
+    measured selector position. A stationary launch has its original absolute
+    start deadline; a moving transition has its first-zero observation deadline.
     """
     evidence = state.get("ets2_transmission_mode", {}) or {}
     preference = state.get("transmission_mode_preference", "auto")
@@ -244,6 +244,21 @@ def simple_auto_forward_transition(state, truck, history, now=None):
     result = dict(history or {})
     result.update(context=context, last_frame=frame,
                   last_observed_at=observed_at, signature=signature)
+    launch_deadline = result.get("launch_deadline_at")
+    if launch_deadline is not None:
+        if truck.get("parkBrake") is not False:
+            return None, "simple automatic launch lost released parking brake"
+        if now > launch_deadline:
+            return None, "simple automatic launch expired before forward motion"
+        if gear > 0 and speed > 0.05:
+            # Only real forward motion finishes launch. A ratio alone is not
+            # proof that clutch engagement and the handoff have completed.
+            result.pop("launch_deadline_at", None)
+        elif gear == 0:
+            if not history or frame <= history["confirmed_frame"]:
+                return None, "simple automatic launch has no new ratio observation"
+            result.update(phase="launch_zero_ratio")
+            return result, ""
     if gear > 0:
         result.update(confirmed_frame=frame, confirmed_at=observed_at,
                       zero_deadline_at=None, phase="forward_confirmed")

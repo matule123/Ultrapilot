@@ -1002,7 +1002,9 @@ class UltraPilotEngine:
                     self.shared_state.set(
                         "navigation_status",
                         f"Autopilot zablokovaný: {rejection_reason}")
-            msg = ("Vyberám D – čakám na potvrdenie prevodu"
+            msg = (("Rozbieham – čakám na dopredný prevod"
+                    if self._drive_engagement["mode"] == 0 else
+                    "Vyberám D – čakám na potvrdenie prevodu")
                    if pending_started else
                    f"Autopilot unavailable: {rejection_reason}"
                    if rejection_reason else
@@ -1175,7 +1177,7 @@ class UltraPilotEngine:
             "auto_drive_pending": True,
             "auto_drive_park_hold": False,
             "navigation_status": (
-                "Jednoduchá automatická: ohraničený rozjazd bez voľby D"
+                "Rozbieham – jednoduchá automatická, bez voľby D"
                 if mode == 0 else "Vyberám D – čakám na potvrdenie prevodu"),
             "autopilot_disable_reason": "",
         })
@@ -1232,8 +1234,27 @@ class UltraPilotEngine:
         self.shared_state.update_batch({
             "simple_auto_forward_history": None,
             "simple_auto_activation_token": None,
+            "simple_auto_launch": None,
+            "simple_auto_launch_output": None,
         })
         self._simple_auto_history_cleared = True
+
+    def _revoke_simple_auto_launch(self, truck, reason):
+        """Revoke forward authority at the Engine's single physical boundary."""
+        self.shared_state.update_batch({
+            "autopilot_active": False, "autopilot_engagement_request": None,
+            "autopilot_disable_reason": reason, "auto_drive_pending": False,
+            "auto_drive_park_hold": False,
+            CTL_THROTTLE: 0.0, CTL_BRAKE: 0.0,
+            CTL_STEERING: 0.0, CTL_SELECT_DRIVE: None,
+        })
+        self.controller.release_all()
+        self._drive_engagement = None
+        self._clear_simple_auto_forward_history()
+        self._was_active = False
+        self._record_drive_boundary(
+            "reject_simple_auto_forward_observation", truck,
+            steering=0.0, throttle=0.0, brake=0.0, reason=reason)
 
     def _cancel_auto_drive_engagement(self, reason):
         """Cancel under the Controller I/O lock so no late edge survives N."""
@@ -1254,6 +1275,7 @@ class UltraPilotEngine:
                 self._selector_release_pending = True
         self.controller.release_all()
         self._drive_engagement = None
+        self._clear_simple_auto_forward_history()
         self.shared_state.update_batch({
             "auto_drive_pending": False,
             "auto_drive_park_hold": False,
@@ -1342,13 +1364,116 @@ class UltraPilotEngine:
                 f"nedošlo potvrdenie dopredného prevodu včas (SDK gear {gear})")
             return True
         pending["last_frame"] = frame
+        if pending.get("phase") == "handoff":
+            # The original launch deadline and this single 500 ms receipt
+            # deadline never renew. No partially published pedal intent is a
+            # completed plugin output, and no late callback can restore N.
+            if not self.shared_state.get("autopilot_active", False):
+                self._cancel_auto_drive_engagement_unlocked("autorita rozjazdu bola vypnutá")
+                return True
+            if truck.get("parkBrake") is not False:
+                self._cancel_auto_drive_engagement_unlocked("parkovacia brzda počas rozjazdu")
+                return True
+            try:
+                brake_request = float(self.shared_state.get(CTL_BRAKE, 0.0))
+            except (TypeError, ValueError, OverflowError):
+                brake_request = float("nan")
+            if not math.isfinite(brake_request) or brake_request > 0:
+                self._cancel_auto_drive_engagement_unlocked(
+                    "brzdenie počas rozjazdu jednoduchej automatiky")
+                return True
+            history, reason = simple_auto_forward_transition(
+                self.shared_state, truck, self._simple_auto_forward_history)
+            if reason:
+                self._cancel_auto_drive_engagement_unlocked(reason)
+                return True
+            self._simple_auto_forward_history = history
+            self.shared_state.set("simple_auto_forward_history", history)
+            output = self.shared_state.get("simple_auto_launch_output")
+            if (getattr(self, "_drive_engagement", None) is not pending
+                    or not self.shared_state.get("autopilot_active", False)):
+                self._cancel_auto_drive_engagement_unlocked("autorita rozjazdu bola vypnutá")
+                return True
+            if output is not None:
+                try:
+                    matching = (
+                        output["request_id"] == pending["request_id"]
+                        and tuple(output["context"]) == tuple(history["context"])
+                        and pending["confirmed_frame"] <= int(output["sdk_frame_us"]) <= frame
+                        and pending["confirmed_at"] <= float(output["computed_at"]) <= time.monotonic()
+                        and 0.0 <= time.monotonic() - float(output["observation_timestamp"]) <= 0.5)
+                    values = [float(output[k]) for k in ("steering", "throttle", "brake")]
+                    target_throttle = float(output["target_throttle"])
+                    matching = matching and all(math.isfinite(v) for v in values)
+                    matching = matching and math.isfinite(target_throttle) and 0 <= target_throttle <= 1
+                    matching = matching and -1 <= values[0] <= 1 and all(0 <= v <= 1 for v in values[1:])
+                except (KeyError, TypeError, ValueError, OverflowError):
+                    matching = False
+                if not matching:
+                    self._cancel_auto_drive_engagement_unlocked("neplatný alebo starý výstup Pluginu pri rozjazde")
+                    return True
+                if values[1] <= 0 or values[2] > 0 or target_throttle <= 0:
+                    self._cancel_auto_drive_engagement_unlocked(
+                        "Plugin odovzdal nulový pohon alebo brzdenie počas rozjazdu")
+                    return True
+                # Recheck the captured truck/route after receipt IPC, before
+                # allowing the normal physical output path to take ownership.
+                reason = self._autopilot_activation_rejection_reason(
+                    allow_neutral=True, observed_truck=truck)
+                latest_snapshot = self.shared_state.get("lane_trajectory", {}) or {}
+                latest_identity = tuple(latest_snapshot.get(key) for key in (
+                    "navigation_intent_id", "revision", "route_build_id",
+                    "source_game_session_id", "source_map_key",
+                    "source_dataset_fingerprint"))
+                if (latest_identity != pending["identity"]
+                        or not self.shared_state.get("autopilot_active", False)):
+                    reason = "autorita alebo identita sa počas odovzdania zmenila"
+                if reason or time.monotonic() > pending["handoff_deadline_at"]:
+                    self._cancel_auto_drive_engagement_unlocked(
+                        reason or "vypršalo odovzdanie rozjazdu Pluginu")
+                    return True
+                self.shared_state.update_batch({
+                    CTL_STEERING: values[0], CTL_THROTTLE: values[1], CTL_BRAKE: values[2],
+                    "simple_auto_launch": None, "simple_auto_launch_output": None,
+                })
+                self._drive_engagement = None
+                self._record_drive_boundary(
+                    "simple_auto_handoff_complete", truck, selector=None,
+                    steering=values[0], throttle=values[1], brake=values[2])
+                return False  # Existing Engine gates/steering path apply output.
+            if time.monotonic() > pending["handoff_deadline_at"]:
+                self._cancel_auto_drive_engagement_unlocked("vypršalo odovzdanie rozjazdu Pluginu")
+                return True
+            reason = self._autopilot_activation_rejection_reason(
+                allow_neutral=True, observed_truck=truck)
+            latest_snapshot = self.shared_state.get("lane_trajectory", {}) or {}
+            latest_identity = tuple(latest_snapshot.get(key) for key in (
+                "navigation_intent_id", "revision", "route_build_id",
+                "source_game_session_id", "source_map_key",
+                "source_dataset_fingerprint"))
+            if (reason or latest_identity != pending["identity"]
+                    or not self.shared_state.get("autopilot_active", False)
+                    or time.monotonic() > pending["handoff_deadline_at"]):
+                self._cancel_auto_drive_engagement_unlocked(
+                    reason or "autorita alebo lehota odovzdania sa zmenila")
+                return True
+            self.controller.set_throttle(0.12)
+            if not getattr(self.controller.scs, "connected", False):
+                self._cancel_auto_drive_engagement_unlocked("zápis plynu do SCS backendu zlyhal")
+            return True
         self.controller.set_steering(0.0)
-        self.controller.set_throttle(0.0)
+        probe = (0.12 if pending["mode"] == 0
+                 and truck.get("parkBrake") is False
+                 and frame > pending["start_frame"] else 0.0)
+        self.controller.set_throttle(probe)
         self.controller.set_brake(0.0)
         self.shared_state.update_batch({
-            CTL_STEERING: 0.0, CTL_THROTTLE: 0.0,
+            CTL_STEERING: 0.0, CTL_THROTTLE: probe,
             CTL_BRAKE: 0.0, CTL_SELECT_DRIVE: None,
         })
+        if probe > 0 and not getattr(self.controller.scs, "connected", False):
+            self._cancel_auto_drive_engagement_unlocked("zápis plynu do SCS backendu zlyhal")
+            return True
         if (pending["mode"] == 3 and pending["pressed_at"] is not None
                 and not pending["released"]):
             if now - pending["pressed_at"] >= 0.15 or gear > 0:
@@ -1381,9 +1506,25 @@ class UltraPilotEngine:
             if reason:
                 self._cancel_auto_drive_engagement_unlocked(reason)
                 return True
-            self._drive_engagement = None
+            handoff = pending["mode"] == 0 and probe > 0
+            if handoff:
+                pending.update(phase="handoff", confirmed_frame=frame,
+                               confirmed_at=now,
+                               handoff_deadline_at=min(pending["deadline_at"], now + 0.5))
+                history = dict(self._simple_auto_forward_history)
+                if speed <= 0.05:
+                    history["launch_deadline_at"] = pending["deadline_at"]
+                self._simple_auto_forward_history = history
+                self.shared_state.set("simple_auto_forward_history", history)
+            else:
+                self._drive_engagement = None
             park_hold = truck.get("parkBrake") is True
             self.shared_state.update_batch({
+                "simple_auto_launch": ({
+                    "request_id": pending["request_id"], "context": history["context"],
+                    "deadline_at": pending["deadline_at"], "throttle": probe,
+                } if handoff else None),
+                "simple_auto_launch_output": None,
                 "auto_drive_pending": False,
                 "auto_drive_park_hold": park_hold,
                 "autopilot_active": True,
@@ -1391,10 +1532,12 @@ class UltraPilotEngine:
                 "autopilot_engagement_confirmed": None,
                 "navigation_status": (
                     "D potvrdené; autopilot zapnutý, uvoľnite parkovaciu brzdu"
-                    if park_hold else "D potvrdené; autopilot zapnutý"),
+                    if park_hold else "Rozjazd potvrdený – odovzdávam riadenie"
+                    if handoff else "D potvrdené; autopilot zapnutý"),
                 "tts_message": (
                     "D potvrdené. Uvoľnite parkovaciu brzdu."
-                    if park_hold else "D potvrdené. Autopilot zapnutý."),
+                    if park_hold else "Rozjazd potvrdený."
+                    if handoff else "D potvrdené. Autopilot zapnutý."),
             })
             return True
         if pending["mode"] == 0:
@@ -1402,17 +1545,11 @@ class UltraPilotEngine:
             # a brake at rest can instead request Reverse. Do not issue either
             # a D pulse or a service-brake command during this bounded probe.
             # Park brake must be explicitly released before any propulsion.
-            if truck.get("parkBrake") is False and frame > pending["start_frame"]:
-                self.controller.set_throttle(0.12)
-                if not getattr(self.controller.scs, "connected", False):
-                    self._cancel_auto_drive_engagement_unlocked(
-                        "zápis plynu do SCS backendu zlyhal")
-                    return True
-                if not pending.get("probe_recorded"):
-                    pending["probe_recorded"] = True
-                    self._record_drive_boundary(
-                        "simple_auto_forward_probe", truck, selector=None,
-                        steering=0.0, throttle=0.12, brake=0.0)
+            if probe > 0 and not pending.get("probe_recorded"):
+                pending["probe_recorded"] = True
+                self._record_drive_boundary(
+                    "simple_auto_forward_probe", truck, selector=None,
+                    steering=0.0, throttle=probe, brake=0.0)
             return True
         if pending["pressed_at"] is None and frame > pending["start_frame"]:
             returned = self.controller.select_drive(True)
@@ -1832,23 +1969,19 @@ class UltraPilotEngine:
 
         simple_auto_forward = False
         if getattr(self, "_active_transmission_mode", None) == 0:
+            starting = (getattr(self, "_simple_auto_forward_history", None) or {}).get(
+                "launch_deadline_at") is not None
             history, ratio_reason = simple_auto_forward_transition(
                 self.shared_state, truck_telemetry,
                 getattr(self, "_simple_auto_forward_history", None))
+            if starting and gps_output_reason:
+                ratio_reason = gps_output_reason
+            if (not ratio_reason and history.get("launch_deadline_at") is not None
+                    and (getattr(self.controller, "mode", None) != "SCS_SDK"
+                         or not getattr(getattr(self.controller, "scs", None), "connected", False))):
+                ratio_reason = "simple automatic launch lost SCS backend"
             if ratio_reason:
-                self.shared_state.update_batch({
-                    "autopilot_active": False,
-                    "autopilot_engagement_request": None,
-                    "autopilot_disable_reason": ratio_reason,
-                    CTL_THROTTLE: 0.0, CTL_BRAKE: 0.0,
-                    CTL_STEERING: 0.0, CTL_SELECT_DRIVE: None,
-                })
-                self.controller.release_all()
-                self._clear_simple_auto_forward_history()
-                self._was_active = False
-                self._record_drive_boundary(
-                    "reject_simple_auto_forward_observation", truck_telemetry,
-                    steering=0.0, throttle=0.0, brake=0.0, reason=ratio_reason)
+                self._revoke_simple_auto_launch(truck_telemetry, ratio_reason)
                 return
             self._simple_auto_forward_history = history
             self.shared_state.set("simple_auto_forward_history", history)
@@ -1969,6 +2102,11 @@ class UltraPilotEngine:
         steering_write_returned_at_s = time.monotonic()
         self.controller.set_throttle(throttle)
         self.controller.set_brake(brake)
+        if (simple_auto_forward and starting
+                and not getattr(getattr(self.controller, "scs", None), "connected", False)):
+            self._revoke_simple_auto_launch(
+                truck_telemetry, "simple automatic launch lost SCS backend during write")
+            return
         self._last_control_flush = time.monotonic()
         # O(1), non-blocking offer after the physical backend call. The
         # diagnostics worker owns parsing, hashing and every disk write.

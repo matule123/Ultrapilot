@@ -111,7 +111,9 @@ class SimpleAutomaticEngagementTests(unittest.TestCase):
         state.set("telemetry_timestamp", time.monotonic())
         engine._flush_controls()
         self.assertTrue(state.get("autopilot_active"))
-        self.assertEqual(engine.controller.throttle, 0.0)
+        # Ratio confirmation transfers authority, not a completed Plugin tick.
+        # The bounded probe must stay continuous until that tick's receipt.
+        self.assertEqual(engine.controller.throttle, 0.12)
 
     def test_confirmed_forward_ratio_while_moving_engages_directly(self):
         state, truck, engine = _Fixture()._parked_request(

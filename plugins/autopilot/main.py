@@ -20,7 +20,9 @@ from core.steering_replay import (
     steering_packet_binding,
 )
 from core.paths import app_dir
-from core.transmission_mode import selected_mode, simple_auto_forward_transition
+from core.transmission_mode import (
+    selected_mode, simple_auto_forward_transition, vehicle_control_observation,
+)
 
 
 # --- Tuning (kept here, mirrored into settings under "autopilot" section) -----
@@ -1006,8 +1008,25 @@ class Plugin(BasePlugin):
 
     def on_tick(self, delta_time: float):
         self._passive_timing_input = None
+        self._launch_tick = None
+        self._launch_target_throttle = 0.0
         try:
             self._control_tick(delta_time)
+            launch_tick = self._launch_tick
+            if launch_tick is not None:
+                # A single receipt only after the entire control tick, including
+                # safety early returns. Engine never takes a half-written pedal
+                # or treats an inactive tick as completion of a later request.
+                launch, truck, observation = launch_tick
+                if self.sdk.shared_state.get("autopilot_active", False):
+                    self.sdk.shared_state.set("simple_auto_launch_output", {
+                        "request_id": launch["request_id"], "context": launch["context"],
+                        "sdk_frame_us": truck.get("sdkFrameTimeUs"),
+                        "observation_timestamp": observation.get("observed_at"),
+                        "computed_at": time.monotonic(),
+                        "steering": self._last_steering, "throttle": self._last_throttle,
+                        "brake": self._last_brake, "target_throttle": self._launch_target_throttle,
+                    })
         finally:
             # Optional observational IPC/copies run after command acceptance
             # and output publication, including the inactive early return.
@@ -1031,7 +1050,12 @@ class Plugin(BasePlugin):
         # Read Engine history before the immutable truck value. A newer history
         # must not make an earlier, still-valid captured frame look regressed.
         forward_history = self.sdk.shared_state.get("simple_auto_forward_history")
+        launch = self.sdk.shared_state.get("simple_auto_launch")
         truck = self.sdk.telemetry.get("truck", {}) or {}
+        if (launch and forward_history
+                and tuple(launch.get("context", ())) == tuple(forward_history.get("context", ()))):
+            observation, _reason = vehicle_control_observation(self.sdk.shared_state, truck)
+            self._launch_tick = (launch, truck, observation)
         speed = truck.get("speed", 0) or 0
         speed_kmh = abs(speed) * 3.6 if abs(speed) < 200 else abs(speed)
         try:
@@ -1194,6 +1218,10 @@ class Plugin(BasePlugin):
         except (TypeError, ValueError, OverflowError):
             observed_game_steering = 0.0
         was_active = bool(self._was_active)
+        if autopilot_engaged and not was_active and self._launch_tick is not None:
+            # Initialize the existing longitudinal ramp from the small command
+            # Engine already owns. Do not ramp a second time from artificial 0.
+            self._last_throttle = float(launch["throttle"])
         if was_active and not autopilot_engaged:
             # Ignore synthetic/aborted sub-second engagements. A real manual
             # drive at the normal control cadence comfortably exceeds this;
@@ -1509,6 +1537,7 @@ class Plugin(BasePlugin):
         else:
             # Fallback if ACC is disabled / not running yet: gentle cruise.
             target_throttle = 0.0 if braking else 0.35 * curve_factor
+        self._launch_target_throttle = target_throttle
         self._apply_throttle(target_throttle, dt)
 
         # 5. Lateral control.
@@ -1924,6 +1953,8 @@ class Plugin(BasePlugin):
         lane_authority_confirmed = bool(
             authority_source == "recorded_route" or self._lane_lock_acquired)
         if (active and nav_active and lane_authority_confirmed
+                and (self._launch_tick is None or
+                     (target_throttle > 0 and self._last_throttle > 0 and self._last_brake == 0))
                 and engagement_request is not None
                 and engagement_request != engagement_confirmed):
             park_hold = self.sdk.shared_state.get("auto_drive_park_hold") is True
