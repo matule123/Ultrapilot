@@ -12,16 +12,30 @@ Dátum: 1. 10. 2026. **Verdikt: PASS pre vykonané offline regresie; NOT VERIFIE
 
 ### Zdroj verzus inštalácia
 
-Read-only kontrola z 2026-10-01T19:53:06.339722. Marker inštalácie `e16e2a5` sám nepotvrdzuje zhodu zostavy. Overené sú len nasledujúce súbory; nepredpokladá sa zhoda celej inštalácie ani historicky načítaných modulov.
+Pôvodná kontrola z 2026-10-01T19:53:06.339722 porovnávala bajtové hashe. Následné read-only porovnanie preukázalo, že rozdiely Engine, Map a Autopilot sú **výhradne LF/CRLF, nie zmeny kódu**. Repozitárové súbory majú zmiešané LF/CRLF, inštalované sú LF. Po nahradení iba CRLF → LF sú všetky tri obsahy presne zhodné; nič ďalšie sa nenormalizovalo. Marker inštalácie sám stále nie je dôkazom celej zostavy ani historicky načítaných modulov.
 
-| Runtime súbor | SHA-256 zdroja | SHA-256 inštalácie | zhoda |
+| Runtime súbor | SHA-256 zdroja | SHA-256 inštalácie | bajtová / obsahová zhoda |
 | --- | --- | --- | --- |
 | core/navigation/route.py | 4654f6fc8360295534208056d440f38af539ba66901f2bb4ab0d81273d79d4ee | 4654f6fc8360295534208056d440f38af539ba66901f2bb4ab0d81273d79d4ee | áno |
 | core/lateral_controller.py | 39ab6a2cd3594b9b8d603dd816d76c92bcc69105981aceb99c4e22176eff05b8 | 39ab6a2cd3594b9b8d603dd816d76c92bcc69105981aceb99c4e22176eff05b8 | áno |
-| core/engine.py | 6d73153af988b7569774c5faeaf87d9e68d5bd5aab80f5a685ea31a8b454b919 | 9987863812a7f468bec6da4496d770dfa82f737367a2ab4a79f730cedb900a94 | **NIE** |
+| core/engine.py | 6d73153af988b7569774c5faeaf87d9e68d5bd5aab80f5a685ea31a8b454b919 | 9987863812a7f468bec6da4496d770dfa82f737367a2ab4a79f730cedb900a94 | bajty nie; kód áno (LF/CRLF) |
 | core/steering_dynamics.py | 155838c3fbefe57d7994b461550f05d39432799442ec8687465c18a60f7ad730 | 155838c3fbefe57d7994b461550f05d39432799442ec8687465c18a60f7ad730 | áno |
-| plugins/map/main.py | bd3c7813eb2e6a19cf484fbb96ad9e74375360713b6dda94572843e680eb3116 | bb78d88cbebd0344f2a7dcac455cd5cbd24af967e7d1c699b8e1ab158f30d8b6 | **NIE** |
-| plugins/autopilot/main.py | 6564918f4a771b9a8ab0012bc56ae0d7b106d214a0c2f29fbd4dbfeba4c226db | fadad0fc5c30bc25508c3eb6b980424cd2bcf9e233e9c702916f8db1a84e61c3 | **NIE** |
+| plugins/map/main.py | bd3c7813eb2e6a19cf484fbb96ad9e74375360713b6dda94572843e680eb3116 | bb78d88cbebd0344f2a7dcac455cd5cbd24af967e7d1c699b8e1ab158f30d8b6 | bajty nie; kód áno (LF/CRLF) |
+| plugins/autopilot/main.py | 6564918f4a771b9a8ab0012bc56ae0d7b106d214a0c2f29fbd4dbfeba4c226db | fadad0fc5c30bc25508c3eb6b980424cd2bcf9e233e9c702916f8db1a84e61c3 | bajty nie; kód áno (LF/CRLF) |
+
+### Spresnenie zhody a výsledku celej sady
+
+Aktuálny HEAD pri tejto kontrole: `77736d3e4e693dcaa56e4232488dc36926bdbfd0` (report a analytický nástroj); pôvodne offline overovaný HEAD `e16e2a5eee6eb25b8c7d3d2227b6c28f83bb0116`. Tri kontrolované runtime súbory sa medzi týmito commitmi nezmenili. SHA-256 obsahu získaného cez `git show HEAD:<súbor>` je v každom prípade **presne rovnaký ako SHA-256 nainštalovaného súboru** uvedený v tabuľke. Obsah preto preukázateľne zodpovedá aktuálnemu HEAD aj predchádzajúcemu e16e2a5; z troch nezmenených súborov nemožno určiť jediný unikátny commit celej inštalácie.
+
+| Súbor | CRLF v checkout / inštalácia | počet všetkých LF v oboch | skutočné zmeny kódu |
+| --- | --- | --- | --- |
+| core/engine.py | 2279 / 0 | 2779 | žiadne |
+| plugins/map/main.py | 3074 / 0 | 3095 | žiadne |
+| plugins/autopilot/main.py | 1997 / 0 | 2110 | žiadne |
+
+**Používateľ potvrdil, že jeho celá pytest sada prešla.** Agent ju pri tejto kontrole nespúšťal. Počty a trvanie celého používateľského behu neboli dodané, preto sa nevymýšľajú; ide o používateľom potvrdený výsledok, oddelený od vyššie doloženého cieleného XML behu.
+
+Nová jazda **môže overovať aktuálny zdroj týchto troch modulov**; obsahový rozdiel ani rozdiel riadiacej logiky jej nebráni. LF/CRLF pri týchto Python súboroch nemení vykonávaný kód. Kontrola však nedokazuje obsah všetkých ostatných runtime súborov ani verziu modulov už načítaných v bežiacom procese. Úplné časové párovanie fyzického povelu v existujúcom novom replayi zostáva obmedzené chýbajúcim immutable source_packet; to je samostatné obmedzenie merania, nie dôkaz iného kódu.
 
 ## Scenáre a výsledok
 
@@ -38,7 +52,7 @@ Read-only kontrola z 2026-10-01T19:53:06.339722. Marker inštalácie `e16e2a5` s
 | Jedno N, reálna automatika | Engine + Plugin: jeden ohraničený D selector; čakanie bez plynu; potvrdenie iba čerstvým SDK gear>0; testy odmietnutia R / timeoutu | PASS offline; herný výsledok NOT VERIFIED |
 | Pohyb / parkovacia brzda / vypnutie | dopredná jazda, brzdenie do R v simple auto, parkovacia brzda, manuálne vypnutie a nulové výstupy, opakované N, backend failure | PASS offline |
 | Strata autority | neúplný/stale packet, heartbeat, strata lokalizácie, kontrolované zastavenie, prvý dôvod, výstražné svetlá a obnova iba čerstvým packetom | PASS offline |
-| Presný aktuálny HEAD v ETS2 | nový replay nemá immutable source; 3 runtime súbory inštalácie sa nezhodujú so zdrojom | NOT VERIFIED |
+| Presný aktuálny HEAD v ETS2 | nový replay nemá immutable source; kontrolované 3 runtime moduly obsahovo zhodné s HEAD (rozdiel iba LF/CRLF) | NOT VERIFIED |
 | Fyzické hranice / nadchádzanie | odložené, mimo tejto etapy; navigačný model nedokazuje voľný priestor ani odstup od obrubníka | NOT VERIFIED |
 
 Cielená sada: **506 passed, 1188 subtests passed, 42,07 s**, 28 vybraných testových súborov; zahŕňa aj zdedené fixture testy, nejde o 506 nezávislých fyzických experimentov. Po dokončení nástroja samostatne **9 passed** pre metodiku analýzy; tento počet sa nepripočítava ako ďalšia nezávislá validačná sada. Celá `tests/` sada nebola spustená.
@@ -184,7 +198,7 @@ Nasledujúca tabuľka je najdlhší aktívny súvislý časový úsek po delení
 | compute_to_read_ms | 201 | 38.6244 | 224.6693 | 239.0187 | 258.1802 |
 | observation_age_at_read_ms | 201 | 65.9466 | 253.6779 | 278.2547 | 307.6526 |
 
-Žiadna použiteľná aktívna timing vzorka nemala age_at_read >500 ms; nejde o dôkaz každého ticku ani veku pri fyzickom zápise. Neaktívne vzorky po ukončení čítajú aj starý packet — nezamieňajú sa za aplikované riadenie. Presné rozdelenia všetkých segmentov sú v JSON. Bez source-bound zápisov a hashovo doloženej skutočne používanej zostavy sa nedá uzavrieť herný PASS aktuálneho HEAD.
+Žiadna použiteľná aktívna timing vzorka nemala age_at_read >500 ms; nejde o dôkaz každého ticku ani veku pri fyzickom zápise. Neaktívne vzorky po ukončení čítajú aj starý packet — nezamieňajú sa za aplikované riadenie. Presné rozdelenia všetkých segmentov sú v JSON. Kontrolované tri moduly sú po rozlíšení LF/CRLF obsahovo zhodné s HEAD. Bez source-bound zápisov však tento záznam neumožňuje uzavrieť úplné herné meranie reťazca povelu; rozdiel týchto troch modulov už nie je blokátor.
 
 ## Kontroly a otvorené body
 
@@ -195,12 +209,12 @@ Nasledujúca tabuľka je najdlhší aktívny súvislý časový úsek po delení
 | Controller benchmark | PASS — všetkých 16 case slovníkov presne zhodných s `steering-controller-bound-roundabout-20261001.json` |
 | compileall core/plugins/ui/tools/tests | PASS |
 | git diff --check a whitespace nových súborov | PASS; kontrolované aj untracked súbory |
-| Celá pytest sada | NOT VERIFIED v tejto etape; spúšťa používateľ |
+| Celá pytest sada | PASS podľa potvrdenia používateľa; agent ju neopakoval, počty/trvanie celého behu nedodané |
 | Reálna automatika, každý bezpečnostný prechod v hre, úplný aktuálny HEAD | NOT VERIFIED |
 
-Produkčný kód sa nezmenil. Nové súbory určené na sledovanie: `PHASE6_STAGE1_RESULTS.md`, `tools/analyze_phase6_stage1.py`, `tests/test_phase6_metrics.py`. Report je neignorovaný nový súbor pripravený na sledovanie v Git tree, zatiaľ nepridaný do indexu. Veľké surové vstupy sa nekopírovali a všetky auditné JSON/XML zostávajú ignorované. Existujúce súbory, swept-envelope a trailer_guidance zostali zachované.
+Produkčný kód sa nezmenil. Nové súbory určené na sledovanie: `PHASE6_STAGE1_RESULTS.md`, `tools/analyze_phase6_stage1.py`, `tests/test_phase6_metrics.py`. Report, nástroj a testy sú od commitu 77736d3 sledované Gitom; táto aktualizácia reportu zostáva lokálna a necommitnutá. Veľké surové vstupy sa nekopírovali a všetky auditné JSON/XML zostávajú ignorované. Existujúce súbory, swept-envelope a trailer_guidance zostali zachované.
 
-Zostáva doplniť používateľovu celú pytest sadu a herné meranie presnej hashovo zhodnej zostavy s immutable source + potvrdenými zápismi. Novšia jazda bola nájdená a zhodnotená v rámci svojej obmedzenej schémy; nežiada sa automaticky ďalšia jazda. Neprirodzenosť, obraz AR, fyzické hranice, clearance a nadchádzanie nie sú uzavreté týmto reportom. Nemenia sa timeouty, bezpečnostné limity ani kalibrácia, aby výsledok vyzeral lepšie.
+Celá pytest sada podľa používateľa prešla. Zostáva úplné herné meranie s immutable source + potvrdenými zápismi; kontrolované Engine/Map/Autopilot sú obsahovo zhodné s aktuálnym zdrojom. Novšia jazda bola nájdená a zhodnotená v rámci svojej obmedzenej schémy; nežiada sa automaticky ďalšia jazda. Neprirodzenosť, obraz AR, fyzické hranice, clearance a nadchádzanie nie sú uzavreté týmto reportom. Nemenia sa timeouty, bezpečnostné limity ani kalibrácia, aby výsledok vyzeral lepšie.
 
 ## Reprodukcia
 
