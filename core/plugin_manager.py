@@ -77,7 +77,16 @@ def plugin_worker(plugin_class: Type[BasePlugin], plugin_name: str,
                     # made route failures look like a frozen progress indicator.
                     logging.exception(f"[plugin:{plugin_name}] on_tick error: {e}")
 
-            time.sleep(tick_dt)
+            if plugin_name == "map":
+                # A navigation tick already spends its period localizing a
+                # real SDK frame. Adding a full sleep afterwards unnecessarily
+                # spaces fresh targets apart (Windows can round 10 ms up).
+                # Wait only the remainder, with no catch-up queue after an
+                # overrun. FrameGate still prevents duplicate calculations.
+                stop_event.wait(max(0.0, tick_dt - (
+                    time.monotonic() - current_time)))
+            else:
+                time.sleep(tick_dt)
 
         plugin.on_stop()
     except Exception as e:

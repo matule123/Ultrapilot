@@ -15,7 +15,7 @@ from core.navigation.production_evidence import (
     GroundReferenceProducer, bind_survey, canonical,
     compile_measured_profile, read_document, survey_scope, wheel_fingerprint,
 )
-from core.navigation.profile_catalog import GROUND_CHANNEL_CONTRACT
+from core.navigation.profile_catalog import GROUND_CHANNEL_CONTRACT, BodyProfileCatalog
 from core.navigation.evidence_worker import (
     EvidenceBundle, IDENTITY_KEYS, ProductionEvidenceWorker, ProductionPublicationSink,
     production_reference_rejection, state_identity,
@@ -26,7 +26,7 @@ from core.navigation.traffic_producer import (
 from core.navigation.tracking_evidence import TrackingRecorder, assess_tracking, capture_application
 from core.navigation.drivable_surface import identity_fingerprint
 from core.navigation.maneuver_reference import ManeuverReferenceMux
-from core.navigation.maneuver_integration import GROUND_REFERENCE_FRAME
+from core.navigation.maneuver_integration import GROUND_REFERENCE_FRAME, build_maneuver_route_context
 from core.sdk.ets2la_data import ETS2LAData, _TRAFFIC_FMT, _TRAFFIC_SIZE, _PARKED_SIZE
 from core.sdk.existing_mapping import ExistingMapping
 from core.swept_envelope import EnvelopeError
@@ -331,6 +331,63 @@ def test_unconfigured_worker_reports_real_missing_producers():
         assert 'MISSING_COMPLETE_TRAFFIC_HISTORY_COVERAGE_AND_BODY_PRODUCER' in b.blockers
         assert 'MISSING_VALIDATED_EXECUTION_TRACKING_BOUND' in b.blockers
     finally: worker.close()
+
+
+def test_missing_body_profile_does_not_revalidate_full_route_per_sdk_frame(request5d):
+    """No geometry proof can authorize a maneuver without its body profile.
+
+    The real-route benchmark measures this otherwise wasted CPU work. Here
+    the real validator records every projection, rather than mocking a delay.
+    """
+    from core.navigation import lane_trajectory
+    worker = ProductionEvidenceWorker(clock=lambda: 10.)
+    try:
+        with patch.object(lane_trajectory, '_point_segment_distance',
+                          wraps=lane_trajectory._point_segment_distance) as project:
+            for index in range(3):
+                observed = replace(request5d.profile,
+                    observation=replace(request5d.profile.observation,
+                                        sdk_frame_us=1_000_000+index))
+                b = worker._produce(request5d.network, request5d.lane_path,
+                    request5d.snapshot, observed, None, 1, index+1, None)
+                assert not b.ready and b.context is None
+                assert 'MISSING_CONFIRMED_BODY_PROFILE' in b.blockers
+                assert 'MISSING_CONFIRMED_DRIVABLE_SURFACE_PRODUCER' in b.blockers
+            assert project.call_count == 0
+    finally:
+        worker.close()
+
+
+@pytest.mark.parametrize('stale_revision', [False, True])
+def test_confirmed_profile_still_requires_complete_route_proof(stale_revision):
+    request = runtime_request(trailers=0)
+    o = observation()
+    observed = provider(o).update(o, 10.)
+    measured = measured_profile(o)
+    binding = {key: measured.payload()[key] for key in (
+        'cabin_configuration', 'chassis_configuration',
+        'accessory_fingerprint', 'mod_fingerprint')}
+    worker = ProductionEvidenceWorker({'configuration_frame_file': 'test-only'},
+                                      clock=lambda: 10.)
+    worker._load = lambda: None
+    worker._profile_catalog = BodyProfileCatalog((measured,))
+    worker._trust = SimpleNamespace(load=lambda *args, **kwargs:
+                                   SimpleNamespace(payload=lambda: binding))
+    snap = dict(request.snapshot)
+    if stale_revision:
+        snap['revision'] += 1
+    try:
+        with patch('core.navigation.evidence_worker.build_maneuver_route_context',
+                   wraps=build_maneuver_route_context) as prove:
+            b = worker._produce(request.network, request.lane_path, snap,
+                                observed, None, 1, 1, None)
+        assert b.profile is not None and prove.call_count == 1
+        assert (b.context is None) == stale_revision
+        if stale_revision:
+            assert 'STALE_LANE_TRAJECTORY_REVISION' in b.blockers
+        assert not b.ready  # A profile alone never authorizes steering.
+    finally:
+        worker.close()
 
 
 class State(dict):

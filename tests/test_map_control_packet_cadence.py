@@ -1,5 +1,6 @@
 """Exercise actual Map calculations through PluginSDK to physical Engine writes."""
 import math
+from dataclasses import replace
 
 import pytest
 
@@ -7,10 +8,13 @@ from plugins.map.main import Plugin as MapPlugin
 from sdk.plugin_sdk import PluginSDK
 from tests.test_cached_control_output import production_flow
 from tests.test_lane_authority_integration import build_map_plugin, Tags
+from tests.test_stage5b1_vehicle_profile import observation
+from core.vehicle_profile import VehicleProfileProvider
 
 
 @pytest.mark.parametrize("lateral_sign", [-1, 1])
-def test_fresh_map_packets_reach_physical_output_without_sparse_targets(lateral_sign):
+@pytest.mark.parametrize("profile_observer", [False, True])
+def test_fresh_map_packets_reach_physical_output_without_sparse_targets(lateral_sign, profile_observer):
     with production_flow() as (state, truck, engine, autopilot, _, n, clock):
         source, _, point = build_map_plugin()
         state.set("game_route_node_uids", [1, 2, 3])
@@ -23,6 +27,7 @@ def test_fresh_map_packets_reach_physical_output_without_sparse_targets(lateral_
         map_plugin.tags = Tags()
         map_plugin.road_net = source.road_net
         map_plugin._net_attempted = True
+        profiles = VehicleProfileProvider()
         writes = []
         writer = engine.controller.set_steering
 
@@ -39,6 +44,13 @@ def test_fresh_map_packets_reach_physical_output_without_sparse_targets(lateral_
                          z=point.z+index*.14)
             state.update_batch(engine._vehicle_telemetry_payload(
                 {"truck": truck, "raw": {"sdkActive": True}}, clock[0]))
+            if profile_observer:
+                # The real telemetry producer publishes this dataclass, not a
+                # dictionary with no observation.frame (which hides repeated
+                # evidence jobs behind the worker's duplicate-frame gate).
+                o = replace(observation(now=clock[0]),
+                            sdk_frame_us=truck["sdkFrameTimeUs"])
+                state.set("vehicle_profile_snapshot", profiles.update(o, clock[0]))
             mode = state.get("ets2_transmission_mode")
             mode["observed_at"] = clock[0]
             state.set("ets2_transmission_mode", mode)

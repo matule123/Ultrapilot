@@ -265,15 +265,20 @@ class ProductionEvidenceWorker:
             require(result.model is not None, result.model_failure)
             return result
         profile = run('profile_lookup', load_profile)
-        # Selection and the complete source proof are worker work, never a tick scan.
-        # This is a diagnostic candidate only; no lane transition is invented.
-        if target is None and lane_path is not None:
+        # A Python thread shares the Map process's GIL. Revalidating thousands
+        # of unchanged route points for every SDK frame stalls even cheap IPC
+        # reads on the control thread. Without a confirmed body profile this
+        # proof cannot authorize anything: retain its missing-input blockers
+        # and do not start the dependent geometry work. The standalone offline
+        # validator remains available and the configured production path still
+        # performs the complete proof, with all existing authority checks.
+        if profile is not None and target is None and lane_path is not None:
             target = next((i for i, segment in enumerate(lane_path.segments)
                            if _sensitive(segment)), None)
-        if lane_path is not None and target is not None:
+        if profile is not None and lane_path is not None and target is not None:
             context = run('route_context', lambda: build_maneuver_route_context(
                 network, lane_path, snapshot, target))
-        else:
+        elif profile is not None:
             blockers.append('NO_CURRENT_MANEUVER_ROUTE_CONTEXT')
 
         def load_surface():
