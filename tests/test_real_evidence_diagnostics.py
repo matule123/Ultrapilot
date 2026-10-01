@@ -528,7 +528,8 @@ def test_command_binding_rejects_stale_executor_packet(tmp_path):
     assert collector._rows[-1]["command_binding_proven"] is False
 
 
-def test_engine_boundary_only_offers_after_unchanged_physical_write():
+@pytest.mark.parametrize("packet_age_s", [0.0, 0.6])
+def test_engine_boundary_only_offers_after_unchanged_physical_write(packet_age_s):
     from tests.test_stage4d_control_timing import EngineRealtimeBoundaryTests, State
 
     class Collector:
@@ -539,6 +540,10 @@ def test_engine_boundary_only_offers_after_unchanged_physical_write():
             return True
 
         def offer(self, value):
+            assert engine.controller.steering_writes[-1] == value.engine_steer
+            assert value.backend_sent is True
+            assert value.application_sdk_frame_us == 1_000_000
+            assert value.steering_write_returned_at_s <= value.captured_at_s
             self.offered.append(value)
             return True
 
@@ -557,7 +562,32 @@ def test_engine_boundary_only_offers_after_unchanged_physical_write():
     engine._maneuver_diagnostic_collector = Collector()
     engine._maneuver_diagnostic_sequence = 0
     engine._maneuver_tracking_recorder = None
+    # GPS control requires the Map calculation packet, not merely ctl_steering.
+    # Keep the final production guard intact and exercise both sides of it.
+    now = time.monotonic()
+    identity = {
+        "navigation_intent_id": "test-intent", "route_build_id": "test-build",
+        "source_game_session_id": 1, "source_map_key": "test-map",
+        "source_dataset_fingerprint": "test-dataset",
+    }
+    state.update_batch({
+        "lane_trajectory": {"valid": True, "revision": 4, **identity},
+        "lane_trajectory_heartbeat": now,
+        "nav_steering_debug": {
+            **identity, "controller": "frenet_bicycle",
+            "calculation_packet_schema_version": 1,
+            "authority_valid": True, "authority_revision": 4,
+            "sdk_frame_us": 1_000_000, "calculation_sequence": 1,
+            "computed_at": now, "observation_timestamp": now - packet_age_s,
+            "output": 0.2, "local_curvature": 0.0,
+        },
+    })
     engine._flush_controls_unlocked()
+    if packet_age_s:
+        assert engine.controller.steering_writes == [0.0]
+        assert engine._maneuver_diagnostic_collector.offered == []
+        assert "observation_timestamp is stale" in state.get("navigation_status")
+        return
     assert engine.controller.steering_writes == [0.2]
     assert len(engine._maneuver_diagnostic_collector.offered) == 1
     assert engine._maneuver_diagnostic_collector.offered[0].engine_steer == 0.2
