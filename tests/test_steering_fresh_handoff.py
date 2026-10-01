@@ -248,6 +248,47 @@ def test_same_frame_mutation_during_preparation_is_rejected():
     assert "one SDK frame changed" in sdk.get("steering_observation_failure")
 
 
+@pytest.mark.parametrize("age", [.079, .2, .499])
+def test_repeated_fresh_frame_preserves_the_already_published_packet(age):
+    plugin, sdk, point, observation = prepared_map()
+    plugin.on_tick(.02)
+    packet = dict(sdk.get("nav_steering_debug"))
+    assert packet["authority_valid"]
+    with mock.patch("plugins.map.main.time.monotonic",
+                    return_value=observation["timestamp"] + age):
+        plugin.on_tick(.02)
+    assert sdk.get("nav_active") is True
+    assert sdk.get("nav_steering_debug") == packet
+    assert sdk.get("vehicle_envelope_snapshot")["timestamp"] == observation["timestamp"]
+
+
+def test_repeated_frame_expires_without_extending_its_original_timestamp():
+    plugin, sdk, point, observation = prepared_map()
+    plugin.on_tick(.02)
+    packet = dict(sdk.get("nav_steering_debug"))
+    with mock.patch("plugins.map.main.time.monotonic",
+                    return_value=observation["timestamp"] + .501):
+        plugin.on_tick(.02)
+    assert sdk.get("nav_active") is False
+    assert sdk.get("nav_steering_debug")["authority_valid"] is False
+    assert sdk.get("nav_steering_debug")["observation_timestamp"] == packet["observation_timestamp"]
+
+
+def test_engine_preserves_the_specific_calculation_rejection_reason():
+    from core.engine import UltraPilotEngine
+    plugin, sdk, _, _ = prepared_map()
+    sdk.set("navigation_source", "gps_lane")
+    sdk.set("nav_steering_debug", {
+        "calculation_packet_schema_version": 1,
+        "authority_valid": False,
+        "control_failure": "SDK frame did not advance after steering preparation",
+    })
+    engine = UltraPilotEngine.__new__(UltraPilotEngine)
+    engine.shared_state = sdk
+    assert engine._gps_output_packet_rejection_reason(time.monotonic(), {}) == (
+        "steering calculation rejected: SDK frame did not advance after steering preparation")
+
+
 def test_slow_preparation_without_a_new_sdk_frame_does_not_publish_old_work():
     plugin, sdk, point, observation = prepared_map()
     now = [observation["timestamp"]]

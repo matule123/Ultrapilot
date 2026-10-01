@@ -8,6 +8,7 @@ import subprocess
 import sys
 import time
 import zipfile
+from types import SimpleNamespace
 
 import pytest
 
@@ -186,7 +187,32 @@ def test_extractor_rejects_symlink_and_wrong_pinned_version(tmp_path, monkeypatc
         extractor_command(link,sha,archive,tmp_path/'new')
 
 
-def test_extractor_success_is_shell_free_bounded_and_atomic(tmp_path,monkeypatch):
+@pytest.fixture
+def ample_extraction_space(monkeypatch):
+    """Synthetic extractor tests must not depend on the host's free space."""
+    monkeypatch.setattr('core.vehicle_assets.shutil.disk_usage',
+                        lambda _: SimpleNamespace(free=1024**4))
+
+
+def test_extractor_low_disk_space_rejects_before_launch(tmp_path, monkeypatch):
+    exe = tmp_path / 'scs_extractor.exe'
+    exe.write_bytes(b'pinned-fixture')
+    archive = tmp_path / 'base.scs'
+    archive.write_bytes(b'SCS#\x02\x00')
+    output = tmp_path / 'output'
+    monkeypatch.setattr('core.vehicle_assets.shutil.disk_usage',
+                        lambda _: SimpleNamespace(free=12 * 1024**3 - 1))
+    def unexpected_launch(*args, **kwargs):
+        pytest.fail('Extractor must not run with insufficient disk space')
+    monkeypatch.setattr('core.vehicle_assets._run_extractor', unexpected_launch)
+    with pytest.raises(EnvelopeError, match='INSUFFICIENT_EXTRACTION_DISK_SPACE'):
+        extract_hashfs(exe, hashlib.sha256(exe.read_bytes()).hexdigest(),
+                       archive, output, timeout_s=1.)
+    assert not output.exists()
+    assert not list(tmp_path.glob('.output.partial-*'))
+
+
+def test_extractor_success_is_shell_free_bounded_and_atomic(tmp_path,monkeypatch,ample_extraction_space):
     exe=tmp_path/'scs_extractor.exe';exe.write_bytes(b'pinned-fixture')
     archive=tmp_path/'base & whoami.scs';archive.write_bytes(b'SCS#\x02\x00')
     output=tmp_path/'cache'/'base'
@@ -204,7 +230,7 @@ def test_extractor_success_is_shell_free_bounded_and_atomic(tmp_path,monkeypatch
     assert not list(output.parent.glob('.base.partial-*'))
 
 
-def test_empty_or_failed_extractor_output_is_not_published(tmp_path,monkeypatch):
+def test_empty_or_failed_extractor_output_is_not_published(tmp_path,monkeypatch,ample_extraction_space):
     exe=tmp_path/'scs_extractor.exe';exe.write_bytes(b'pinned-fixture')
     archive=tmp_path/'base.scs';archive.write_bytes(b'SCS#\x02\x00')
     monkeypatch.setattr('core.vehicle_assets._run_extractor',lambda *a,**k: None)
@@ -340,7 +366,7 @@ def test_actual_package_update_changes_fingerprint(tmp_path):
     assert before['asset_fingerprint'] != after['asset_fingerprint']
 
 
-def test_extractor_timeout_is_fail_closed(tmp_path,monkeypatch):
+def test_extractor_timeout_is_fail_closed(tmp_path,monkeypatch,ample_extraction_space):
     from core.vehicle_assets import extract_hashfs
     exe=tmp_path/'scs_extractor.exe';exe.write_bytes(b'pinned-fixture')
     archive=tmp_path/'base.scs';archive.write_bytes(b'SCS#\x02\x00')

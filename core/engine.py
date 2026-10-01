@@ -1841,6 +1841,11 @@ class UltraPilotEngine:
         """Bounded final check before a GPS packet can accompany propulsion."""
         self._gps_output_expiry = None
         packet = self.shared_state.get("nav_steering_debug", {}) or {}
+        if (isinstance(packet, dict)
+                and packet.get("calculation_packet_schema_version") is not None
+                and packet.get("authority_valid") is False
+                and packet.get("control_failure")):
+            return "steering calculation rejected: " + str(packet["control_failure"])
         if (not isinstance(snapshot, dict) or not snapshot.get("valid")
                 or not isinstance(packet, dict)
                 or packet.get("controller") != "frenet_bicycle"

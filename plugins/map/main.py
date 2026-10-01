@@ -2358,9 +2358,12 @@ class Plugin(BasePlugin):
                 self._reject_steering_observation("one SDK frame changed during steering preparation")
                 return None
             if (frame == prepared.get("sdk_frame_us")
-                    and age > STEERING_DYNAMICS_MAX_DT_S):
+                    and age > STEERING_DYNAMICS_MAX_DT_S
+                    and frame != self._last_steering_sdk_frame_us):
                 # A scheduler-sized preparation requires an advancing SDK
-                # frame, not another read of the same old observation.
+                # frame before calculating new work. An already consumed frame
+                # is instead deduplicated below: its existing packet retains
+                # its original timestamp and the normal 500 ms expiry.
                 self._reject_steering_observation(
                     "SDK frame did not advance after steering preparation")
                 return None
