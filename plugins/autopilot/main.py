@@ -494,6 +494,7 @@ class Plugin(BasePlugin):
     """
 
     NAME = "autopilot"
+    VERSION = "1.0.0"
 
     def on_start(self):
         logging.info("Autopilot Plugin started (Phase 1 tuning).")

@@ -13,6 +13,7 @@ class Plugin(BasePlugin):
     """
 
     NAME = "acc"
+    VERSION = "1.0.0"
 
     def on_start(self):
         logging.info("ACC Plugin started with professional PID control.")

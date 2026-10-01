@@ -68,6 +68,7 @@ class Plugin(BasePlugin):
     """
 
     NAME = "map"
+    VERSION = "1.0.0"
 
     def on_start(self):
         logging.info("Map (navigation) plugin started.")

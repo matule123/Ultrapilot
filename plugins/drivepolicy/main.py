@@ -74,6 +74,7 @@ class Plugin(BasePlugin):
     a pile of independent, sometimes-contradictory requests."""
 
     NAME = "drivepolicy"
+    VERSION = "1.0.0"
 
     def on_start(self):
         logging.info("DrivePolicy plugin started.")

@@ -27,6 +27,7 @@ class Plugin(BasePlugin):
     """
 
     NAME = "toll"
+    VERSION = "1.0.0"
 
     def on_start(self):
         logging.info("Toll plugin started.")

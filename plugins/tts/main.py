@@ -56,6 +56,8 @@ def _get_dispatcher():
 class Plugin(BasePlugin):
     """TTS plugin for voiced announcements and accessibility."""
 
+    VERSION = "1.0.0"
+
     def on_start(self):
         logging.info("TTS Plugin started.")
         try:

@@ -10,6 +10,7 @@ class Plugin(BasePlugin):
     """
 
     NAME = "discord"
+    VERSION = "1.0.0"
     DEFAULT_ENABLED = False  # opt-in (needs a client id)
     CLIENT_ID = "YOUR_CLIENT_ID_HERE"
     UPDATE_INTERVAL = 15.0   # Discord rate-limits presence updates to ~5/min

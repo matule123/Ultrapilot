@@ -98,6 +98,16 @@ def plugin_worker(plugin_class: Type[BasePlugin], plugin_name: str,
             logging.error(f"[plugin:{plugin_name}] process crashed: {e}\n{traceback.format_exc()}")
 
 
+def plugin_version(plugin_class):
+    """Validate independent MAJOR.MINOR.PATCH metadata before loading a plugin."""
+    import re
+    version = getattr(plugin_class, "VERSION", "0.0.0")
+    if not isinstance(version, str) or not re.fullmatch(
+            r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)", version):
+        raise ValueError("Plugin VERSION must use MAJOR.MINOR.PATCH")
+    return version
+
+
 class PluginManager:
     """
     Multiprocessing plugin manager with crash supervision.
@@ -151,9 +161,13 @@ class PluginManager:
                 continue
             try:
                 plugin_class = self._find_plugin_class(folder)
-                self.plugins[folder] = {"class": plugin_class, "process": None, "stop_event": None}
+                version = plugin_version(plugin_class)
+                self.plugins[folder] = {"class": plugin_class, "version": version,
+                                        "process": None, "stop_event": None}
+                self.engine.shared_state.set("plugin_versions", {
+                    name: entry["version"] for name, entry in self.plugins.items()})
                 self._spawn(folder)
-                logging.info(f"Loaded plugin: {folder} ({plugin_class.__name__})")
+                logging.info(f"Loaded plugin: {folder} v{version} ({plugin_class.__name__})")
             except Exception as e:
                 logging.error(f"Failed to load plugin '{folder}': {e}")
 

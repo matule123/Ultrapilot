@@ -36,6 +36,7 @@ class Plugin(BasePlugin):
     """
 
     NAME = "turnsignals"
+    VERSION = "1.0.0"
 
     def on_start(self):
         logging.info("Turn-signals plugin started (topology state machine).")

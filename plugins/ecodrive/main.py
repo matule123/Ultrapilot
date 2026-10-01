@@ -15,6 +15,7 @@ class Plugin(BasePlugin):
     """
 
     NAME = "ecodrive"
+    VERSION = "1.0.0"
     DEFAULT_ENABLED = False  # opt-in
 
     def on_start(self):

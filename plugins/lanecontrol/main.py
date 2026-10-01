@@ -28,6 +28,7 @@ class Plugin(BasePlugin):
     """
 
     NAME = "lanecontrol"
+    VERSION = "1.0.0"
 
     def on_start(self):
         logging.info("Lane-control plugin started.")

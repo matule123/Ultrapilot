@@ -17,6 +17,8 @@ class BasePlugin:
 
     #: Override in a subclass to give the plugin a friendly name / default state.
     NAME: str = "plugin"
+    #: Independent plugin release version; 0.0.0 denotes an unversioned extension.
+    VERSION: str = "0.0.0"
     DEFAULT_ENABLED: bool = True
 
     def __init__(self, sdk: Any):
