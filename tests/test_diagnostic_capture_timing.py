@@ -121,7 +121,8 @@ def test_old_paused_read_does_not_hide_telemetry_loss(tmp_path, monkeypatch):
     assert collector.status()["rejection_detail"] == "DIAGNOSTIC_TELEMETRY_INVALID"
 
 
-def test_actual_worker_updates_paused_transport_without_renewing_control_frame(tmp_path, monkeypatch):
+@pytest.mark.parametrize("typed_profile", [False, True])
+def test_actual_worker_updates_paused_transport_without_renewing_control_frame(tmp_path, monkeypatch, typed_profile):
     engine, collector, state, now = setup_engine(tmp_path, monkeypatch)
     seed = parked_trailer_capture(0)
     seed.truck["sdkFrameTimeUs"] = 54_564_484
@@ -138,6 +139,16 @@ def test_actual_worker_updates_paused_transport_without_renewing_control_frame(t
             profile = deepcopy(seed.profile)
             profile["observation"].update(
                 sdk_frame_us=54_564_484, captured_at=now[0], paused=True)
+            if typed_profile:
+                from core.sdk.vehicle_observation import VehicleObservation
+                from core.vehicle_profile import VehicleProfile, ProfileToken
+                metadata = profile["observation"]
+                observation = VehicleObservation(schema_version=1, **{name: metadata[name]
+                    for name in ("source", "failure_reason",
+                                 "captured_at", "sdk_frame_us", "active", "paused",
+                                 "stable_read")})
+                profile = VehicleProfile(1, ProfileToken("test", 1, "", ""),
+                    observation, now[0], "", "", None, (), ())
             self.data = {"raw": {"sdkActive": True}, "truck": seed.truck,
                          "vehicle_profile": profile, "trailer": {}}
             return True

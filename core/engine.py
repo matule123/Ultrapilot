@@ -540,7 +540,20 @@ class UltraPilotEngine:
 
     def _store_diagnostic_sdk_read(self, data, timestamp):
         """Transport metadata only; never refresh the accepted control sample."""
-        observation = ((data.get("vehicle_profile") or {}).get("observation") or {})
+        from core.vehicle_profile import VehicleProfile
+        from core.sdk.vehicle_observation import VehicleObservation
+
+        profile = data.get("vehicle_profile")
+        observation = (profile.observation if isinstance(profile, VehicleProfile)
+                       else profile.get("observation") if isinstance(profile, dict)
+                       else None)
+        if isinstance(observation, VehicleObservation):
+            # Copy only transport metadata, not the entire wheel/profile tree.
+            observation = {name: getattr(observation, name) for name in (
+                "sdk_frame_us", "captured_at", "active", "paused", "stable_read",
+                "source", "failure_reason")}
+        elif not isinstance(observation, dict):
+            observation = {}
         frame = observation.get("sdk_frame_us")
         value = {
             "read_at_s": timestamp, "sdk_frame_us": frame,
