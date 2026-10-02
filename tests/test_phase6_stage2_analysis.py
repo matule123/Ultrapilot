@@ -68,3 +68,26 @@ def test_invalid_integrity_prevents_analysis(tmp_path, monkeypatch):
     monkeypatch.setattr(analysis, 'inspect_collection', lambda _: {'integrity_valid': False})
     with pytest.raises(ValueError, match='INVALID_COLLECTION_INTEGRITY'):
         analysis.analyze(*paths, 'build', 10., 11.)
+
+
+def test_exit_requires_exact_directed_connector_and_following_road(tmp_path, monkeypatch):
+    paths = inputs(tmp_path, monkeypatch)
+    replay = json.loads(paths[1].read_text())
+    for e in replay['execution_samples'][:2]:
+        e['source_packet']['lane_match_snapshot']['active_lane_id'] = dict(
+            road_uid=5337536179162457633, direction=1, lane_index=1,
+            connector_path=[4,6,2,5])
+    replay['execution_samples'][2]['source_packet']['lane_match_snapshot']['active_lane_id'] = dict(
+        road_uid=5337536093846112063, direction=1, lane_index=1, connector_path=[])
+    paths[1].write_text(json.dumps(replay))
+    r = analysis.analyze(*paths, 'build', 10., 11.)
+    assert r['completed_exit'] == 'MEASURED_NAVIGATED_EXIT_TO_FOLLOWING_ROAD'
+    assert r['phases']['exit']['measurement']['samples'] == 1
+    assert r['phases']['after_exit']['measurement']['samples'] == 1
+    replay['execution_samples'][0]['source_packet']['lane_match_snapshot']['active_lane_id']['direction'] = -1
+    replay['execution_samples'][1]['source_packet']['lane_match_snapshot']['active_lane_id']['direction'] = -1
+    paths[1].write_text(json.dumps(replay))
+    r = analysis.analyze(*paths, 'build', 10., 11.)
+    assert r['completed_exit'] == 'NOT MEASURED'
+    # Unknown phase still measures known source CTE; never invent a phase label.
+    assert r['phases']['unclassified']['measurement']['samples'] == 1

@@ -35,6 +35,13 @@ def phase(source, start, stop):
         return 'circulation'
     if uid in (5337536179565107919, 5337536096979258520):
         return 'exit_approach_only'
+    if (uid == 5337536179162457633 and lane.get('direction') == 1
+            and lane.get('lane_index') == 1 and lane.get('connector_path') == [4, 6, 2, 5]):
+        return 'exit_connector'
+    if uid in (5337536093846112063, 5337536179200201307, 5337536093166633263,
+               5337536111176974397, 5337536110279393342, 5337536092877246909,
+               5337536093137294876, 5337536095175708374, 5337536182924768567):
+        return 'after_exit'
     return 'unclassified'
 
 
@@ -74,10 +81,25 @@ def analyze(collection, replay_path, timing_path, build, start, stop):
         packets[key] = s
     observations = {}; speed = {}; phase_counts = Counter()
     selected = []
-    for s in packets.values():
+    ordered = sorted(packets.values(), key=lambda s:s['computed_at'])
+    exit_connector_seen = False
+    completed_exit = False
+    for s in ordered:
         ph = phase(s, start, stop)
+        exit_connector_seen |= ph == 'exit_connector'
+        lane = (s.get('lane_match_snapshot') or {}).get('active_lane_id') or {}
+        if (exit_connector_seen and lane.get('road_uid') == 5337536093846112063
+                and lane.get('direction') == 1 and lane.get('lane_index') == 1):
+            completed_exit = True
+    def classified(s):
+        ph = phase(s, start, stop)
+        if completed_exit and ph in ('exit_approach_only', 'exit_connector'):
+            return 'exit'
+        return ph
+    for s in ordered:
+        ph = classified(s)
         phase_counts[ph] += 1
-        if ph in ('launch_or_inactive', 'controlled_stop_or_manual', 'unclassified'):
+        if ph in ('launch_or_inactive', 'controlled_stop_or_manual'):
             continue
         selected.append(s)
         observations.setdefault(ph, []).append(source_measurement(s, ph))
@@ -114,7 +136,7 @@ def analyze(collection, replay_path, timing_path, build, start, stop):
             reference='sampled confirmed backend steering', steer=value,
             progress_m=s.get('tracking_progress_m'), cte_m=None, heading_rad=None)
         writes.append(w)
-        write_phases.setdefault(phase(s, start, stop), []).append(w)
+        write_phases.setdefault(classified(s), []).append(w)
     phase_times = {}; read_ages = []; receipt_count = 0; read_count = 0
     fields = {
         'lane_update_ms': ('map_tick_started_at','map_lane_update_finished_at'),
@@ -161,7 +183,7 @@ def analyze(collection, replay_path, timing_path, build, start, stop):
         timing_phases={k:distribution(v) for k,v in phase_times.items()},
         timing_sampled_reads=read_count, timing_receipts=receipt_count,
         age_at_sampled_read_ms=distribution(read_ages),
-        completed_exit='NOT MEASURED',
+        completed_exit=('MEASURED_NAVIGATED_EXIT_TO_FOLLOWING_ROAD' if completed_exit else 'NOT MEASURED'),
         limitation='Sparse writes do not establish full 60 Hz maxima. Timing reads are sampled, not first delivery. Phases are specific to these proven LaneIds. Paused/manual samples do not count as active CTE; no obstacle clearance is measured.',
         stage1_collection=collection_report(collection), stage1_replay=replay_report(replay_path))
 

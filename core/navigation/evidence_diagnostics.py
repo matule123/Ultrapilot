@@ -50,6 +50,11 @@ IDENTITY_KEYS = (
     "navigation_intent_id", "route_build_id", "revision",
     "source_game_session_id", "source_map_key", "source_dataset_fingerprint",
 )
+OBSERVATION_IDENTITY_KEYS = (
+    ("source_game_session_id", "game_session_id"),
+    ("source_map_key", "active_map_key"),
+    ("source_dataset_fingerprint", "active_dataset_fingerprint"),
+)
 _COLLECTION_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,79}$")
 
 
@@ -259,6 +264,7 @@ class DiagnosticCapture:
     steering_write_returned_at_s: float | None = None
     capture_started_at_s: float | None = None
     sdk_read_observation: dict | None = None
+    observation_identity: dict | None = None
 
 
 def capture_diagnostic_application(state, steering, now, sequence, *,
@@ -267,6 +273,10 @@ def capture_diagnostic_application(state, steering, now, sequence, *,
                                    steering_write_returned_at_s=None,
                                    sdk_read_observation=None, clock=None):
     """Take a bounded snapshot after the physical backend call returned."""
+    # GPS invalidation deliberately removes route authority. Its snapshot is
+    # not the producer of the current game/map epoch. Bracket the bounded
+    # capture with actual context reads; disagreement is not an atomic sample.
+    before = {key: state.get(source) for key, source in OBSERVATION_IDENTITY_KEYS}
     telemetry = state.get("telemetry", {}) or {}
     truck = telemetry.get("truck", {}) or {}
     lane = state.get("lane_trajectory", {}) or {}
@@ -304,7 +314,11 @@ def capture_diagnostic_application(state, steering, now, sequence, *,
     )
     # IPC may deliver a newer observation after the caller sampled ``now``.
     # Timestamp the actual completion, while retaining the original SDK time.
-    return replace(capture, captured_at_s=float(clock())) if clock else capture
+    after = {key: state.get(source) for key, source in OBSERVATION_IDENTITY_KEYS}
+    return replace(capture,
+        captured_at_s=float(clock()) if clock else capture.captured_at_s,
+        observation_identity={"before": before, "after": after,
+                              "reads_match": before == after, "atomic": False})
 
 
 def _manual_value(name, allowed):
@@ -509,6 +523,7 @@ class EvidenceDiagnosticCollector:
         self._rejected_samples = 0
         self._termination = None
         self._skipped_paused = 0
+        self._skipped_identity = 0
         self._last_geometry_binding = None
         self._last_moving_navigation_binding = None
         self._trailer_preflight = _empty_trailer_preflight()
@@ -542,6 +557,7 @@ class EvidenceDiagnosticCollector:
                 "dropped_samples": self._dropped,
                 "skipped_duplicate_samples": self._skipped_duplicates,
                 "skipped_paused_samples": self._skipped_paused,
+                "skipped_identity_samples": self._skipped_identity,
                 "rejected_samples": self._rejected_samples,
                 "rejection_detail": (self._termination or {}).get("detail"),
                 "termination": dict(self._termination) if self._termination else None,
@@ -640,6 +656,7 @@ class EvidenceDiagnosticCollector:
                 self._skipped_duplicates = self._rejected_samples = 0
                 self._termination = None
                 self._skipped_paused = 0
+                self._skipped_identity = 0
                 self._last_geometry_binding = None
                 self._last_moving_navigation_binding = None
                 self._trailer_preflight = _empty_trailer_preflight()
@@ -683,6 +700,13 @@ class EvidenceDiagnosticCollector:
                                  "last_accepted_sdk_frame_us": self._last_sdk_frame,
                                  "last_sdk_observed_at_s": self._last_sdk_observed_at,
                                  "sdk_read_observation": capture.sdk_read_observation}
+            if identity_changed:
+                domain = ((capture.observation_identity or {}).get("after")
+                          if capture.observation_identity is not None else capture.lane)
+                keys = [key for key, _ in OBSERVATION_IDENTITY_KEYS]
+                self._termination.update(
+                    previous_identity=dict(zip(keys, self._last_observation_identity)),
+                    observed_identity={key: (domain or {}).get(key) for key in keys})
             preflight = dict(self._trailer_preflight)
             reasons = ["TRAILER_SDK_FRAME_STALE_OR_INCOHERENT"]
             if capture.truck.get("sdkFrameTimeUs") == self._last_sdk_frame:
@@ -701,9 +725,19 @@ class EvidenceDiagnosticCollector:
                 return  # A queued capture cannot replace the first termination.
         profile = _jsonable(capture.profile) or {}
         sdk_frame = capture.truck.get("sdkFrameTimeUs")
-        domain_keys = ("source_game_session_id", "source_map_key", "source_dataset_fingerprint")
-        domain = tuple(capture.lane.get(key) for key in domain_keys)
-        if self._last_observation_identity is not None:
+        domain_keys = tuple(key for key, _ in OBSERVATION_IDENTITY_KEYS)
+        context = capture.observation_identity
+        domain_source = (context.get("after") or {}) if context is not None else capture.lane
+        domain = tuple(domain_source.get(key) for key in domain_keys)
+        context_matches = (context is None or (context.get("reads_match") is True
+            and context.get("before") == context.get("after")))
+        missing_current_identity = (context is not None
+            and any(value in (None, "", "unavailable", 0) for value in domain))
+        missing_bound_identity = (self._last_observation_identity is not None
+            and any(old not in (None, "") and new in (None, "")
+                    for old, new in zip(self._last_observation_identity, domain)))
+        if (context_matches and not missing_current_identity and not missing_bound_identity
+                and self._last_observation_identity is not None):
             for key, old, new in zip(domain_keys, self._last_observation_identity, domain):
                 if old is not None and new != old:
                     self._reject_capture(capture, key, identity_changed=True)
@@ -760,6 +794,15 @@ class EvidenceDiagnosticCollector:
         if detail is not None:
             self._reject_capture(capture, detail)
             return
+        if not context_matches or missing_current_identity or missing_bound_identity:
+            # Neither accept a mixed/unidentified sample nor guess the missing
+            # epoch from a previous LanePath. A later known changed epoch still
+            # rejects against the last accepted one; no timestamps are renewed.
+            with self._lock:
+                self._skipped_identity += 1
+                self._reason = "WAITING_FOR_COHERENT_DIAGNOSTIC_IDENTITY"
+            self._publish()
+            return
         if duplicate:
             with self._lock:
                 self._skipped_duplicates += 1
@@ -790,6 +833,9 @@ class EvidenceDiagnosticCollector:
             and 0 <= capture.captured_at_s - execution_time <= 0.1
             and capture.backend_sent and _finite(capture.engine_steer)
             and abs(float(executor_output) - capture.engine_steer) <= 1e-12)
+        if context is not None:
+            command_bound &= all(source.get(key) == value
+                                 for key, value in zip(domain_keys, domain))
         row = {
             "schema_version": SCHEMA_VERSION,
             "measurement_domain": "ets2_unqualified_diagnostic_observation",
@@ -824,6 +870,7 @@ class EvidenceDiagnosticCollector:
             "session": source.get("source_game_session_id", capture.lane.get("source_game_session_id")),
             "map_key": source.get("source_map_key", capture.lane.get("source_map_key")),
             "dataset_fingerprint": source.get("source_dataset_fingerprint", capture.lane.get("source_dataset_fingerprint")),
+            "observation_identity": _jsonable(context),
             "lane_id": lane_match.get("active_lane_id", capture.lane.get("active_lane_id")),
             "reference_mode": source.get("reference_mode", capture.reference.get("mode")),
             "plan_token": source.get("maneuver_plan_token", capture.reference.get("plan_token")),
@@ -856,6 +903,8 @@ class EvidenceDiagnosticCollector:
                 for article in ((profile.get("observation") or {}).get("articles", ()) or ())
                 if article.get("attached")],
         }
+        if context is not None:
+            row.update(session=domain[0], map_key=domain[1], dataset_fingerprint=domain[2])
         geometry_reasons = _trailer_geometry_reasons(
             row, self._last_sdk_frame, self._last_geometry_binding)
         command_reasons = _moving_command_reasons(row, geometry_reasons)
@@ -1133,6 +1182,7 @@ class EvidenceDiagnosticCollector:
                 "collection_complete": not rejected, "termination": termination,
                 "skipped_duplicate_samples": self._skipped_duplicates,
                 "skipped_paused_samples": self._skipped_paused,
+                "skipped_identity_samples": self._skipped_identity,
                 "rejected_samples": self._rejected_samples,
             }
             if rejected:
@@ -1240,6 +1290,7 @@ def inspect_collection(path):
                 manifest.get("trailer_axle_replay_channels_observed", False)),
             "trailer_axle_replay_candidate_complete": bool(
                 manifest.get("trailer_axle_replay_candidate_complete", False)),
+            "skipped_identity_samples": manifest.get("skipped_identity_samples", 0),
             "qualification": "READY_FOR_OFFLINE_REVIEW"}
     if manifest.get("collection_complete") is False:
         termination = manifest.get("termination")

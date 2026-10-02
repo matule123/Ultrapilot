@@ -427,6 +427,7 @@ def test_arm_collect_finish_exports_only_unconfirmed_candidates(tmp_path):
                       "runtime_authorized": False,
                       "trailer_axle_replay_channels_observed": False,
                       "trailer_axle_replay_candidate_complete": False,
+                      "skipped_identity_samples": 0,
                       "qualification": "READY_FOR_OFFLINE_REVIEW"}
     profile = read_json(root(tmp_path) / "cab-01" / "body-profile-candidate.json")
     configuration = read_json(
@@ -638,7 +639,9 @@ def test_parked_trailer_preflight_uses_real_engine_manual_branch(tmp_path):
             collector._ingest(value)
             return True
 
-    state = State({"autopilot_active": False, "telemetry_valid": True})
+    state = State({"autopilot_active": False, "telemetry_valid": True,
+                   "game_session_id": "session-a", "active_map_key": "map-a",
+                   "active_dataset_fingerprint": "dataset-a"})
     engine = EngineRealtimeBoundaryTests.bare_engine(state)
     engine.controller = EngineRealtimeBoundaryTests.FakeController()
     engine._maneuver_diagnostic_collector = DirectOffer()

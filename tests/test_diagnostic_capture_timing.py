@@ -12,7 +12,9 @@ def setup_engine(tmp_path, monkeypatch):
     from tests.test_stage4d_control_timing import EngineRealtimeBoundaryTests
     now = [1340.099922]
     monkeypatch.setattr("core.engine.time.monotonic", lambda: now[0])
-    state = State({"autopilot_active": False, "telemetry_valid": True})
+    state = State({"autopilot_active": False, "telemetry_valid": True,
+                   "game_session_id": "session-a", "active_map_key": "map-a",
+                   "active_dataset_fingerprint": "dataset-a"})
     engine = EngineRealtimeBoundaryTests.bare_engine(state)
     engine.controller = EngineRealtimeBoundaryTests.FakeController()
     collector = EvidenceDiagnosticCollector(root(tmp_path), capacity=30, clock=lambda: now[0])

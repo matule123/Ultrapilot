@@ -1,5 +1,257 @@
 # Fáza 6 – etapa 2: herné meranie a oprava čerstvosti packetu
 
+## Najnovší výsledok – zber 185804, 2. 10. 2026
+
+**Integrita: PASS. Dokončenie diagnostického zberu: FAIL – chybné porovnanie
+hernej identity odvodenej z neplatnej GPS trasy. Oprava diagnostiky: PASS
+OFFLINE, v hre ešte neoverená. Prijatá jazda obsahuje celý navigovaný výjazd
+z objazdu do nasledujúcej cesty. Nový prejazd na jeho doplnenie netreba.**
+
+Táto sekcia hodnotí iba nový zber `phase6-stage2-20261002-185804`.
+Staršia jazda 164849 a jej stale incident zostávajú samostatne nižšie;
+ich výsledok FAIL sa neprenáša na túto jazdu. Nejde o experiment pred/po
+opravou collectora: nový diagnostický kód zatiaľ nebol nasadený.
+
+### Identita, integrita a hranice dôkazu
+
+Východiskový HEAD `c5cedbb78fd8881e98f07de735945039bed37061`; sledovaný strom
+bol čistý. Pravidlá `PLUGIN_VERSIONS.md` a `DEFERRED_WORK.md` zachované.
+Žiadny plugin sa nemenil, preto sa jeho verzia nezvyšuje. Engine, Map,
+Autopilot, regulátor, prevodovka a limit steering freshness 500 ms sú nedotknuté.
+
+| Údaj | Overená hodnota |
+| --- | --- |
+| Kolekcia | `C:\Users\PC\AppData\Local\Programs\UltraPilot\evidence-diagnostics\phase6-stage2-20261002-185804` |
+| Dense replay | `steering-replay-20261002T170016.638031Z-manual_disable.json` |
+| Timing | `steering-timing-20261002T170320.436567Z-plugin_stop.json` |
+| Aktívna identita | session `1`, intent `84f81c0f88254c4a8d52dc3591257039`, revision `7`, build `9aff982a062b496a83b14f8c7cfb7979` |
+| Mapa / dataset | `promods-1.59` / `d6cc7936fce4e902761abb5d` |
+| Kolekcia | 964 jedinečných prijatých SDK snímok, 47 overených súborov; 0 zahodených, 1 odmietnutá, 1 preskočená duplicita, 46 preskočených paused čítaní |
+| Prijaté úseky | 527 neaktívnych stojacich vzoriek; 437 aktívnych vzoriek |
+| Neúplnosť | `REJECTED_EXPORTED`, `INCOMPLETE_REJECTED_COLLECTION`, `collection_complete=false` |
+| Autorita | `atomic=false`, `confirmed=false`, `runtime_authorized=false` |
+| Replay | 1648 diagnostických riadkov / 6294 executor riadkov; pre metriky sa nepoužívajú mutable hlavičky |
+| Použitý source | 1465 rôznych calculation sequence aj SDK frame v jednej úplnej aktívnej identite |
+| Fyzické zápisy | 246 potvrdených, source-bound zápisov z combined; 191 aktívnych riadkov bez úplnej väzby sa vylúčilo; 527 neaktívnych sa nezamiešalo s jazdou |
+
+Prvých 318 prijatých raw riadkov nemá úplnú route/domain identitu;
+646 ju má, z toho 437 aktívnych. Tieto neznáme identity sa nedoplnili zo
+susedného riadku. Metriky jazdy používajú výhradne kompletný immutable source.
+527 neaktívnych snímok má maximum |speed| 0,000445 m/s; nie sú to CTE
+vzorky aktívneho vedenia. Celkový capture rozsah je 19850,3765526–19958,0464708 s.
+
+SHA-256 vstupov:
+
+| Súbor | SHA-256 |
+| --- | --- |
+| Manifest | `87b52ad60dd71d3c29f230f8079c823b715e3f3d7abd078bbddf8d129b5bf35e` |
+| Replay | `d9aca4b8184389026f33c81bdcbf08ae6f013adbac2eed093ebf0bd1280d1e0e` |
+| Timing | `3338d7abf969c21aa7ed206bdb615a3aa336bce7ecd683c5c9bcb3778e9e98f9` |
+| Log pri čítaní | `24c3d549bc7a031c5fcb8ce490a8758c14e3a398e294808a566043051bdc93a4` |
+| Nainštalovaný collector | `2997ee32cb432acf55ff179b3833552eb1828a01a6fbd2ce0bd6e693ee4c18eb` |
+
+### Konkrétna chyba identity a oprava
+
+| Čas / frame | Doložená udalosť |
+| --- | --- |
+| 18:58:28,728 | GameWatcher začal session 1; žiadna ďalšia zmena session v príslušnom okne logu |
+| 19958,0464708 / 307237710 | Posledná prijatá vzorka: source session 1, rovnaká mapa/dataset, revision 7, platná trasa |
+| 19:00:16,220–225 | Engine: hra odstránila GPS cieľ; `DESTINATION_REMOVED`, revision 8, intent/build sa vyčistili |
+| 19:00:16,228 | Strata navigačnej autority a controlled stop: revision 7 je stará voči 8 |
+| 19958,1594125 / 307371038 | Collector odmietol `source_game_session_id`; SDK age 3,3677 ms, active/unpaused/stable/coherent |
+| Replay/timing po invalidácii | Aktuálna domain identity stále session 1, rovnaká mapa/dataset; route intent/build už null |
+
+**Pôvodná prijatá hodnota je 1. Nová odmietnutá hodnota nebola uložená.**
+Termination obsahuje názov poľa, nie jeho starú a novú hodnotu; odmietnutý
+capture sa neexportoval. Historické `None` preto nie je vydávané za priamo
+zaznamenanú hodnotu. Produkčná reprodukcia však preukazuje presne túto chybu:
+Engine pri odstránení cieľa publikuje `invalid_lane` bez `source_game_session_id`
+(rovnako chýba mapa a dataset). `capture_diagnostic_application` preberá tieto
+polia z LanePath, `_ingest` potom porovná 1 s chýbajúcim poľom, teda None,
+a označí absenciu autority GPS za zmenu hernej session. Čas publikovania,
+revision 8 a odmietnutie sa v tejto jazde zhodujú. Log ani artefakty nedokazujú
+skutočný reštart hry, zmenu profilu alebo datasetu. Stará SDK snímka príčinou nie je.
+
+Producent skutočného session countera je `GameWatcher._reset_session`:
+publikuje `game_session_id` pri detekcii procesu hry. Nejde o route revision,
+build ID ani samostatný detektor herného profilu. Map/dataset sú aktuálne
+`active_map_key` / `active_dataset_fingerprint` publikované mapovým runtime.
+Pred opravou collector tieto aktuálne hodnoty nepoužíval: mohol tiež prehliadnuť
+skutočnú zmenu domain, ak LanePath ešte obsahovala starú identitu.
+
+Oprava je iba v `core/navigation/evidence_diagnostics.py`:
+
+- Capture oddelene uloží aktuálne domain hodnoty pred a po ohraničenom čítaní.
+  Obsah LanePath ani immutable executor.source_packet sa neupravuje.
+- Ak sa tieto čítania nezhodnú alebo je aktuálna identita neznáma, vzorka sa
+  neprijme; eviduje sa `skipped_identity_samples`. Neobnoví sa SDK timestamp,
+  posledný prijatý frame ani posledná známa identita. Startup session 0 a
+  nedostupný dataset nie sú potvrdená domain.
+- Počas dočasného výpadku sa identita neodhadne z poslednej trasy. Po obnovení
+  rovnaká identita pokračuje; známa odlišná identita naďalej definitívne odmietne
+  zber a zachová prijaté vzorky. Skutočne expired/regressing SDK sa stále odmietne.
+- Termination pri skutočnej zmene uloží `previous_identity` a `observed_identity`;
+  finish/inspect zachovajú neúplný status, poradie, SHA-256 a atomic manifest.
+- `observation_identity` je pasívny kandidát s `atomic=false`. Dvojité čítanie
+  nie je dôkaz atómového SDK snapshotu ani fyzického ground reference.
+  Nesmie udeliť riadiacu autoritu; source z inej domain nepreukáže command binding.
+
+| Reprodukcia produkčného capture → collector | Pred | Po |
+| --- | --- | --- |
+| Platná trasa → Engine invalid snapshot pri odstránení cieľa, current session nezmenená | Chybné `REJECTED_IDENTITY_CHANGED` | Zber pokračuje s neplatnou GPS referenciou a samostatnou známou observation domain |
+| Zmenená current session/map/dataset, stále starý route packet | Zmena sa prehliadla | `REJECTED_IDENTITY_CHANGED`, žiadna zmiešaná prijatá vzorka |
+| Current identita chýba alebo sa mení počas capture | Prijala sa stará identita z trasy | Preskočenie bez odhadu; nasledujúca skutočná zmena sa odmietne |
+| Nová revision/build v rovnakej domain | Pokračuje ako oddelená route identita | Zachované; analytika identity nepomieša |
+| Finish po odmietnutí, poškodený/chýbajúci chunk | Neúplný export, poškodenie odmietnuté | Zachované |
+
+Nové regresie pred opravou: **6 failed / 1 passed**, vrátane presného
+odstránenia GPS cieľa. Testy nepoužívajú zmenený regulátor ani falošné radenie.
+Testovacie Engine state dvojníky dostali tri skutočné current-domain polia;
+nový čítač ich nesmie domýšľať zo seed LanePath. Inspect test výslovne
+očakáva nový počet preskočených identít. Bezpečnostné kontroly sa neodstránili.
+
+### Meranie prijatej jazdy
+
+CTE označuje **SDK chassis-origin LaneMatch**, nie nápravu ani náves.
+RMS = sqrt(mean(CTE²)); časová RMS používa ľavostranné váhy do ďalšej
+platnej vzorky, bez poslednej váhy a bez mostíka cez gap >500 ms či zmenu
+identity. p95/p99 sú lineárne interpolované kvantily. Heading je
+`body_tracking_error_rad` immutable calculation packetu, v radiánoch.
+Rýchlosť pochádza z toho istého source (`observation_speed_ms`).
+
+Aktívne okno: handoff 19910,3489547 s až prvé Engine odmietnutie 19958,0769194 s.
+Vlastné platné source observations: 47,6390 s, 419,7736 m, 1465 vzoriek;
+žiadna chýbajúca CTE ani heading v tejto vybranej množine. Úseky sa oddeľujú
+podľa potvrdeného live LaneId, nie podľa statického prvého pruhu snapshotu.
+
+| Úsek | n / s / m | CTE RMS / časová RMS [m] | mean / p95 / p99 / max | Heading RMS / max [rad] | Rýchlosť median / max [km/h] |
+| --- | --- | --- | --- | --- | --- |
+| Prístup vrátane začiatku rozjazdu | 144 / 4,886 / 20,622 | 0,1681 / 0,1647 | 0,1588 / 0,2216 / 0,2348 / 0,2596 | 0,0441 / 0,0807 | 18,58 / 23,69 |
+| Vjazd | 84 / 2,579 / 16,175 | 0,2744 / 0,2710 | 0,2502 / 0,4280 / 0,4754 / 0,4801 | 0,0375 / 0,0835 | 21,61 / 30,93 |
+| Obiehanie | 426 / 13,868 / 103,352 | 0,1832 / 0,1785 | 0,1347 / 0,3584 / 0,4989 / 0,5441 | 0,0152 / 0,0715 | 27,03 / 32,74 |
+| Výjazd do nasledujúcej cesty | 240 / 7,598 / 49,862 | 0,2577 / 0,2518 | 0,1698 / 0,6130 / 0,6351 / 0,6542 | 0,0237 / 0,0533 | 23,27 / 30,83 |
+| Nasledujúca cesta | 571 / 18,637 / 227,563 | 0,0714 / 0,0716 | 0,0569 / 0,1515 / 0,1637 / 0,1777 | 0,0070 / 0,0497 | 41,42 / 61,12 |
+| Celé aktívne okno | 1465 / 47,639 / 419,774 | 0,1724 / 0,1681 | 0,1191 / 0,3724 / 0,5959 / 0,6542 | 0,0212 / 0,0835 | Podrobne podľa úseku vyššie |
+
+Súčty úsekov nezahŕňajú interval medzi ich hranicami; celok ho pri rovnakej
+identite a platných vzorkách zahŕňa. Maximum heading je približne 4,784°.
+Úplný numerický výsledok je v ignorovanom `docs/steering-audit/stage2-185804-analysis.json`.
+
+Vjazd: UID `5337536180190062103`, `dlc_blkw_46`, direction 1/lane 1,
+connector `(2,5,6)`. Výjazd je doložený cez UID `5337536179565107919`
+`dlc_blkw_46` `(3,0,6)`, road `5337536096979258520`, UID
+`5337536179162457633` `dlc_blkw_51` `(4,6,2,5)` a nasledujúci road
+`5337536093846112063` direction 1/lane 1. Toto je navigovaný výjazd; nie
+dôkaz fyzických hraníc. Existujúci report referenčnej geometrie identifikuje
+rovnakú directed vetvu. Analytika vyžaduje presný connector a následný pruh.
+
+Na konci ide o `dlc_blkw_94` (UID `5337536182924768567`, connector `(2)`),
+ktorého dataset description odkazuje na
+`prefab2/fork_temp/blkw/blkw_r2_fork_narrow_tmpl.ppd`. Nie je tým preukázaný
+prejazd mýtnicou. Úsek označený používateľom „po mýto“ bez konkrétnej
+navigačnej/time väzby zostáva NOT MEASURED; nesmie sa vymyslieť podľa názvu.
+
+### Packet cadence, čerstvosť a fyzicky vykonaný volant
+
+| Metrika [ms] | n | Median | p95 | p99 | Max | >500 ms |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Interval nových source packetov predložených executorovi | 1464 | 29,095 | 56,682 | 65,363 | 436,595 | 0 |
+| SDK vek pri potvrdenom backend zápise | 246 | 73,739 | 108,803 | 236,796 | 443,063 | 0 |
+| Výpočet → potvrdený zápis | 246 | 57,271 | 98,119 | 225,312 | 429,733 | 0 |
+| SDK vek pri vzorkovanom čítaní Autopilotom | 94 | 29,771 | 55,499 | 142,097 | 216,259 | 0 |
+
+Timing má 535 riadkov celkom, z nich 94 identity-matched packetov v aktívnom
+okne a iba 37 s potvrdeným Map publish completion. Vzorkované čítanie nie je
+prvé doručenie. Reference fáza má median 7,895 ms, p95 12,743 ms, maximum
+419,953 ms, ale samo toto maximum nepreukazuje stale packet tejto jazdy.
+Nezasahovalo sa znova do časovania ani do timestampov.
+
+246 backend zápisov tvorí 11 spojitých riedkych úsekov (41,7220 s;
+373,5861 m). Rate = delta steer/skutočné dt, acceleration z rozdielu rate
+na stredoch intervalov. Hodnoty sú v normalizovaných jednotkách input,
+input/s a input/s²; nie v uhlových stupňoch volantu.
+
+| Veličina | Počet rozdielov | p95 | p99 | Max |
+| --- | ---: | ---: | ---: | ---: |
+| Absolútny steering step | 235 | 0,027943 | 0,059936 | 0,092132 |
+| Absolútny steering rate [input/s] | 235 | 0,173520 | 0,266234 | 0,350981 |
+| Absolútna steering acceleration [input/s²] | 224 | 0,577990 | 1,083722 | 1,838691 |
+
+Ide výhradne o source-bound fyzické zápisy s časom návratu a rovnakou
+hodnotou Engine/executor. Husté execution riadky samy nedokazujú fyzický
+zápis všetkých 60 Hz výstupov, preto sa ich derivácie nevydávajú za úplné
+fyzické maximá. Dve zmeny znamienka nad |input| 0,02 obsahujú zamýšľaný
+vjazd/výjazd; nie sú dôkazom dvoch nežiaducich oscilácií. Pre prirodzenosť,
+full-rate maximá ani game-input kauzálnu odozvu nie je dodatočne vymyslený PASS.
+
+### Aktivácia, ukončenie a verdikty podľa existujúcich kritérií
+
+Log zaznamenal jedno N 18:59:28,211. Engine probe 19910,0800343 s / frame
+259256296: throttle 0,12, steer 0, brake 0, bez D selectoru. SDK gear 4 vo
+frame 259489620 po 212,646 ms. Handoff 19910,3489547 / frame 259539618,
+throttle 0,1759542, aktívny autopilot; približne 290 ms od N.
+Neskorší čerstvý frame 261489540 ukazuje 4,402 m/s. Manuálny pedál nie je
+uložený v tomto diagnostickom kontrakte, preto úplné vylúčenie súbežného
+ručného plynu a presný okamih prvého pohybu zostávajú NOT MEASURED.
+
+| Vlastnosť / úsek | Verdikt a presný rozsah |
+| --- | --- |
+| Integrita prijatých 964 vzoriek | PASS; nie úspešné dokončenie kolekcie |
+| Dokončenie collectora | FAIL; nesprávna závislosť game session od GPS snapshotu |
+| Jedno N → probe → forward gear → handoff | PASS pre 1 z 1 zaznamenanej požiadavky; nie globálna úspešnosť |
+| Rozjazd bez akéhokoľvek ručného vstupu | NOT MEASURED – userThrottle chýba |
+| Prístup, vjazd, obiehanie, celý navigovaný výjazd, nasledujúca cesta | PASS iba voči indikátoru absolútneho CTE >2,4 m z etapy 1; namerané maximá vyššie. Nie dôkaz fyzickej clearance. |
+| RMS/p95 CTE a heading | Meranie vyššie; samostatný acceptance prah neexistuje, preto bez dodatočne vymysleného PASS |
+| Čerstvosť pri 246 doložených zápisoch | PASS voči 500 ms; 0 prekročení, nie dôkaz každého fyzického ticku |
+| Stale steering udalosti počas tohto aktívneho okna | 0 doložených v príslušnom logu/timing; starší stale incident sa neprenáša |
+| Ukončenie jazdy | 1 strata autority pri odstránení GPS cieľa a zmene revision, následne AP false; nejde o SDK stale ani o koniec diagnostiky |
+| Odobratie pohonu pri neplatnej trase | PASS pre doloženú hranicu: Engine throttle 0, potom steering 0, hazard on; úplná následná zastavovacia dráha NOT MEASURED |
+| Strata LaneMatch pred odstránením cieľa | 0 doložených; úplný count všetkých nevzorkovaných tickov NOT MEASURED |
+| Plná plynulosť a prirodzenosť každého 60 Hz výstupu | NOT MEASURED; riedke merané derivácie vyššie |
+| Pokračovanie po odmietnutí zberu / úsek po mýto | NOT MEASURED |
+| Skutočná zmena session/map/dataset, preskočenie neznámej identity a finish | PASS OFFLINE v regresiách; nie nový herný dôkaz opravy |
+| Fyzická clearance/hranice/náprava návesu | NOT MEASURED; neprideľuje sa nadchádzacia autorita |
+
+Posledný replay execution je 19958,080375 s, iba 33,904 ms po poslednom
+prijatom capture a **79,038 ms pred odmietnutím zberu**. Jeho posledný source
+SDK frame je stále 307237710. Preto replay nemôže doplniť pokračovanie po
+odmietnutí; iba poskytuje hustejšie meranie už prijatej jazdy. Timing po tomto
+čase nie je náhradou chýbajúcich source-bound fyzických zápisov novej jazdy.
+Hlavička replaya `manual_disable` neurčuje prvú príčinu: log preukazuje
+predchádzajúce `DESTINATION_REMOVED` a kontrolované odobratie autority.
+
+### Kontroly, súbory a reprodukcia
+
+Zmenené súbory: `core/navigation/evidence_diagnostics.py`,
+`tests/test_diagnostic_observation_identity.py`, `tests/test_diagnostic_capture_timing.py`,
+`tests/test_real_evidence_diagnostics.py`, `tools/analyze_phase6_stage2.py`,
+`tests/test_phase6_stage2_analysis.py`, tento report. Veľké vstupy a JSON
+výsledky zostávajú ignorované; pôvodné dáta ani log sa nemenili.
+
+Finálne cielené kontroly: **79 passed** (diagnostický capture, identity,
+Engine manuálna vetva, export/inspect/chunky, frame freshness a analytika).
+**compileall core/plugins/UI/SDK/tools/tests: PASS. git diff --check: PASS.**
+Whitespace nového nesledovaného testu tiež skontrolovaný.
+Celá pytest sada tohto pracovného stavu sa nespúšťala; spustí ju používateľ.
+Prvý pokus o cielený pytest blokoval sandboxový WinError 5 pri basetemp,
+preto cielené behy použili nové ignorované auditné adresáre mimo tohto
+obmedzenia. Jeden exportný OS write failure sa pri izolovanom zopakovaní
+s výpisom pôvodnej výnimky nezopakoval; jeho konkrétna príčina sa nevymýšľa.
+
+```powershell
+python tools/analyze_phase6_stage2.py --collection 'C:\Users\PC\AppData\Local\Programs\UltraPilot\evidence-diagnostics\phase6-stage2-20261002-185804' --replay 'C:\Users\PC\AppData\Local\Programs\UltraPilot\route-diagnostics\steering-replay-20261002T170016.638031Z-manual_disable.json' --timing 'C:\Users\PC\AppData\Local\Programs\UltraPilot\route-diagnostics\steering-timing-20261002T170320.436567Z-plugin_stop.json' --build 9aff982a062b496a83b14f8c7cfb7979 --handoff-at 19910.3489547 --fault-at 19958.0769194 --output docs/steering-audit/stage2-185804-analysis.json
+```
+
+Existujúce dáta stačia na meranie objazdu vrátane navigovaného výjazdu,
+nasledujúcej cesty, čerstvosti zachytených povelov a dôvodu ukončenia.
+**Nová jazda sa teraz nežiada.** Neoverená zostáva oprava collectora v hre
+a konkrétne neuložené kanály/úseky vyššie. Prípadné budúce potvrdenie opravy
+má stačiť pasívne na stojacom vozidle: pri známom game/map kontexte zrušiť
+GPS cieľ a skontrolovať pokračovanie raw zberu bez zamieňania session.
+Nie je to pokyn na arm, nasadenie ani autonómnu jazdu.
+
+## Predchádzajúca samostatná jazda 164849 – zachovaný výsledok
+
 ## Verdikt k 2. 10. 2026
 
 **Integrita zberu: PASS. Aktivácia a rozjazd v zaznamenanom pokuse: PASS.
