@@ -40,7 +40,7 @@ CHUNKABLE_DOCUMENT_FIELDS = {
 DIAGNOSTIC_STATES = (
     "DISABLED", "ARMED", "COLLECTING", "SAMPLE_COMPLETE",
     "INSUFFICIENT_EVIDENCE", "READY_FOR_OFFLINE_REVIEW",
-    "REJECTED_STALE", "CANCELLED",
+    "REJECTED_STALE", "REJECTED_IDENTITY_CHANGED", "REJECTED_EXPORTED", "CANCELLED",
 )
 COLLECTION_PURPOSES = (
     "cab_profile", "trailer_profile", "ground_reference", "traffic_coverage",
@@ -494,6 +494,11 @@ class EvidenceDiagnosticCollector:
         self._dropped = 0
         self._last_capture_s = None
         self._last_sdk_frame = None
+        self._last_sdk_observed_at = None
+        self._last_observation_identity = None
+        self._skipped_duplicates = 0
+        self._rejected_samples = 0
+        self._termination = None
         self._last_geometry_binding = None
         self._last_moving_navigation_binding = None
         self._trailer_preflight = _empty_trailer_preflight()
@@ -525,6 +530,10 @@ class EvidenceDiagnosticCollector:
                 "purpose": self._purpose, "sample_count": len(self._rows),
                 "sample_period_s": self._sample_period_s,
                 "dropped_samples": self._dropped,
+                "skipped_duplicate_samples": self._skipped_duplicates,
+                "rejected_samples": self._rejected_samples,
+                "rejection_detail": (self._termination or {}).get("detail"),
+                "termination": dict(self._termination) if self._termination else None,
                 "capacity": self.capacity,
                 "runtime_authorized": False, "confirmed": False,
                 "accepting_samples": state in ("ARMED", "COLLECTING"),
@@ -616,6 +625,9 @@ class EvidenceDiagnosticCollector:
                 self._next_sample_s = 0.0
                 self._dropped = 0
                 self._last_capture_s = self._last_sdk_frame = None
+                self._last_sdk_observed_at = self._last_observation_identity = None
+                self._skipped_duplicates = self._rejected_samples = 0
+                self._termination = None
                 self._last_geometry_binding = None
                 self._last_moving_navigation_binding = None
                 self._trailer_preflight = _empty_trailer_preflight()
@@ -634,17 +646,80 @@ class EvidenceDiagnosticCollector:
         self._last_command_sequence = sequence
         self._publish()
 
+    def _reject_capture(self, capture, detail, *, identity_changed=False):
+        """Keep the first diagnostic failure and the already accepted evidence."""
+        with self._lock:
+            if self._state not in ("ARMED", "COLLECTING"):
+                return
+            self._state = "REJECTED_IDENTITY_CHANGED" if identity_changed else "REJECTED_STALE"
+            self._reason = ("DIAGNOSTIC_SESSION_OR_DATASET_CHANGED" if identity_changed
+                            else "STALE_OR_REGRESSING_DIAGNOSTIC_FRAME")
+            self._rejected_samples += 1
+            self._termination = {"state": self._state, "reason": self._reason,
+                                 "detail": detail,
+                                 "sdk_frame_us": _jsonable(capture.truck.get("sdkFrameTimeUs")),
+                                 "captured_at_s": _jsonable(capture.captured_at_s)}
+            preflight = dict(self._trailer_preflight)
+            reasons = ["TRAILER_SDK_FRAME_STALE_OR_INCOHERENT"]
+            if capture.truck.get("sdkFrameTimeUs") == self._last_sdk_frame:
+                reasons.append("DUPLICATE_SDK_FRAME")
+            preflight.update(stationary_geometry_ready=False,
+                             consecutive_stationary_geometry_frames=0,
+                             moving_command_binding_observed=False,
+                             replay_channels_observed=False,
+                             latest_geometry_reasons=reasons)
+            self._trailer_preflight = preflight
+        self._publish()
+
     def _ingest(self, capture):
+        with self._lock:
+            if self._state not in ("ARMED", "COLLECTING"):
+                return  # A queued capture cannot replace the first termination.
         profile = _jsonable(capture.profile) or {}
         sdk_frame = capture.truck.get("sdkFrameTimeUs")
-        if (not _finite(capture.captured_at_s)
-                or (self._last_capture_s is not None
-                    and capture.captured_at_s <= self._last_capture_s)
-                or type(sdk_frame) is not int or sdk_frame <= 0
-                or (self._last_sdk_frame is not None and sdk_frame < self._last_sdk_frame)):
+        domain_keys = ("source_game_session_id", "source_map_key", "source_dataset_fingerprint")
+        domain = tuple(capture.lane.get(key) for key in domain_keys)
+        if self._last_observation_identity is not None:
+            for key, old, new in zip(domain_keys, self._last_observation_identity, domain):
+                if old is not None and new != old:
+                    self._reject_capture(capture, key, identity_changed=True)
+                    return
+        detail = None
+        if capture.telemetry_valid is not True:
+            detail = "DIAGNOSTIC_TELEMETRY_INVALID"
+        elif not _finite(capture.captured_at_s):
+            detail = "DIAGNOSTIC_CAPTURE_TIME_INVALID"
+        elif self._last_capture_s is not None and capture.captured_at_s < self._last_capture_s:
+            detail = "DIAGNOSTIC_CAPTURE_TIME_REGRESSED"
+        elif type(sdk_frame) is not int or sdk_frame <= 0:
+            detail = "DIAGNOSTIC_SDK_FRAME_INVALID"
+        elif self._last_sdk_frame is not None and sdk_frame < self._last_sdk_frame:
+            detail = "DIAGNOSTIC_SDK_FRAME_REGRESSED"
+        observation = profile.get("observation") or {}
+        observed_at = observation.get("captured_at")
+        # Use only the original matching SDK observation time, never renew it
+        # on repeated reads. This is the existing 250 ms geometry evidence bound,
+        # independent of (and not a change to) the steering freshness limit.
+        if (detail is None and observation.get("sdk_frame_us") == sdk_frame
+                and _finite(observed_at)
+                and not 0 <= capture.captured_at_s - observed_at <= 0.25):
+            detail = "DIAGNOSTIC_SDK_OBSERVATION_EXPIRED_OR_INCOHERENT"
+        duplicate = self._last_sdk_frame is not None and sdk_frame == self._last_sdk_frame
+        if (detail is None and duplicate and self._last_sdk_observed_at is not None
+                and capture.captured_at_s - self._last_sdk_observed_at > 0.25):
+            detail = "DIAGNOSTIC_SDK_OBSERVATION_EXPIRED_OR_INCOHERENT"
+        if detail is not None:
+            self._reject_capture(capture, detail)
+            return
+        if duplicate:
             with self._lock:
-                self._state, self._reason = "REJECTED_STALE", "STALE_OR_REGRESSING_DIAGNOSTIC_FRAME"
+                self._skipped_duplicates += 1
+                self._trailer_preflight = {**self._trailer_preflight,
+                                          "latest_geometry_reasons": ["DUPLICATE_SDK_FRAME"]}
             self._publish()
+            return  # No row, no new timestamp, no extra geometry/command proof.
+        if self._last_capture_s is not None and capture.captured_at_s == self._last_capture_s:
+            self._reject_capture(capture, "DIAGNOSTIC_CAPTURE_TIME_REGRESSED")
             return
         traffic = None
         if isinstance(capture.traffic_capture, TrafficCapture):
@@ -788,6 +863,9 @@ class EvidenceDiagnosticCollector:
             self._trailer_preflight = preflight
             self._state, self._reason = "COLLECTING", "RAW_MEASUREMENTS_NOT_CONFIRMED"
             self._last_capture_s, self._last_sdk_frame = capture.captured_at_s, sdk_frame
+            self._last_sdk_observed_at = (observed_at if _finite(observed_at)
+                and observation.get("sdk_frame_us") == sdk_frame else capture.captured_at_s)
+            self._last_observation_identity = domain
             self._last_geometry_binding = geometry_binding
         self._publish()
 
@@ -979,11 +1057,13 @@ class EvidenceDiagnosticCollector:
         with self._lock:
             rows = list(self._rows)
             collection_id = self._collection_id
-            if self._state not in ("ARMED", "COLLECTING"):
+            rejected = self._state in ("REJECTED_STALE", "REJECTED_IDENTITY_CHANGED")
+            if self._state not in ("ARMED", "COLLECTING") and not rejected:
                 raise ValueError("DIAGNOSTIC_COLLECTION_NOT_ACTIVE")
+            termination = dict(self._termination) if rejected else None
             self._state, self._reason = "SAMPLE_COMPLETE", "RAW_SAMPLE_COMPLETE_NOT_CONFIRMED"
         self._publish()
-        if len(rows) < 30:
+        if not rows or (len(rows) < 30 and not rejected):
             with self._lock:
                 self._state, self._reason = "INSUFFICIENT_EVIDENCE", "FEWER_THAN_30_FRESH_SAMPLES"
             self._publish()
@@ -996,6 +1076,21 @@ class EvidenceDiagnosticCollector:
             stage = Path(tempfile.mkdtemp(prefix=f".{collection_id}.",
                                           suffix=".partial", dir=self.output_root))
             documents = self._candidate_documents(rows)
+            qualification = ("INCOMPLETE_REJECTED_COLLECTION" if rejected
+                             else "READY_FOR_OFFLINE_REVIEW")
+            collection_metadata = {
+                "collection_complete": not rejected, "termination": termination,
+                "skipped_duplicate_samples": self._skipped_duplicates,
+                "rejected_samples": self._rejected_samples,
+            }
+            if rejected:
+                for name, document in documents.items():
+                    payload = {key: value for key, value in document.items()
+                               if key != "integrity_sha256"}
+                    payload.update(collection_metadata, collection_qualification=qualification)
+                    if name in ("automatic-observations.json", "tracking-samples-candidate.json"):
+                        payload["qualification"] = qualification
+                    documents[name] = _sealed(payload)
             entries = []
             chunked = False
             for name, document in documents.items():
@@ -1006,7 +1101,7 @@ class EvidenceDiagnosticCollector:
                 "collection_id": collection_id, "purpose": self._purpose,
                 "created_at_utc": _utc_now(), "sample_count": len(rows),
                 "dropped_samples": self._dropped, "files": entries,
-                "qualification": "READY_FOR_OFFLINE_REVIEW",
+                "qualification": qualification, **collection_metadata,
                 "trailer_axle_replay_channels_observed": bool(
                     self._trailer_preflight["replay_channels_observed"]),
                 "trailer_axle_replay_candidate_complete": False,
@@ -1022,7 +1117,8 @@ class EvidenceDiagnosticCollector:
             self._publish()
             return
         with self._lock:
-            self._state, self._reason = "READY_FOR_OFFLINE_REVIEW", "RAW_FILES_REQUIRE_INDEPENDENT_REVIEW"
+            self._state, self._reason = (("REJECTED_EXPORTED", termination["reason"]) if rejected
+                else ("READY_FOR_OFFLINE_REVIEW", "RAW_FILES_REQUIRE_INDEPENDENT_REVIEW"))
         self._publish()
 
     def _poll_command(self):
@@ -1085,7 +1181,7 @@ def inspect_collection(path):
         values[name] = value
     if manifest["schema_version"] == 2:
         _inspect_chunked_collection(root, manifest, entries, values)
-    return {"integrity_valid": True, "file_count": len(manifest["files"]),
+    result = {"integrity_valid": True, "file_count": len(manifest["files"]),
             "sample_count": manifest["sample_count"], "confirmed": False,
             "runtime_authorized": False,
             "trailer_axle_replay_channels_observed": bool(
@@ -1093,6 +1189,21 @@ def inspect_collection(path):
             "trailer_axle_replay_candidate_complete": bool(
                 manifest.get("trailer_axle_replay_candidate_complete", False)),
             "qualification": "READY_FOR_OFFLINE_REVIEW"}
+    if manifest.get("collection_complete") is False:
+        termination = manifest.get("termination")
+        if (manifest.get("qualification") != "INCOMPLETE_REJECTED_COLLECTION"
+                or not isinstance(termination, dict)
+                or termination.get("state") not in ("REJECTED_STALE", "REJECTED_IDENTITY_CHANGED")
+                or not isinstance(termination.get("reason"), str)
+                or not termination["reason"]):
+            raise ValueError("INVALID_DIAGNOSTIC_TERMINATION")
+        result.update(collection_complete=False, termination=termination,
+                      qualification="INCOMPLETE_REJECTED_COLLECTION",
+                      skipped_duplicate_samples=manifest.get("skipped_duplicate_samples", 0),
+                      rejected_samples=manifest.get("rejected_samples", 0))
+    elif manifest.get("qualification") == "INCOMPLETE_REJECTED_COLLECTION":
+        raise ValueError("INVALID_DIAGNOSTIC_TERMINATION")
+    return result
 
 
 def _inspect_chunked_collection(root, manifest, entries, values):
