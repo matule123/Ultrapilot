@@ -254,6 +254,7 @@ class UltraPilotEngine:
         self._latest_telemetry_data = {}
         self._latest_telemetry_timestamp = 0.0
         self._latest_telemetry_success = False
+        self._latest_diagnostic_sdk_read = {}
         self._telemetry_sequence = 0
         self._stopped = False
         # Momentary SDK controls must be released on the frame after a press.
@@ -386,11 +387,18 @@ class UltraPilotEngine:
                 boundary["status"] = "SCS_READ_FAILED"
         self._maneuver_diagnostic_sequence = int(getattr(
             self, "_maneuver_diagnostic_sequence", 0)) + 1
+        # Read-only transport evidence for diagnostics. The control producer may
+        # correctly invalidate a frozen frame while ETS2 is explicitly paused.
+        # Do not revive that control sample or publish it as fresh geometry.
+        with self._telemetry_lock:
+            diagnostic_read = dict(getattr(self, "_latest_diagnostic_sdk_read", {}))
+            diagnostic_read["control_sample_valid"] = self._latest_telemetry_success
         try:
             diagnostic.offer(capture_diagnostic_application(
                 self.shared_state, steering, time.monotonic(),
                 self._maneuver_diagnostic_sequence,
                 steering_boundary=boundary,
+                sdk_read_observation=diagnostic_read, clock=time.monotonic,
                 application_sdk_frame_us=application_sdk_frame_us,
                 steering_write_returned_at_s=steering_write_returned_at_s))
         except (AttributeError, TypeError, ValueError):
@@ -530,6 +538,22 @@ class UltraPilotEngine:
             self._latest_telemetry_timestamp = float(timestamp)
             self._telemetry_sequence += 1
 
+    def _store_diagnostic_sdk_read(self, data, timestamp):
+        """Transport metadata only; never refresh the accepted control sample."""
+        observation = ((data.get("vehicle_profile") or {}).get("observation") or {})
+        frame = observation.get("sdk_frame_us")
+        value = {
+            "read_at_s": timestamp, "sdk_frame_us": frame,
+            "observation_captured_at_s": observation.get("captured_at"),
+            "active": observation.get("active"), "paused": observation.get("paused"),
+            "stable_read": observation.get("stable_read"),
+            "coherent": bool(observation.get("source") == "scs_shared_memory_revision_12"
+                and not observation.get("failure_reason")
+                and frame == (data.get("truck") or {}).get("sdkFrameTimeUs")),
+        }
+        with self._telemetry_lock:
+            self._latest_diagnostic_sdk_read = value
+
     def _telemetry_snapshot(self, now=None):
         now = time.monotonic() if now is None else float(now)
         with self._telemetry_lock:
@@ -562,6 +586,10 @@ class UltraPilotEngine:
                 logging.error("Telemetry worker error (recovered): %s", error)
             timestamp = time.monotonic()
             cadence.tick(timestamp)
+            # Repeated paused frames are still current transport reads, but
+            # cannot renew the control pose or count as diagnostic geometry.
+            self._store_diagnostic_sdk_read(
+                dict(getattr(self.telemetry, "data", {}) or {}) if success else {}, timestamp)
             if success:
                 data = dict(getattr(self.telemetry, "data", {}) or {})
                 truck = data.get("truck", {}) or {}

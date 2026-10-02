@@ -10,7 +10,7 @@ capture without waiting.
 from __future__ import annotations
 
 from collections import Counter, deque
-from dataclasses import asdict, dataclass, is_dataclass
+from dataclasses import asdict, dataclass, is_dataclass, replace
 from datetime import datetime, timezone
 import hashlib
 import json
@@ -257,18 +257,21 @@ class DiagnosticCapture:
     steering_boundary: dict | None = None
     application_sdk_frame_us: int | None = None
     steering_write_returned_at_s: float | None = None
+    capture_started_at_s: float | None = None
+    sdk_read_observation: dict | None = None
 
 
 def capture_diagnostic_application(state, steering, now, sequence, *,
                                    steering_boundary=None,
                                    application_sdk_frame_us=None,
-                                   steering_write_returned_at_s=None):
+                                   steering_write_returned_at_s=None,
+                                   sdk_read_observation=None, clock=None):
     """Take a bounded snapshot after the physical backend call returned."""
     telemetry = state.get("telemetry", {}) or {}
     truck = telemetry.get("truck", {}) or {}
     lane = state.get("lane_trajectory", {}) or {}
     applied = state.get("maneuver_diagnostic_applied_target", {}) or {}
-    return DiagnosticCapture(
+    capture = DiagnosticCapture(
         int(sequence), float(now), (float(steering) if _finite(steering) else None),
         _finite(steering),
         bool(state.get("autopilot_active", False)),
@@ -295,7 +298,13 @@ def capture_diagnostic_application(state, steering, now, sequence, *,
         _pick(steering_boundary, ("backend_mode", "status", "value", "read_started_s",
                                   "read_completed_s")),
         application_sdk_frame_us, steering_write_returned_at_s,
+        float(now), _pick(sdk_read_observation, (
+            "read_at_s", "sdk_frame_us", "observation_captured_at_s", "active",
+            "paused", "stable_read", "coherent", "control_sample_valid")),
     )
+    # IPC may deliver a newer observation after the caller sampled ``now``.
+    # Timestamp the actual completion, while retaining the original SDK time.
+    return replace(capture, captured_at_s=float(clock())) if clock else capture
 
 
 def _manual_value(name, allowed):
@@ -499,6 +508,7 @@ class EvidenceDiagnosticCollector:
         self._skipped_duplicates = 0
         self._rejected_samples = 0
         self._termination = None
+        self._skipped_paused = 0
         self._last_geometry_binding = None
         self._last_moving_navigation_binding = None
         self._trailer_preflight = _empty_trailer_preflight()
@@ -531,6 +541,7 @@ class EvidenceDiagnosticCollector:
                 "sample_period_s": self._sample_period_s,
                 "dropped_samples": self._dropped,
                 "skipped_duplicate_samples": self._skipped_duplicates,
+                "skipped_paused_samples": self._skipped_paused,
                 "rejected_samples": self._rejected_samples,
                 "rejection_detail": (self._termination or {}).get("detail"),
                 "termination": dict(self._termination) if self._termination else None,
@@ -628,6 +639,7 @@ class EvidenceDiagnosticCollector:
                 self._last_sdk_observed_at = self._last_observation_identity = None
                 self._skipped_duplicates = self._rejected_samples = 0
                 self._termination = None
+                self._skipped_paused = 0
                 self._last_geometry_binding = None
                 self._last_moving_navigation_binding = None
                 self._trailer_preflight = _empty_trailer_preflight()
@@ -655,10 +667,22 @@ class EvidenceDiagnosticCollector:
             self._reason = ("DIAGNOSTIC_SESSION_OR_DATASET_CHANGED" if identity_changed
                             else "STALE_OR_REGRESSING_DIAGNOSTIC_FRAME")
             self._rejected_samples += 1
+            profile = _jsonable(capture.profile) or {}
+            observation = profile.get("observation") or {}
+            observed_at = observation.get("captured_at")
             self._termination = {"state": self._state, "reason": self._reason,
                                  "detail": detail,
                                  "sdk_frame_us": _jsonable(capture.truck.get("sdkFrameTimeUs")),
-                                 "captured_at_s": _jsonable(capture.captured_at_s)}
+                                 "captured_at_s": _jsonable(capture.captured_at_s),
+                                 "capture_started_at_s": _jsonable(capture.capture_started_at_s),
+                                 "observation_sdk_frame_us": _jsonable(observation.get("sdk_frame_us")),
+                                 "observation_captured_at_s": _jsonable(observed_at),
+                                 "observation_age_s": (capture.captured_at_s - observed_at
+                                     if _finite(capture.captured_at_s) and _finite(observed_at) else None),
+                                 "observation_paused": observation.get("paused"),
+                                 "last_accepted_sdk_frame_us": self._last_sdk_frame,
+                                 "last_sdk_observed_at_s": self._last_sdk_observed_at,
+                                 "sdk_read_observation": capture.sdk_read_observation}
             preflight = dict(self._trailer_preflight)
             reasons = ["TRAILER_SDK_FRAME_STALE_OR_INCOHERENT"]
             if capture.truck.get("sdkFrameTimeUs") == self._last_sdk_frame:
@@ -685,29 +709,54 @@ class EvidenceDiagnosticCollector:
                     self._reject_capture(capture, key, identity_changed=True)
                     return
         detail = None
-        if capture.telemetry_valid is not True:
-            detail = "DIAGNOSTIC_TELEMETRY_INVALID"
-        elif not _finite(capture.captured_at_s):
+        if not _finite(capture.captured_at_s):
             detail = "DIAGNOSTIC_CAPTURE_TIME_INVALID"
+        elif (_finite(capture.capture_started_at_s)
+              and capture.captured_at_s < capture.capture_started_at_s):
+            detail = "DIAGNOSTIC_CAPTURE_TIME_REGRESSED"
         elif self._last_capture_s is not None and capture.captured_at_s < self._last_capture_s:
             detail = "DIAGNOSTIC_CAPTURE_TIME_REGRESSED"
-        elif type(sdk_frame) is not int or sdk_frame <= 0:
-            detail = "DIAGNOSTIC_SDK_FRAME_INVALID"
-        elif self._last_sdk_frame is not None and sdk_frame < self._last_sdk_frame:
+        elif (type(sdk_frame) is int and sdk_frame > 0
+              and self._last_sdk_frame is not None and sdk_frame < self._last_sdk_frame):
             detail = "DIAGNOSTIC_SDK_FRAME_REGRESSED"
         observation = profile.get("observation") or {}
         observed_at = observation.get("captured_at")
+        transport = capture.sdk_read_observation or {}
+        paused_read = bool(
+            transport.get("coherent") is True and transport.get("active") is True
+            and transport.get("paused") is True and transport.get("stable_read") is True
+            and type(transport.get("sdk_frame_us")) is int and transport["sdk_frame_us"] > 0
+            and _finite(transport.get("read_at_s"))
+            and 0 <= capture.captured_at_s - transport["read_at_s"] <= 0.25
+            and _finite(transport.get("observation_captured_at_s"))
+            and 0 <= capture.captured_at_s - transport["observation_captured_at_s"] <= 0.25)
+        if (detail is None and paused_read and self._last_sdk_frame is not None
+                and transport["sdk_frame_us"] < self._last_sdk_frame):
+            detail = "DIAGNOSTIC_SDK_FRAME_REGRESSED"
+        if detail is None and paused_read:
+            with self._lock:
+                self._skipped_paused += 1
+                self._reason = "WAITING_FOR_UNPAUSED_SDK_FRAME"
+            self._publish()
+            return  # Confirmed live paused transport is not a new pose/frame proof.
+        if detail is None and capture.telemetry_valid is not True:
+            detail = "DIAGNOSTIC_TELEMETRY_INVALID"
+        if detail is None and (type(sdk_frame) is not int or sdk_frame <= 0):
+            detail = "DIAGNOSTIC_SDK_FRAME_INVALID"
         # Use only the original matching SDK observation time, never renew it
         # on repeated reads. This is the existing 250 ms geometry evidence bound,
         # independent of (and not a change to) the steering freshness limit.
         if (detail is None and observation.get("sdk_frame_us") == sdk_frame
                 and _finite(observed_at)
-                and not 0 <= capture.captured_at_s - observed_at <= 0.25):
-            detail = "DIAGNOSTIC_SDK_OBSERVATION_EXPIRED_OR_INCOHERENT"
+                and capture.captured_at_s < observed_at):
+            detail = "DIAGNOSTIC_SDK_OBSERVATION_IN_FUTURE"
+        elif (detail is None and observation.get("sdk_frame_us") == sdk_frame
+                and _finite(observed_at) and capture.captured_at_s - observed_at > 0.25):
+            detail = "DIAGNOSTIC_SDK_OBSERVATION_EXPIRED"
         duplicate = self._last_sdk_frame is not None and sdk_frame == self._last_sdk_frame
         if (detail is None and duplicate and self._last_sdk_observed_at is not None
                 and capture.captured_at_s - self._last_sdk_observed_at > 0.25):
-            detail = "DIAGNOSTIC_SDK_OBSERVATION_EXPIRED_OR_INCOHERENT"
+            detail = "DIAGNOSTIC_REPEATED_SDK_FRAME_EXPIRED"
         if detail is not None:
             self._reject_capture(capture, detail)
             return
@@ -747,6 +796,8 @@ class EvidenceDiagnosticCollector:
             "qualification": "UNQUALIFIED_RAW_MEASUREMENT",
             "runtime_authorized": False, "confirmed": False,
             "sequence": capture.sequence, "captured_at_s": capture.captured_at_s,
+            "capture_started_at_s": capture.capture_started_at_s,
+            "sdk_read_observation": capture.sdk_read_observation,
             "sdk_frame_us": sdk_frame, "autopilot_active": capture.autopilot_active,
             "backend_sent": capture.backend_sent,
             "telemetry_valid": capture.telemetry_valid, "truck": capture.truck,
@@ -1081,6 +1132,7 @@ class EvidenceDiagnosticCollector:
             collection_metadata = {
                 "collection_complete": not rejected, "termination": termination,
                 "skipped_duplicate_samples": self._skipped_duplicates,
+                "skipped_paused_samples": self._skipped_paused,
                 "rejected_samples": self._rejected_samples,
             }
             if rejected:

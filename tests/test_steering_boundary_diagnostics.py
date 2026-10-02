@@ -5,6 +5,7 @@ from dataclasses import replace
 import io
 import math
 import struct
+import threading
 import time
 
 from core.engine import UltraPilotEngine
@@ -62,6 +63,9 @@ def test_engine_offers_bounded_passive_capture_with_distinct_frames():
             self.samples.append(sample)
 
     engine = UltraPilotEngine.__new__(UltraPilotEngine)
+    engine._telemetry_lock = threading.Lock()
+    engine._latest_telemetry_success = True
+    engine._latest_diagnostic_sdk_read = {}
     engine.shared_state = State(telemetry={"truck": {
         "sdkFrameTimeUs": 1020, "userSteer": 0.04,
         "gameSteer": -0.058, "roadWheelAnglesRad": [0.04]}})
