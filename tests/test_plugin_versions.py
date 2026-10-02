@@ -7,6 +7,22 @@ import pytest
 
 from sdk.base_plugin import BasePlugin
 from core.plugin_manager import PluginManager, plugin_version
+from core.plugin_metadata import installed_plugin_version
+
+
+def test_installed_version_reader_does_not_execute_plugin(tmp_path):
+    path = tmp_path / 'main.py'
+    path.write_text('raise RuntimeError("must not run")\nclass Plugin(BasePlugin):\n    VERSION = "2.1.3"\n', encoding='utf-8')
+    assert installed_plugin_version(path) == '2.1.3'
+
+
+@pytest.mark.parametrize('source', ['broken syntax !', 'class Plugin(BasePlugin):\n    VERSION = "bad"',
+                                  'class Plugin(BasePlugin):\n    pass'])
+def test_unreadable_or_invalid_installed_version_is_unknown(tmp_path, source):
+    path = tmp_path / 'main.py'
+    path.write_text(source, encoding='utf-8')
+    assert installed_plugin_version(path) is None
+    assert installed_plugin_version(tmp_path / 'missing.py') is None
 
 
 def test_all_builtin_plugins_declare_valid_independent_versions():

@@ -482,6 +482,10 @@ class PluginsPage(Page):
                      if os.path.isdir(os.path.join(plugin_dir, f))
                      and os.path.exists(os.path.join(plugin_dir, f, "main.py"))]
         query = self.search.text().strip().lower()
+        from core.plugin_metadata import installed_plugin_version
+        self._installed_versions = {
+            name: installed_plugin_version(os.path.join(plugin_dir, name, "main.py"))
+            for name in names}
         if query:
             names = [name for name in names if query in name.lower()
                      or query in self._DESC.get(name, "").lower()]
@@ -580,6 +584,12 @@ class PluginsPage(Page):
         title.setStyleSheet("font-size:14px;font-weight:750;color:"
                             + self._pal['text'] + ";")
         head.addWidget(title)
+        version_value = self._installed_versions.get(name)
+        version = QLabel(f"v{version_value}" if version_value else "Verzia neznáma")
+        version.setObjectName("PluginVersion")
+        version.setToolTip("Verzia nainštalovaného pluginu; história je v PLUGIN_CHANGELOG.md.")
+        version.setStyleSheet("font-size:11px;color:" + self._pal['muted'] + ";")
+        head.addWidget(version)
         head.addStretch()
         author = QLabel("matu_le33")
         author.setObjectName("PluginAuthor")

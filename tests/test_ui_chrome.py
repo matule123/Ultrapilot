@@ -567,6 +567,14 @@ class UiChromeTests(unittest.TestCase):
         self.assertFalse(state.get("plugin_enabled.acc"))
         plugins.close()
 
+    def test_plugin_versions_are_visible_for_enabled_and_disabled_plugins(self):
+        page = PluginsPage(State({"ui_theme": "light", "plugin_enabled.acc": False}))
+        versions = page.findChildren(QLabel, "PluginVersion")
+        self.assertEqual(len(versions), 12)
+        self.assertTrue(all(label.text().startswith("v") for label in versions))
+        self.assertEqual(page._installed_versions["acc"], "1.0.0")
+        page.close()
+
     def test_plugin_toggle_does_not_change_live_state_when_save_fails(self):
         state = State({"ui_theme": "light", "plugin_enabled.acc": True})
         plugins = PluginsPage(state)
