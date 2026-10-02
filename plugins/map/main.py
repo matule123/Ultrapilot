@@ -68,7 +68,7 @@ class Plugin(BasePlugin):
     """
 
     NAME = "map"
-    VERSION = "1.0.0"
+    VERSION = "1.0.1"
 
     def on_start(self):
         logging.info("Map (navigation) plugin started.")
@@ -2303,7 +2303,7 @@ class Plugin(BasePlugin):
             "steering_observation_failure": reason,
         })
 
-    def _refresh_steering_observation(self, snapshot, prepared, delta_time):
+    def _refresh_steering_observation(self, snapshot, prepared, delta_time, *, _retried=False):
         """Re-read one physical frame after preparation; never renew an old pose.
 
         Route geometry is immutable. A new observation is localized only on
@@ -2394,6 +2394,18 @@ class Plugin(BasePlugin):
         if reason:
             self._reject_steering_observation(reason)
             return None
+        if (framed and frame != self._last_steering_sdk_frame_us
+                and time.monotonic() - timestamp > STEERING_DYNAMICS_MAX_DT_S):
+            # Freshness checked before locate() is not freshness after it.
+            # A long lookup/GC pause can consume most of the 500 ms lease.
+            # Retry once with a genuinely newer SDK pose and its own LaneMatch;
+            # never relabel the previous pose, or spin while telemetry is lost.
+            if _retried:
+                self._reject_steering_observation(
+                    "steering localization exceeded the fresh observation budget")
+                return None
+            return self._refresh_steering_observation(
+                snapshot, vehicle_observation, delta_time, _retried=True)
         return self._accept_steering_frame(
             vehicle_observation, pos, heading, speed, delta_time)
 
