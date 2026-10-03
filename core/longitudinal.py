@@ -162,16 +162,19 @@ def finalize(state, truck, throttle, brake, decision, binding):
 
 def engine_decision(state, truck, now=None, *, diagnostic=None):
     """Final fail-closed pedal boundary, including newer emergency evidence."""
-    now = time.monotonic() if now is None else now
-    vehicle_reason = vehicle_control_observation_rejection(state, truck, now)
-    if vehicle_reason:
-        return None, vehicle_reason
+    # A producer can publish during any RPC. A clock captured before the read
+    # must not label that complete, genuinely newer packet as future-dated.
+    # Explicit `now` remains an injected decision clock for isolated clients.
+    decision_time = lambda: time.monotonic() if now is None else now
     binding = context(state)
     value = state.get(COMMAND_KEY)
     if diagnostic is not None:
         from core.navigation.longitudinal_diagnostics import bounded_input
         diagnostic['requested'] = bounded_input(value)
-    reason = rejection(value, binding, now)
+    vehicle_reason = vehicle_control_observation_rejection(state, truck, decision_time())
+    if vehicle_reason:
+        return None, vehicle_reason
+    reason = rejection(value, binding, decision_time())
     if reason:
         return None, reason
     if (value.get("source") != "autopilot"
@@ -261,6 +264,23 @@ def engine_decision(state, truck, now=None, *, diagnostic=None):
     ceiling, _ = speed_ceiling(state, binding=binding, diagnostic=diagnostic)
     if ceiling is not None and float(truck.get("speed", 0.)) > ceiling and result["throttle"] > 0:
         result.update(throttle=0., source="speed_constraint", reason="speed ceiling coast")
+    # Recheck the SAME consumed snapshots after all IPC work. This also rejects
+    # a decision that expires in transit instead of returning it as actionable.
+    checked_at = decision_time()
+    reason = vehicle_control_observation_rejection(state, truck, checked_at)
+    if not reason:
+        reason = rejection(value, binding, checked_at)
+    if not reason:
+        for source, consumed in (("traffic", traffic), ("acc", current_acc), ("policy", policy)):
+            if consumed is not None:
+                failure = rejection(consumed, binding, checked_at)
+                if failure:
+                    reason = source + ": " + failure
+                    break
+    if not reason and binding != context(state):
+        reason = "longitudinal identity changed during arbitration"
+    if reason:
+        return None, reason
     if diagnostic is not None:
         diagnostic['selected'] = dict(result)
     return result, ""

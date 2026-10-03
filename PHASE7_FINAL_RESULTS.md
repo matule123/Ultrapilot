@@ -1,5 +1,10 @@
 # Phase 7 — Final longitudinal verification
 
+**2026-10-03 activation follow-up:** [Activation regression fixes](PHASE7_ACTIVATION_REGRESSIONS_20261003.md)
+documents reproduced IPC-clock and idle-cleanup races, their core-only fixes,
+targeted verification and the unavailable historical policy/token evidence.
+The new fixes are verified offline and have not been deployed or game-confirmed.
+
 **2026-10-03 source-only follow-up:** the collector gap below describes the
 original Stage 7.4 build. It is addressed offline by
 [Combined longitudinal evidence](PHASE7_LONGITUDINAL_DIAGNOSTICS.md), based on

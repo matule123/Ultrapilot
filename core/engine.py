@@ -246,7 +246,7 @@ class UltraPilotEngine:
         # missing observation.
         self._realtime_stop = threading.Event()
         self._telemetry_lock = threading.Lock()
-        self._controller_io_lock = threading.Lock()
+        self._controller_io_lock = threading.RLock()
         self._shutdown_lock = threading.Lock()
         self._telemetry_thread = None
         self._control_thread = None
@@ -1041,6 +1041,15 @@ class UltraPilotEngine:
                 return False
 
     def _check_hotkey(self):
+        # Seeding a new activation and publishing it must be indivisible with
+        # the idle output tick, which otherwise clears the newly seeded history.
+        lock = getattr(self, "_controller_io_lock", None)
+        if lock is None:
+            return self._check_hotkey_unlocked()
+        with lock:
+            return self._check_hotkey_unlocked()
+
+    def _check_hotkey_unlocked(self):
         """Toggle on an N-key rising edge, but only inside the game window."""
         if not self._has_win32:
             return
@@ -1135,6 +1144,8 @@ class UltraPilotEngine:
                     "maneuver_approach_packet": {}}
                    if not new_state else {}),
             })
+            self._first_pedal_request = request_id if new_state else None
+            self._first_pedal_started_at = time.monotonic() if new_state else None
             logging.info("Hotkey N -> %s", msg)
             if not new_state and not pending_started:
                 self._cancel_auto_drive_engagement("autopilot vypnutý")
@@ -1339,6 +1350,8 @@ class UltraPilotEngine:
         return ""
 
     def _clear_simple_auto_forward_history(self):
+        self._first_pedal_request = None
+        self._first_pedal_started_at = None
         if getattr(self, "_simple_auto_history_cleared", False):
             return
         self._simple_auto_forward_history = None
@@ -1731,6 +1744,13 @@ class UltraPilotEngine:
         return True
 
     def _process_autopilot_command(self):
+        lock = getattr(self, "_controller_io_lock", None)
+        if lock is None:
+            return self._process_autopilot_command_unlocked()
+        with lock:
+            return self._process_autopilot_command_unlocked()
+
+    def _process_autopilot_command_unlocked(self):
         """Apply and acknowledge the UI's explicit master-switch command."""
         command = self.shared_state.get("autopilot_command")
         if not isinstance(command, dict):
@@ -1773,6 +1793,8 @@ class UltraPilotEngine:
                 "maneuver_approach_packet": {}}
                if not desired else {}),
         })
+        self._first_pedal_request = seq if desired else None
+        self._first_pedal_started_at = time.monotonic() if desired else None
         if not desired and not pending_started:
             self._cancel_auto_drive_engagement("autopilot vypnutý")
             self._release_controller()
@@ -1922,6 +1944,50 @@ class UltraPilotEngine:
             return self._flush_controls_diagnostic()
         with lock:
             return self._flush_controls_diagnostic()
+
+    def _wait_for_first_pedal_command(self, truck, reason):
+        """Bounded zero-output handover, never reuse a prior activation command.
+
+        Only the absence/old activation of the first command can wait. Actual
+        stale observations, navigation faults and emergency demands still stop.
+        The original deadline cannot be renewed by an output tick.
+        """
+        request = getattr(self, "_first_pedal_request", None)
+        started = getattr(self, "_first_pedal_started_at", None)
+        if (request is None or started is None
+                or request != self.shared_state.get("autopilot_engagement_request")
+                or request != self.shared_state.get("autopilot_failure_epoch")
+                or reason not in ("missing or unsupported longitudinal packet",
+                                  "longitudinal identity or activation changed")):
+            return False
+        now = time.monotonic()
+        if not 0.0 <= now - started <= 0.5:
+            return False
+        if vehicle_control_observation_rejection(self.shared_state, truck):
+            return False
+        if truck.get("gear", 0) <= 0 or truck.get("speed", -1.) < -0.10:
+            return False
+        if (getattr(self.controller, "mode", None) == "SCS_SDK"
+                and not getattr(getattr(self.controller, "scs", None), "connected", False)):
+            return False
+        if self.shared_state.get("system_state") in ("EMERGENCY", "PAY_TOLL"):
+            return False
+        from core.longitudinal import read
+        for source, fields in (("traffic", ("traffic_brake", "light_brake")),
+                               ("policy", ("brake",)), ("acc", ("brake",))):
+            current, _ = read(self.shared_state, source)
+            if current and any(current.get(field, 0.) > 0 for field in fields):
+                return False
+        snapshot = self.shared_state.get("lane_trajectory", {}) or {}
+        if self._gps_output_packet_rejection_reason(time.monotonic(), snapshot):
+            return False
+        if self.shared_state.get("autopilot_control_state") == "controlled_stop":
+            return False
+        if not 0.0 <= time.monotonic() - started <= 0.5:
+            return False
+        self.controller.release_all()
+        self._last_output_steering = self._last_output_brake = 0.0
+        return True
 
     def _flush_controls_diagnostic(self):
         """Observe the existing writer, including early launch/fail-safe returns."""
@@ -2226,8 +2292,12 @@ class UltraPilotEngine:
             longitudinal, pedal_reason = engine_decision(self.shared_state, truck_telemetry,
                 diagnostic=getattr(self, '_longitudinal_trace', None))
             if pedal_reason:
+                if self._wait_for_first_pedal_command(truck_telemetry, pedal_reason):
+                    return
                 self._automatic_safety_stop(pedal_reason)
                 return
+            self._first_pedal_request = None
+            self._first_pedal_started_at = None
             throttle, brake = longitudinal["throttle"], longitudinal["brake"]
         else:
             # Pre-schema offline clients still pass the same exclusive/range
