@@ -70,5 +70,27 @@ plynu po strate cieľa. Dvojité čítanie legacy bufferu nepotvrdzuje čerstvos
 producenta; chýba jeho timestamp/generácia, LaneId a úplnosť pokrytia.
 Spoľahlivé živé ACC preto nie je potvrdené. Prázdny buffer po sledovaní vyžaduje
 odovzdanie vodičovi; nevzniklo automatické stop-and-go ani nový dopravný senzor.
-Fáza 7.4 má spoločne overiť aktuálny pozdĺžny tok a výslovne oddeliť tieto
-obmedzenia od meraného držania rýchlosti a bezpečnostných zásahov.
+Spoločné offline overenie Fázy 7.4 je v záverečnom reporte nižšie a výslovne
+oddeľuje tieto obmedzenia od držania rýchlosti a bezpečnostných zásahov.
+
+## Fáza 7.4 – spoločné offline overenie uzavreté
+
+[PHASE7_FINAL_RESULTS.md](PHASE7_FINAL_RESULTS.md) viaže výsledky 7.1–7.3
+na commity a uzatvára spoločné offline kontrakty. Nové testy overili celý tok
+producentov cez arbitráž až po fyzické volania Engine, oba automatické režimy,
+poradie aktualizácií, okamžitú núdzovú brzdu a povel zo zrušenej aktivácie.
+Riadenie ani runtime sa v 7.4 nemenili. Komfort v ETS2 a spoľahlivé živé ACC
+zostávajú neoverené; simulácia ani prítomné súbory inštalácie to nepotvrdzujú.
+
+Existujúci combined export má platnú integritu, ale neukladá cieľové rýchlosti,
+paired longitudinal_command, skutočné longitudinal_applied s časom/identitou,
+ACC kandidáta a prvý dôvod zásahu. Zber pre komfort preto zatiaľ nie je
+pripravený. Najmenšia ďalšia úloha je explicitné doplnenie iba týchto malých
+immutable diagnostických kanálov a izolované overenie väzby/exportu; nevzniklo
+v tejto úlohe a nová jazda sa nežiada. Spätná SDK odozva sa musí párovať až
+s následnými frame, nie automaticky s riadkom zápisu.
+
+Samostatný blokátor ACC zostáva timestamp/generácia traffic producenta,
+nepreukázaná príslušnosť k pruhu/pokrytie a neznámy rozdiel referenčných bodov
+od nárazníkov. Diagnostické doplnenie tieto údaje nevytvorí. Nový senzor, DLL,
+stop-and-go ani nadchádzanie nie sú súčasťou uzavretia Fázy 7.
