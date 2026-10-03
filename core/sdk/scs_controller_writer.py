@@ -153,16 +153,32 @@ class SCSControlsWriter:
             self._connect()
 
     def _write_float(self, name: str, value: float):
+        diagnostic = (getattr(self, '_pedal_diagnostic_enabled', False)
+                      and name in ('aforward', 'abackward'))
+        if diagnostic:
+            started = time.monotonic()
+            self._pedal_write_evidence = dict(status='MAPPING_WRITE_NOT_RETURNED',
+                value=None, started_at_s=started, returned_at_s=None, error=None)
         if not self.connected:
             self._maybe_reconnect()
+            if diagnostic:
+                self._pedal_write_evidence.update(status='MAPPING_NOT_CONNECTED',
+                    returned_at_s=time.monotonic())
             return
         try:
             self._buf.seek(self._offsets[name])
             self._buf.write(struct.pack("f", float(value)))
             self._buf.flush()
+            if diagnostic:
+                self._pedal_write_evidence.update(status='MAPPING_WRITE_RETURNED',
+                    value=struct.unpack('f', struct.pack('f', float(value)))[0],
+                    returned_at_s=time.monotonic())
         except Exception as e:
             logging.error("SCS SDK write %s failed: %s", name, e)
             self.connected = False
+            if diagnostic:
+                self._pedal_write_evidence.update(status='MAPPING_WRITE_FAILED',
+                    returned_at_s=time.monotonic(), error=type(e).__name__)
 
     def _write_bool(self, name: str, value: bool):
         if not self.connected:

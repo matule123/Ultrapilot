@@ -396,13 +396,17 @@ class UltraPilotEngine:
             diagnostic_read = dict(getattr(self, "_latest_diagnostic_sdk_read", {}))
             diagnostic_read["control_sample_valid"] = self._latest_telemetry_success
         try:
+            journal = getattr(self.controller, '_pedal_journal', None)
+            pedals = journal.drain() if journal is not None and journal.enabled else None
+            self._longitudinal_offer_done = True
             diagnostic.offer(capture_diagnostic_application(
                 self.shared_state, steering, time.monotonic(),
                 self._maneuver_diagnostic_sequence,
                 steering_boundary=boundary,
                 sdk_read_observation=diagnostic_read, clock=time.monotonic,
                 application_sdk_frame_us=application_sdk_frame_us,
-                steering_write_returned_at_s=steering_write_returned_at_s))
+                steering_write_returned_at_s=steering_write_returned_at_s,
+                longitudinal=pedals))
         except (AttributeError, TypeError, ValueError):
             self.shared_state.set(
                 "maneuver_evidence_diagnostic_failure",
@@ -1617,6 +1621,7 @@ class UltraPilotEngine:
                 self._cancel_auto_drive_engagement_unlocked(
                     reason or "autorita alebo lehota odovzdania sa zmenila")
                 return True
+            self._bind_longitudinal_output('launch_handoff', .12, 0., 'bounded simple auto handoff')
             self.controller.set_throttle(0.12)
             if not getattr(self.controller.scs, "connected", False):
                 self._cancel_auto_drive_engagement_unlocked("zápis plynu do SCS backendu zlyhal")
@@ -1625,6 +1630,7 @@ class UltraPilotEngine:
         probe = (0.12 if pending["mode"] == 0
                  and truck.get("parkBrake") is False
                  and frame > pending["start_frame"] else 0.0)
+        self._bind_longitudinal_output('launch', probe, 0., 'mode-specific bounded launch')
         self.controller.set_throttle(probe)
         self.controller.set_brake(0.0)
         self.shared_state.update_batch({
@@ -1899,6 +1905,13 @@ class UltraPilotEngine:
             "engine_applied_steering": steering,
         })
         self.controller.set_steering(steering)
+        journal = getattr(self.controller, '_pedal_journal', None)
+        if journal is not None and journal.enabled:
+            source = dict(journal.source() or {})
+            source.update(phase='safety_stop', safety_reason=first_control_fault(self.shared_state, reason),
+                          selected={'throttle': 0., 'brake': brake, 'source': 'engine_safety',
+                                    'reason': reason, 'emergency': True})
+            journal.bind(source)
         self.controller.set_throttle(0.0)
         self.controller.set_brake(brake)
 
@@ -1906,9 +1919,42 @@ class UltraPilotEngine:
         """Serialize the one physical Controller owner across shutdown edges."""
         lock = getattr(self, "_controller_io_lock", None)
         if lock is None:  # Narrow unit fixtures created with ``__new__``.
-            return self._flush_controls_unlocked()
+            return self._flush_controls_diagnostic()
         with lock:
+            return self._flush_controls_diagnostic()
+
+    def _flush_controls_diagnostic(self):
+        """Observe the existing writer, including early launch/fail-safe returns."""
+        diagnostic = getattr(self, '_maneuver_diagnostic_collector', None)
+        journal = getattr(self.controller, '_pedal_journal', None)
+        accepting = diagnostic is not None and getattr(diagnostic, 'state', 'COLLECTING') in ('ARMED', 'COLLECTING')
+        if not accepting:
+            self._longitudinal_trace = None
+            if journal is not None:
+                journal.suspend()
             return self._flush_controls_unlocked()
+        if journal is None:
+            from core.navigation.longitudinal_diagnostics import PedalJournal
+            journal = self.controller._pedal_journal = PedalJournal()
+        journal.enabled = True
+        self._longitudinal_offer_done = False
+        try:
+            return self._flush_controls_unlocked()
+        finally:
+            if not self._longitudinal_offer_done:
+                self._offer_maneuver_evidence_diagnostic(None, time.monotonic())
+            journal.bind(None)
+            self._longitudinal_trace = None
+
+    def _bind_longitudinal_output(self, phase, throttle, brake, reason):
+        journal = getattr(self.controller, '_pedal_journal', None)
+        if journal is not None and journal.enabled:
+            source = dict(getattr(self, '_longitudinal_trace', None) or journal.source() or {})
+            if phase == 'active' and source.get('control_state') == 'controlled_stop':
+                phase = 'safety_stop'
+            source.update(phase=phase, output_intent={'throttle': throttle, 'brake': brake,
+                'source': 'engine_launch' if phase.startswith('launch') else 'engine', 'reason': reason})
+            journal.bind(source)
 
     def _record_drive_boundary(self, action, truck, *, selector=None,
                                returned=None, steering=None, throttle=None,
@@ -2039,6 +2085,13 @@ class UltraPilotEngine:
             "safety_hazard_active", False))
         truck_telemetry = ((self.shared_state.get("telemetry", {}) or {})
                            .get("truck", {}) or {})
+        journal = getattr(self.controller, '_pedal_journal', None)
+        if journal is not None and journal.enabled:
+            from core.navigation.longitudinal_diagnostics import source_snapshot
+            self._longitudinal_trace = source_snapshot(
+                self.shared_state, truck_telemetry, getattr(self, '_drive_engagement', None))
+            self._longitudinal_trace['decision_sequence'] = journal.next_decision()
+            journal.bind(self._longitudinal_trace)
         observed_gear = truck_telemetry.get("gear")
         if (observed_gear is not None
                 and observed_gear != getattr(self, "_last_drive_observed_gear", None)):
@@ -2170,7 +2223,8 @@ class UltraPilotEngine:
         from core.longitudinal import engine_decision, exclusive, context
         longitudinal = None
         if self.shared_state.get("longitudinal_control_schema") == 1:
-            longitudinal, pedal_reason = engine_decision(self.shared_state, truck_telemetry)
+            longitudinal, pedal_reason = engine_decision(self.shared_state, truck_telemetry,
+                diagnostic=getattr(self, '_longitudinal_trace', None))
             if pedal_reason:
                 self._automatic_safety_stop(pedal_reason)
                 return
@@ -2364,6 +2418,8 @@ class UltraPilotEngine:
             return
         # Release the opposing held channel BEFORE applying the new positive
         # channel, including when the previous physical frame was braking.
+        self._bind_longitudinal_output('active', throttle, brake,
+            longitudinal['reason'] if longitudinal else 'legacy exclusive pedal guard')
         if brake > 0.0:
             self.controller.set_throttle(0.0)
             self.controller.set_brake(brake)

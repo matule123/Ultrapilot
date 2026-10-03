@@ -1,5 +1,13 @@
 # Phase 7 — Final longitudinal verification
 
+**2026-10-03 source-only follow-up:** the collector gap below describes the
+original Stage 7.4 build. It is addressed offline by
+[Combined longitudinal evidence](PHASE7_LONGITUDINAL_DIAGNOSTICS.md), based on
+HEAD `0107430d57b2c96881ee39c9a27eccd2ea1ecf19`. Decisions and returned SCS pedal
+writes are now retained with bounded provenance; game consumption and reliable
+traffic remain unverified. The follow-up is not deployed and does not relabel
+the original Stage 7.4 installation comparison or historical results.
+
 Date: 2026-10-03. Stage 7.4 baseline and current runtime:
 `84006376aa83592722eaa1d934471a78def3e3db`.
 

@@ -1,7 +1,6 @@
 """Phase 7.4: joint producer/physical-boundary and existing export scope.
 
-These tests add no runtime diagnostic channels or control behavior. The
-export-scope test deliberately documents absent longitudinal evidence.
+The export-scope test distinguishes bound writes from unrelated shared mirrors.
 """
 from dataclasses import replace
 from itertools import permutations
@@ -190,7 +189,7 @@ def test_joint_following_pipeline_rejects_late_old_authority(flow, fault):
     assert not (engine.controller.throttle > 0 and engine.controller.brake > 0)
 
 
-def test_existing_combined_export_preserves_steering_but_lacks_pedal_following_scope(tmp_path):
+def test_existing_combined_export_preserves_steering_and_marks_unbound_pedals(tmp_path):
     """Export cannot claim Phase 7 readiness merely because integrity passes."""
     root = tmp_path / 'evidence-diagnostics'
     collector = EvidenceDiagnosticCollector(root, capacity=30)
@@ -247,4 +246,6 @@ def test_existing_combined_export_preserves_steering_but_lacks_pedal_following_s
                         'longitudinal_traffic', 'autopilot_disable_reason',
                         'automatic_safety_stop_reason'):
             assert missing not in row
-        assert 'gameThrottle' not in row['truck'] and 'gameBrake' not in row['truck']
+        assert row['truck']['gameThrottle'] == .2 and row['truck']['gameBrake'] == 0.
+        assert row['longitudinal']['events'] == []
+        assert row['longitudinal']['game_consumption_verified'] is False

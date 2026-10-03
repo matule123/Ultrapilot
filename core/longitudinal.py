@@ -86,7 +86,7 @@ def publish(state, truck, source, **values):
     return value
 
 
-def read(state, source, now=None, *, required=False, binding=None):
+def read(state, source, now=None, *, required=False, binding=None, diagnostic=None):
     """One IPC read per producer, never combine scalar throttle/brake reads."""
     value = state.get("longitudinal_" + source)
     reason = rejection(value, context(state) if binding is None else binding,
@@ -108,6 +108,11 @@ def read(state, source, now=None, *, required=False, binding=None):
                     number(value[key], 0., 200.)
         except (KeyError, TypeError, ValueError, OverflowError):
             reason = "invalid longitudinal producer values"
+    if diagnostic is not None:
+        from core.navigation.longitudinal_diagnostics import bounded_input
+        diagnostic.setdefault('input_rejections', {})[source] = reason
+        if reason:
+            diagnostic.setdefault('rejected_inputs', {})[source] = bounded_input(value)
     if reason:
         return None, (source + ": " + reason if required else "")
     return value, ""
@@ -155,7 +160,7 @@ def finalize(state, truck, throttle, brake, decision, binding):
     return value
 
 
-def engine_decision(state, truck, now=None):
+def engine_decision(state, truck, now=None, *, diagnostic=None):
     """Final fail-closed pedal boundary, including newer emergency evidence."""
     now = time.monotonic() if now is None else now
     vehicle_reason = vehicle_control_observation_rejection(state, truck, now)
@@ -163,6 +168,9 @@ def engine_decision(state, truck, now=None):
         return None, vehicle_reason
     binding = context(state)
     value = state.get(COMMAND_KEY)
+    if diagnostic is not None:
+        from core.navigation.longitudinal_diagnostics import bounded_input
+        diagnostic['requested'] = bounded_input(value)
     reason = rejection(value, binding, now)
     if reason:
         return None, reason
@@ -181,11 +189,17 @@ def engine_decision(state, truck, now=None):
     # Engine-owned traffic floors bypass a slow/unavailable Autopilot tick.
     # Unknown traffic is not free-space evidence. An unavailable legacy sensor
     # supplies no new brake request; the prior command still has its short lease.
-    traffic, _ = read(state, "traffic", now, binding=binding)
+    traffic, _ = read(state, "traffic", now, binding=binding, diagnostic=diagnostic)
     current_acc, acc_reason = read(state, "acc", now, binding=binding,
-        required=bool(state.get("longitudinal_acc_active")))
+        required=bool(state.get("longitudinal_acc_active")), diagnostic=diagnostic)
     policy, policy_reason = read(state, "policy", now, binding=binding,
-        required=bool(state.get("longitudinal_policy_active")))
+        required=bool(state.get("longitudinal_policy_active")), diagnostic=diagnostic)
+    if diagnostic is not None:
+        diagnostic['inputs'] = {k: bounded_input(v) for k, v in (
+            ('traffic', traffic), ('acc', current_acc), ('policy', policy))}
+        diagnostic['regulator_mode'] = current_acc.get('speed_control_reason') if current_acc else None
+        diagnostic['regulator_mode_status'] = ('PRODUCER_SPEED_CONTROL_REASON'
+                                               if current_acc else 'NOT_VERIFIED')
     if acc_reason or policy_reason:
         return None, acc_reason or policy_reason
     following = traffic.get('following') if traffic else None
@@ -244,9 +258,11 @@ def engine_decision(state, truck, now=None):
         result.update(source=pending_source, reason="service brake pending autopilot ramp")
     elif pending_source == "acc_coast" and result["brake"] == 0 and not result["emergency"]:
         result.update(source="acc", reason="current ACC coast request")
-    ceiling, _ = speed_ceiling(state, binding=binding)
+    ceiling, _ = speed_ceiling(state, binding=binding, diagnostic=diagnostic)
     if ceiling is not None and float(truck.get("speed", 0.)) > ceiling and result["throttle"] > 0:
         result.update(throttle=0., source="speed_constraint", reason="speed ceiling coast")
+    if diagnostic is not None:
+        diagnostic['selected'] = dict(result)
     return result, ""
 
 
@@ -282,14 +298,20 @@ def curve_input(state, *, binding=None):
     return dict(radius_m=radius, distance_m=distance, expires_at=candidate["expires_at"])
 
 
-def speed_ceiling(state, *, binding=None):
+def speed_ceiling(state, *, binding=None, diagnostic=None):
+    if diagnostic is not None:
+        from core.navigation.longitudinal_diagnostics import bounded_input
     limits, expiries = [], []
     for source, key, factor in (("road", "speed_cap_kmh", 1. / 3.6),
                                 ("policy", "planned_speed_ms", 1.)):
-        value, _ = read(state, source, binding=binding)
+        value, _ = read(state, source, binding=binding, diagnostic=diagnostic)
+        if diagnostic is not None:
+            diagnostic.setdefault('limits', {})[source] = bounded_input(value)
         if value is not None:
             limits.append(float(value[key]) * factor)
             expiries.append(value["expires_at"])
+    if diagnostic is not None:
+        diagnostic['speed_ceiling_mps'] = min(limits) if limits else None
     return (min(limits) if limits else None,
             min(expiries) if expiries else float("inf"))
 

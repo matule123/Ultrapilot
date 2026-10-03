@@ -172,22 +172,46 @@ class Controller:
                 **self.scs.read_steering_diagnostic()}
 
     def set_throttle(self, value: float):
-        value = max(0.0, min(1.0, value))
-        if self.mode == "SCS_SDK":
-            self.scs.set_throttle(value)
-        elif self.mode == "VJOY":
-            self.vjoy.set_throttle(value)
-        elif self.mode == "DIGITAL":
-            self._key('w', value > 0.1)
+        self._dispatch_pedal('throttle', value)
 
     def set_brake(self, value: float):
+        self._dispatch_pedal('brake', value)
+
+    def _dispatch_pedal(self, channel, value):
+        """Same dispatch/return contract, with optional passive write evidence."""
         value = max(0.0, min(1.0, value))
-        if self.mode == "SCS_SDK":
-            self.scs.set_brake(value)
-        elif self.mode == "VJOY":
-            self.vjoy.set_brake(value)
-        elif self.mode == "DIGITAL":
-            self._key('s', value > 0.1)
+        journal = getattr(self, '_pedal_journal', None)
+        recording = journal is not None and journal.enabled
+        if recording:
+            started = time.monotonic()
+            error = None
+        if self.mode == 'SCS_SDK':
+            self.scs._pedal_diagnostic_enabled = recording
+            if recording:
+                self.scs._pedal_write_evidence = None
+        try:
+            if self.mode == 'SCS_SDK':
+                getattr(self.scs, 'set_' + channel)(value)
+            elif self.mode == 'VJOY':
+                getattr(self.vjoy, 'set_' + channel)(value)
+            elif self.mode == 'DIGITAL':
+                self._key('w' if channel == 'throttle' else 's', value > .1)
+        except BaseException as exc:
+            if recording:
+                error = type(exc).__name__
+            raise
+        finally:
+            if recording:
+                evidence = (getattr(self.scs, '_pedal_write_evidence', None)
+                            if self.mode == 'SCS_SDK' else None)
+                evidence = evidence or dict(status='BACKEND_RESULT_UNVERIFIED', value=None)
+                try:
+                    journal.record(channel, value, started, time.monotonic(),
+                                   self.mode, evidence, error)
+                except Exception:
+                    # An observation failure must never alter the backend call
+                    # or replace its exception with a diagnostic exception.
+                    pass
 
     def observe_blinker(self, side):
         """Synchronize the toggle controller with ETS2's logical state.
@@ -357,6 +381,22 @@ class Controller:
 
     def release_all(self):
         """Release every input — used on shutdown / when autopilot turns off."""
+        journal = getattr(self, '_pedal_journal', None)
+        recording = journal is not None and journal.enabled
+        previous = journal.source() if recording else None
+        if recording:
+            source = dict(previous or {})
+            source.update(phase='release', output_intent={
+                'throttle': 0., 'brake': 0., 'source': 'controller_release',
+                'reason': 'release_all'})
+            journal.bind(source)
+        try:
+            self._release_all_controls()
+        finally:
+            if recording:
+                journal.bind(previous)
+
+    def _release_all_controls(self):
         if self.mode in ("SCS_SDK", "VJOY"):
             self.set_steering(0.0)
             self.set_throttle(0.0)

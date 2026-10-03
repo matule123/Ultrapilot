@@ -90,6 +90,15 @@ immutable diagnostických kanálov a izolované overenie väzby/exportu; nevznik
 v tejto úlohe a nová jazda sa nežiada. Spätná SDK odozva sa musí párovať až
 s následnými frame, nie automaticky s riadkom zápisu.
 
+Táto medzera zodpovedá pôvodnej zostave 7.4. Následné zdrojové doplnenie je v
+[PHASE7_LONGITUDINAL_DIAGNOSTICS.md](PHASE7_LONGITUDINAL_DIAGNOSTICS.md): bounded
+nemenný zdroj rozhodnutia, skutočné SCS mapping zápisy, ciele a dostupný ACC
+kandidát sa ukladajú do existujúceho combined zberu. Export, integrita a analýza
+sú overené offline; zmena zatiaľ nie je nasadená ani herne potvrdená. Ďalší krok
+je používateľova celá sada a samostatné schválenie spoločného nasadenia core
+súborov. Chýbajúce SDK pedálové kanály ostávajú null; návrat zápisu nie je
+dôkazom spotreby hrou. Komfort a spoľahlivosť traffic zdroja ostávajú backlog.
+
 Samostatný blokátor ACC zostáva timestamp/generácia traffic producenta,
 nepreukázaná príslušnosť k pruhu/pokrytie a neznámy rozdiel referenčných bodov
 od nárazníkov. Diagnostické doplnenie tieto údaje nevytvorí. Nový senzor, DLL,

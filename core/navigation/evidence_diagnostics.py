@@ -265,13 +265,15 @@ class DiagnosticCapture:
     capture_started_at_s: float | None = None
     sdk_read_observation: dict | None = None
     observation_identity: dict | None = None
+    longitudinal: dict | None = None
 
 
 def capture_diagnostic_application(state, steering, now, sequence, *,
                                    steering_boundary=None,
                                    application_sdk_frame_us=None,
                                    steering_write_returned_at_s=None,
-                                   sdk_read_observation=None, clock=None):
+                                   sdk_read_observation=None, clock=None,
+                                   longitudinal=None):
     """Take a bounded snapshot after the physical backend call returned."""
     # GPS invalidation deliberately removes route authority. Its snapshot is
     # not the producer of the current game/map epoch. Bracket the bounded
@@ -288,7 +290,9 @@ def capture_diagnostic_application(state, steering, now, sequence, *,
         bool(state.get("telemetry_valid", False)),
         _pick(truck, ("sdkFrameTimeUs", "speed", "userSteer", "gameSteer", "rotation",
                       "x", "y", "z", "pose_valid", "roadWheelAnglesRad",
-                      "yawRateRadS", "yawRateValid")),
+                      "yawRateRadS", "yawRateValid", "gear", "userThrottle",
+                      "gameThrottle", "userBrake", "gameBrake", "parkBrake",
+                      "_control_observation")),
         state.get("vehicle_profile_snapshot"),
         state.get("maneuver_traffic_capture"),
         _pick(lane, IDENTITY_KEYS + ("valid", "confidence", "active_lane_id",
@@ -315,7 +319,19 @@ def capture_diagnostic_application(state, steering, now, sequence, *,
     # IPC may deliver a newer observation after the caller sampled ``now``.
     # Timestamp the actual completion, while retaining the original SDK time.
     after = {key: state.get(source) for key, source in OBSERVATION_IDENTITY_KEYS}
+    pedals = _jsonable(longitudinal) if longitudinal is not None else {
+        'schema_version': 1, 'events': [], 'dropped_events': 0,
+        'game_consumption_verified': False, 'status': 'NO_BOUND_PEDAL_WRITES'}
+    pedals['sampled_state'] = _pick({
+        'autopilot_active': capture.autopilot_active,
+        'auto_drive_pending': state.get('auto_drive_pending'),
+        'control_state': state.get('autopilot_control_state'),
+        'activation': state.get('autopilot_failure_epoch'),
+        'disable_reason': state.get('autopilot_disable_reason'),
+        'safety_reason': state.get('automatic_safety_stop_reason')},
+        ('autopilot_active', 'auto_drive_pending', 'control_state', 'activation', 'disable_reason', 'safety_reason'))
     return replace(capture,
+        longitudinal=pedals,
         captured_at_s=float(clock()) if clock else capture.captured_at_s,
         observation_identity={"before": before, "after": after,
                               "reads_match": before == after, "atomic": False})
@@ -851,6 +867,7 @@ class EvidenceDiagnosticCollector:
             "lane": capture.lane, "reference": capture.reference,
             "actuator_calibration": capture.actuator_calibration,
             "engine_steer": capture.engine_steer,
+            "longitudinal": _jsonable(capture.longitudinal),
             "steering_boundary": {
                 **(capture.steering_boundary or {}),
                 "application_sdk_frame_us": capture.application_sdk_frame_us,
