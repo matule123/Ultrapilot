@@ -53,7 +53,12 @@ def bounded_input(value):
     # actor arrays and transport buffers before any diagnostic copy.
     if not isinstance(value, dict):
         return None
-    result = {k: value.get(k) for k in INPUT_KEYS if k != 'following'}
+    # Explicit unavailable-field list retains unknown semantics without
+    # repeating dozens of null key/value nodes in every producer snapshot.
+    # The fixed source/journal byte limits are unchanged.
+    keys = tuple(k for k in INPUT_KEYS if k != 'following')
+    result = {k: value[k] for k in keys if value.get(k) is not None}
+    result['unavailable_fields'] = ','.join(k for k in keys if value.get(k) is None)
     following_keys = (
         'status', 'target_id', 'gap_m', 'speed_mps', 'speed_cap_mps', 'emergency',
         'reason', 'receiver_time', 'source_timestamp', 'source_sequence',

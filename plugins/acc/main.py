@@ -4,7 +4,8 @@ import time
 import numpy as np
 from sdk.base_plugin import BasePlugin
 from core.pid import PID
-from core.longitudinal import COMMAND_KEY, context, exclusive, read, publish, rejection
+from core.longitudinal import (COMMAND_KEY, context, exclusive, read, publish,
+                               rejection, curve_input, curve_speed_envelope)
 from core.transmission_mode import vehicle_control_observation_rejection
 from plugins.acc.settings import settings
 
@@ -17,7 +18,7 @@ class Plugin(BasePlugin):
     """
 
     NAME = "acc"
-    VERSION = "1.1.0"
+    VERSION = "1.1.1"
 
     def on_start(self):
         logging.info("ACC Plugin started with bounded speed PID control.")
@@ -139,6 +140,15 @@ class Plugin(BasePlugin):
             return
         effective_target_speed = base_target_speed
         hard_limits = []
+        # The same proven-distance envelope as Autopilot must constrain this
+        # existing PID. Otherwise cruise powers back toward a higher Policy
+        # envelope each time the separate curve-brake demand releases.
+        curve = curve_input(self.sdk.shared_state, binding=binding) if strict else None
+        if curve is not None:
+            curve_limit, _ = curve_speed_envelope(
+                curve["radius_m"], curve["distance_m"], speed)
+            effective_target_speed = min(effective_target_speed, curve_limit * 3.6)
+            hard_limits.append(curve_limit * 3.6)
         obey_limit = self.sdk.shared_state.get("acc_obey_limit", None)
         obey_limit = bool(obey_limit) if obey_limit is not None else getattr(settings, "obey_speed_limit", True)
         if obey_limit:
@@ -293,7 +303,7 @@ class Plugin(BasePlugin):
                 following_target_id=following.get('target_id') if isinstance(following, dict) else None,
                 following_confirmed=False,
                 following_required=self._followed_target,
-                expires_at=min((v["expires_at"] for v in (traffic, road_packet, policy)
+                expires_at=min((v["expires_at"] for v in (traffic, road_packet, policy, curve)
                                 if v is not None), default=float("inf")))
 
         # Update UI tags

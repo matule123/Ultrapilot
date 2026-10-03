@@ -2,7 +2,7 @@ import logging
 import math
 from sdk.base_plugin import BasePlugin
 from core.navigation.route import curve_speed_limit_ms, iter_path_xz
-from core.longitudinal import context, read, publish, curve_input
+from core.longitudinal import context, read, publish, curve_input, curve_speed_envelope
 
 
 # === Tuning =================================================================
@@ -75,7 +75,7 @@ class Plugin(BasePlugin):
     a pile of independent, sometimes-contradictory requests."""
 
     NAME = "drivepolicy"
-    VERSION = "1.0.2"
+    VERSION = "1.0.3"
 
     def on_start(self):
         logging.info("DrivePolicy plugin started.")
@@ -124,8 +124,8 @@ class Plugin(BasePlugin):
                 R = float(radius)
                 distance = (curve["distance_m"] if strict else float(self.sdk.get(
                     "path_curve_distance_m", 0.0) or 0.0))
-                curve_limit = curve_speed_limit_ms(
-                    R, distance, A_LAT_MAX)
+                curve_limit, _ = curve_speed_envelope(
+                    R, distance, float(truck["speed"]))
                 if math.isfinite(curve_limit):
                     limits.append(curve_limit)
             except (TypeError, ValueError, OverflowError):

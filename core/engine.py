@@ -2284,29 +2284,7 @@ class UltraPilotEngine:
             return
 
         steering = self.shared_state.get(CTL_STEERING, 0.0)
-        throttle = self.shared_state.get(CTL_THROTTLE, 0.0)
-        brake = self.shared_state.get(CTL_BRAKE, 0.0)
-        from core.longitudinal import engine_decision, exclusive, context
-        longitudinal = None
-        if self.shared_state.get("longitudinal_control_schema") == 1:
-            longitudinal, pedal_reason = engine_decision(self.shared_state, truck_telemetry,
-                diagnostic=getattr(self, '_longitudinal_trace', None))
-            if pedal_reason:
-                if self._wait_for_first_pedal_command(truck_telemetry, pedal_reason):
-                    return
-                self._automatic_safety_stop(pedal_reason)
-                return
-            self._first_pedal_request = None
-            self._first_pedal_started_at = None
-            throttle, brake = longitudinal["throttle"], longitudinal["brake"]
-        else:
-            # Pre-schema offline clients still pass the same exclusive/range
-            # physical guard. Live Engine initialization always requires schema 1.
-            try:
-                throttle, brake = exclusive(throttle, brake)
-            except (TypeError, ValueError, OverflowError):
-                self._automatic_safety_stop("invalid longitudinal pedal values")
-                return
+        brake = self.shared_state.get(CTL_BRAKE, 0.0)  # diagnostic intent; not applied
         snapshot = self.shared_state.get("lane_trajectory", {}) or {}
 
         gps_control = self.shared_state.get("navigation_source") == "gps_lane"
@@ -2323,6 +2301,81 @@ class UltraPilotEngine:
             self.shared_state.set(CTL_SELECT_DRIVE, None)
         else:
             self._gps_propulsion_suppressed = False
+
+        # Speed-dependent steering clamp for legacy/vision steering. A valid
+        # GPS LaneTrajectory has already produced a bounded, speed-aware and
+        # rate-limited command. Clamping that command a second time made the
+        # truck understeer from its lane centre toward the road centre.
+        spd_kmh = abs(float(self.shared_state.get("truck_speed_ms", 0.0) or 0.0)) * 3.6
+        try:
+            snapshot_revision = int(snapshot.get("revision", -1) or -1)
+            lane_revision = int(self.shared_state.get(
+                "lane_trajectory_revision", -2) or -2)
+            control_revision = int(self.shared_state.get(
+                "autopilot_lane_revision", -3) or -3)
+        except (TypeError, ValueError, OverflowError):
+            snapshot_revision = lane_revision = control_revision = -1
+        authoritative_gps_steering = bool(
+            self.shared_state.get("navigation_source") == "gps_lane"
+            and self.shared_state.get("nav_active", False)
+            and snapshot.get("valid", False)
+            and snapshot_revision == lane_revision == control_revision)
+        # The authoritative GPS command has already passed geometric angle,
+        # speed, rate and acceleration limits. Applying UI sensitivity after
+        # that actuator was a second unmodelled gain/clamp. Keep sensitivity
+        # for legacy/vision input only; inversion remains a backend convention.
+        if authoritative_gps_steering:
+            steering = max(-1.0, min(1.0, float(steering)))
+        else:
+            sens = self.shared_state.get("steering_sensitivity", 1.0) or 1.0
+            steering = max(-1.0, min(
+                1.0, float(steering) * float(sens)))
+        if self.shared_state.get("steering_invert", False):
+            steering = -steering
+        max_steer = (1.0 if authoritative_gps_steering or spd_kmh < 30.0
+                     else max(0.25, 1.0 - (spd_kmh - 30.0) / 110.0))
+
+        # Jackknife protection uses the project's actual steering/articulation
+        # sign convention. It limits only a command proven to increase an
+        # already severe fold; a recovery command is never blocked. This is a
+        # physical envelope guard, not a steering smoother.
+        articulation_guarded = False
+        if self.shared_state.get("trailer_attached", False):
+            try:
+                art = float(self.shared_state.get(
+                    "trailer_articulation", 0.0) or 0.0)
+            except (TypeError, ValueError):
+                art = 0.0
+            steering, articulation_guarded = trailer_articulation_guard(
+                steering, art, max_steer)
+        steering = max(-max_steer, min(max_steer, steering))
+
+        self.shared_state.update_batch({
+            "engine_applied_steering": float(steering),
+            "trailer_articulation_guarded": bool(articulation_guarded),
+        })
+
+        # Navigation/steering preparation can block on IPC while independent
+        # producers advance. Do not select pedals before that work, then write
+        # the already-expired selection despite a newer valid command waiting.
+        # Read ONE actual vehicle snapshot afterwards; keep its embedded time
+        # and validate it, never retimestamp the earlier observation.
+        if self.shared_state.get("longitudinal_control_schema") == 1:
+            truck_telemetry = ((self.shared_state.get("telemetry", {}) or {})
+                               .get("truck", {}) or {})
+            vehicle_reason = vehicle_control_observation_rejection(
+                self.shared_state, truck_telemetry)
+            if vehicle_reason:
+                self._automatic_safety_stop(vehicle_reason)
+                return
+            if journal is not None and journal.enabled:
+                metadata, _ = vehicle_control_observation(self.shared_state, truck_telemetry)
+                self._longitudinal_trace.update(
+                    sdk_frame_us=truck_telemetry.get("sdkFrameTimeUs"),
+                    observation_timestamp=metadata.get("observed_at"),
+                    observation_valid=metadata.get("valid") is True,
+                    actual_speed_mps=truck_telemetry.get("speed"),
+                    observed_gear=truck_telemetry.get("gear"))
 
         simple_auto_forward = False
         if getattr(self, "_active_transmission_mode", None) == 0:
@@ -2350,6 +2403,29 @@ class UltraPilotEngine:
             self._automatic_safety_stop(gps_output_reason)
             return
 
+        throttle = self.shared_state.get(CTL_THROTTLE, 0.0)
+        brake = self.shared_state.get(CTL_BRAKE, 0.0)
+        from core.longitudinal import engine_decision, exclusive, context
+        longitudinal = None
+        if self.shared_state.get("longitudinal_control_schema") == 1:
+            longitudinal, pedal_reason = engine_decision(self.shared_state, truck_telemetry,
+                diagnostic=getattr(self, '_longitudinal_trace', None))
+            if pedal_reason:
+                if self._wait_for_first_pedal_command(truck_telemetry, pedal_reason):
+                    return
+                self._automatic_safety_stop(pedal_reason)
+                return
+            self._first_pedal_request = None
+            self._first_pedal_started_at = None
+            throttle, brake = longitudinal["throttle"], longitudinal["brake"]
+        else:
+            # Pre-schema offline clients still pass the same exclusive/range
+            # physical guard. Live Engine initialization always requires schema 1.
+            try:
+                throttle, brake = exclusive(throttle, brake)
+            except (TypeError, ValueError, OverflowError):
+                self._automatic_safety_stop("invalid longitudinal pedal values")
+                return
         # The plugin and Engine run on different clocks. Block an unconfirmed
         # ratio or Reverse before the plugin consumes the new frame; only the
         # bounded, activation-bound simple-auto transition may bridge zero.
@@ -2409,59 +2485,6 @@ class UltraPilotEngine:
                 self._was_active = False
                 return
 
-        # Speed-dependent steering clamp for legacy/vision steering. A valid
-        # GPS LaneTrajectory has already produced a bounded, speed-aware and
-        # rate-limited command. Clamping that command a second time made the
-        # truck understeer from its lane centre toward the road centre.
-        spd_kmh = abs(float(self.shared_state.get("truck_speed_ms", 0.0) or 0.0)) * 3.6
-        try:
-            snapshot_revision = int(snapshot.get("revision", -1) or -1)
-            lane_revision = int(self.shared_state.get(
-                "lane_trajectory_revision", -2) or -2)
-            control_revision = int(self.shared_state.get(
-                "autopilot_lane_revision", -3) or -3)
-        except (TypeError, ValueError, OverflowError):
-            snapshot_revision = lane_revision = control_revision = -1
-        authoritative_gps_steering = bool(
-            self.shared_state.get("navigation_source") == "gps_lane"
-            and self.shared_state.get("nav_active", False)
-            and snapshot.get("valid", False)
-            and snapshot_revision == lane_revision == control_revision)
-        # The authoritative GPS command has already passed geometric angle,
-        # speed, rate and acceleration limits. Applying UI sensitivity after
-        # that actuator was a second unmodelled gain/clamp. Keep sensitivity
-        # for legacy/vision input only; inversion remains a backend convention.
-        if authoritative_gps_steering:
-            steering = max(-1.0, min(1.0, float(steering)))
-        else:
-            sens = self.shared_state.get("steering_sensitivity", 1.0) or 1.0
-            steering = max(-1.0, min(
-                1.0, float(steering) * float(sens)))
-        if self.shared_state.get("steering_invert", False):
-            steering = -steering
-        max_steer = (1.0 if authoritative_gps_steering or spd_kmh < 30.0
-                     else max(0.25, 1.0 - (spd_kmh - 30.0) / 110.0))
-
-        # Jackknife protection uses the project's actual steering/articulation
-        # sign convention. It limits only a command proven to increase an
-        # already severe fold; a recovery command is never blocked. This is a
-        # physical envelope guard, not a steering smoother.
-        articulation_guarded = False
-        if self.shared_state.get("trailer_attached", False):
-            try:
-                art = float(self.shared_state.get(
-                    "trailer_articulation", 0.0) or 0.0)
-            except (TypeError, ValueError):
-                art = 0.0
-            steering, articulation_guarded = trailer_articulation_guard(
-                steering, art, max_steer)
-        steering = max(-max_steer, min(max_steer, steering))
-
-        self.shared_state.update_batch({
-            "engine_applied_steering": float(steering),
-            "trailer_articulation_guarded": bool(articulation_guarded),
-        })
-
         expiry = getattr(self, "_gps_output_expiry", None)
         if (gps_control and expiry is not None
                 and time.monotonic() > expiry[0]):
@@ -2480,12 +2503,20 @@ class UltraPilotEngine:
                 selector=False, steering=0.0, throttle=0.0, brake=0.0)
             return
         steering_write_returned_at_s = time.monotonic()
-        if longitudinal is not None and (
-                context(self.shared_state) != tuple(longitudinal["context"])
-                or not 0. <= time.monotonic() - longitudinal["observation_timestamp"] <= .5
-                or time.monotonic() > longitudinal["expires_at"]):
-            self._automatic_safety_stop("longitudinal command expired or identity changed before write")
-            return
+        if longitudinal is not None:
+            commit_context = context(self.shared_state)
+            commit_at = time.monotonic()  # after the last identity IPC read
+            if commit_context != tuple(longitudinal["context"]):
+                commit_reason = "longitudinal identity or activation changed before write"
+            elif not 0. <= commit_at - longitudinal["observation_timestamp"] <= .5:
+                commit_reason = "longitudinal observation expired or incoherent before write"
+            elif commit_at > longitudinal["expires_at"]:
+                commit_reason = "longitudinal input lease expired before write"
+            else:
+                commit_reason = ""
+            if commit_reason:
+                self._automatic_safety_stop(commit_reason)
+                return
         # Release the opposing held channel BEFORE applying the new positive
         # channel, including when the previous physical frame was braking.
         self._bind_longitudinal_output('active', throttle, brake,

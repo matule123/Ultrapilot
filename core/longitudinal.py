@@ -15,6 +15,43 @@ COMMAND_KEY = "longitudinal_command"
 PRIORITY = {"emergency": 100, "safety": 90, "obstacle": 80, "traffic": 70,
             "maneuver": 60, "curve": 50, "acc": 40, "cruise": 10}
 
+# Existing Autopilot curve-entry envelope, now shared with the speed planner.
+# These are planning assumptions, not measured grip or an ETS2 brake model.
+CURVE_LATERAL_ACCEL_MS2 = 1.8
+CURVE_APPROACH_DECEL_MS2 = 1.0
+CURVE_BRAKE_RESPONSE_S = 1.0
+CURVE_STEERING_SETUP_M = 20.0
+
+
+def curve_speed_envelope(radius_m, distance_m, speed_ms):
+    from core.navigation.route import curve_speed_limit_ms
+    radius = number(radius_m, 1e-9, 1e12)
+    distance = number(distance_m, 0., 1e12)
+    speed = number(abs(float(speed_ms)), 0., 100.)
+    setup = CURVE_STEERING_SETUP_M if radius < 45.0 else 0.0
+    usable = max(0., distance - setup - speed * CURVE_BRAKE_RESPONSE_S)
+    return curve_speed_limit_ms(radius, usable, CURVE_LATERAL_ACCEL_MS2,
+                                CURVE_APPROACH_DECEL_MS2), usable
+
+
+def curve_preview_horizon_m(speed_ms, requested_speed_kmh=None):
+    """Bounded distance query over existing geometry, not invented free space.
+
+    Retain the requested cruise-speed horizon as the vehicle slows; otherwise
+    the approaching curve could disappear from a shrinking speed-only query.
+    Route clips this query to its actual remaining directed geometry.
+    """
+    speed = number(abs(float(speed_ms)), 0., 100.)
+    try:
+        requested = number(requested_speed_kmh, 0., 160.) / 3.6
+    except (TypeError, ValueError, OverflowError):
+        # Only a query size fallback, never a speed authorization or limit.
+        requested = 60. / 3.6
+    speed = max(speed, requested)
+    return min(400., max(60., speed * speed / (2. * CURVE_APPROACH_DECEL_MS2)
+                        + speed * CURVE_BRAKE_RESPONSE_S
+                        + CURVE_STEERING_SETUP_M + 4.))
+
 
 def context(state):
     # Small metadata is atomically published with LanePath by SharedState.
@@ -331,7 +368,13 @@ def speed_ceiling(state, *, binding=None, diagnostic=None):
                                 ("policy", "planned_speed_ms", 1.)):
         value, _ = read(state, source, binding=binding, diagnostic=diagnostic)
         if diagnostic is not None:
-            diagnostic.setdefault('limits', {})[source] = bounded_input(value)
+            # The policy/ACC bodies are already retained in inputs. Repeating
+            # every unavailable field for each scalar ceiling exhausted the
+            # bounded journal source budget during joint producer operation.
+            diagnostic.setdefault('limits', {})[source] = (
+                {k: value.get(k) for k in ('source', 'context', 'sdk_frame_us',
+                    'observation_timestamp', 'computed_at', 'expires_at', 'valid', key)}
+                if value is not None else None)
         if value is not None:
             limits.append(float(value[key]) * factor)
             expiries.append(value["expires_at"])

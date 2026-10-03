@@ -72,15 +72,8 @@ def planned_curve_speed_limit_ms(radius_m, distance_m, speed_ms):
     plus steering setup, then plan at a comfortable 1.0 m/s2. This changes
     only longitudinal control; map geometry and steering authority are intact.
     """
-    radius = float(radius_m)
-    distance = max(0.0, float(distance_m))
-    speed = max(0.0, abs(float(speed_ms)))
-    setup = CURVE_STEERING_SETUP_M if radius < 45.0 else 0.0
-    response = speed * CURVE_BRAKE_RESPONSE_S
-    usable_distance = max(0.0, distance - setup - response)
-    return (curve_speed_limit_ms(
-        radius, usable_distance, A_LAT_MAX, CURVE_APPROACH_DECEL_MS2),
-        usable_distance)
+    from core.longitudinal import curve_speed_envelope
+    return curve_speed_envelope(radius_m, distance_m, speed_ms)
 
 
 def lane_authority_rejection_reason(state, snapshot, now=None):

@@ -4,6 +4,13 @@ Release history for individual plugins. See [PLUGIN_VERSIONS.md](PLUGIN_VERSIONS
 
 ## Map
 
+### 1.0.3 — 2026-10-03
+
+**Fixed**
+
+- Query the existing directed curve geometry over a braking-distance horizon instead of a fixed 60 m window. Retain the requested-speed horizon during deceleration, clip to available route geometry and bound the query to 400 m.
+- Preserve steering geometry, lateral preview, packet timestamps and freshness limits.
+
 ### 1.0.2 — 2026-10-03
 
 **Fixed**
@@ -68,6 +75,13 @@ Commit: `3ef65c7`.
 
 ## ACC
 
+### 1.1.1 — 2026-10-03
+
+**Fixed**
+
+- Constrain the existing speed PID with the same identity-bound curve-entry envelope used by Autopilot, including its upstream expiry. Avoid powering toward a higher curve target when the separate curve-brake request releases.
+- Preserve PID gains, traffic handling, emergency bypass and pedal ownership.
+
 ### 1.1.0 — 2026-10-03
 
 **Added**
@@ -109,6 +123,13 @@ Commit: `3ef65c7`.
 - Consume current bound traffic and speed constraints without changing PID gains.
 
 ## DrivePolicy
+
+### 1.0.3 — 2026-10-03
+
+**Fixed**
+
+- Apply the existing Autopilot curve-entry envelope, including response and setup distance reserves, to the planned speed ceiling. Remove disagreement between speed planning and curve braking.
+- Preserve route identity, evidence leases, traffic constraints and lateral advice.
 
 ### 1.0.2 — 2026-10-03
 

@@ -1,5 +1,17 @@
 # Odložená a nedokončená práca
 
+## Pozdĺžne povely a spomaľovanie pred objazdom – 3. 10. 2026
+
+[PHASE7_COMMIT_AND_CURVE_REGRESSIONS_20261003.md](PHASE7_COMMIT_AND_CURVE_REGRESSIONS_20261003.md)
+opisuje lokálnu opravu výberu pedálového povelu až po príprave Engine,
+zjednotenie existujúceho zákrutového rýchlostného profilu a dostatočný horizont
+nad dostupnou geometriou. Reprodukcie, fyzické testovacie zápisy a uzavretý model
+prešli; herný výsledok nie je potvrdený. Presná odmietnutá historická snímka
+nebola uložená, preto nemožno spätne určiť expiráciu verzus zmenu identity.
+Oprava nezvyšuje timeout ani neobnovuje vek povelu. Ďalšia brána je celá sada
+používateľa; nasadenie vyžaduje samostatný súhlas. ACC vstupné obmedzenia,
+neznáma historická dĺžka čakania na zámok a komfort v ETS2 zostávajú evidované.
+
 Stav k 3. 10. 2026. Toto je plán ďalšej práce, nie prísľub termínu.
 
 ## Fáza 6 – administratívne uzavretá v overenom rozsahu

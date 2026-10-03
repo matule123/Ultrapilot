@@ -1,5 +1,10 @@
 # Phase 7 — Final longitudinal verification
 
+**2026-10-03 commit/curve follow-up:** [Pedal commit and curve approach](PHASE7_COMMIT_AND_CURVE_REGRESSIONS_20261003.md)
+documents reproduced early pedal-selection and inconsistent braking-preview defects,
+their local corrections, physical-write regressions and modeled before/after results.
+The exact rejected historical pedal packet is unavailable; corrected live behavior remains NOT VERIFIED.
+
 **2026-10-03 rolling-window follow-up:** [Rolling authority regression](PHASE7_ROLLING_AUTHORITY_REGRESSION_20261003.md)
 documents the reproduced cache-publication/authority mismatch after a proven
 GPS prefix rebase and its core-only fix. It preserves the previous activation

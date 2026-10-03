@@ -32,6 +32,7 @@ from core.navigation.navigation_intent import (
     snapshot_matches_navigation_intent,
 )
 from core.paths import app_dir
+from core.longitudinal import curve_preview_horizon_m
 
 # routes/ lives next to the app (works both from source and when frozen).
 ROUTES_DIR = os.path.join(app_dir(), "routes")
@@ -68,7 +69,7 @@ class Plugin(BasePlugin):
     """
 
     NAME = "map"
-    VERSION = "1.0.2"
+    VERSION = "1.0.3"
 
     def on_start(self):
         logging.info("Map (navigation) plugin started.")
@@ -2729,7 +2730,8 @@ class Plugin(BasePlugin):
                 })
                 self.tags.nav_steering = 0.0
                 return
-            curve_profile = self.active_route.curve_profile_ahead(pos, heading)
+            curve_profile = self.active_route.curve_profile_ahead(pos, heading,
+                curve_preview_horizon_m(speed, self.sdk.get("acc_target_speed")))
             idx = self.active_route.closest_index(pos)
             upcoming = self._distance_window(
                 self.active_route.points[idx:], 220.0)
@@ -2962,7 +2964,8 @@ class Plugin(BasePlugin):
                     curvature_preview_s=curvature_preview_s,
                     actuator_calibration_failure=(
                         actuator_calibration.failure_reason))
-                curve_profile = route.curve_profile_ahead(pos, heading)
+                curve_profile = route.curve_profile_ahead(pos, heading,
+                    curve_preview_horizon_m(speed, self.sdk.get("acc_target_speed")))
                 # Safety: if the truck is far from the snapped path (wrong map
                 # dataset, or we're off-road on a ferry / car park), the CTE is
                 # huge and Stanley saturates to full-lock. Detect that and
