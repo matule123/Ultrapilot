@@ -1,5 +1,11 @@
 # Phase 7 — Final longitudinal verification
 
+**2026-10-03 rolling-window follow-up:** [Rolling authority regression](PHASE7_ROLLING_AUTHORITY_REGRESSION_20261003.md)
+documents the reproduced cache-publication/authority mismatch after a proven
+GPS prefix rebase and its core-only fix. It preserves the previous activation
+fixes. Verification is offline; the rejected historical context is unavailable
+and the new changes have not been installed or game-confirmed.
+
 **2026-10-03 activation follow-up:** [Activation regression fixes](PHASE7_ACTIVATION_REGRESSIONS_20261003.md)
 documents reproduced IPC-clock and idle-cleanup races, their core-only fixes,
 targeted verification and the unavailable historical policy/token evidence.

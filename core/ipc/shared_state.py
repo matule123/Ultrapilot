@@ -16,8 +16,22 @@ def lane_publication_batch(data):
     identity = {key: snapshot.get(key) for key in (
         "navigation_intent_id", "revision", "route_build_id",
         "source_game_session_id", "source_map_key", "source_dataset_fingerprint")}
-    return {**data, "lane_trajectory_publication_token": uuid.uuid4().hex,
-            "lane_trajectory_identity": identity}
+    publication = uuid.uuid4().hex
+    fingerprint = snapshot.get("lane_path_fingerprint")
+    # Map computes this digest from the complete validated LanePath, including
+    # XYZ, curvature, directed LaneIds and elevation. A proven UID-window
+    # rebase retains that immutable geometry. Cache invalidation is deliberately
+    # more frequent than control-authority invalidation.
+    proven_digest = (isinstance(fingerprint, str) and len(fingerprint) == 64
+                     and all(c in '0123456789abcdef' for c in fingerprint))
+    geometry = (("lane_path", fingerprint, snapshot.get("valid") is True)
+                if proven_digest else ("publication", publication))
+    return {**data, "lane_trajectory_publication_token": publication,
+            "lane_trajectory_identity": identity,
+            # Keep build and geometry in ONE compact immutable RPC value.
+            # Unknown/legacy geometry continues to invalidate on publication.
+            "lane_trajectory_longitudinal_identity": {
+                **identity, "geometry_token": geometry}}
 
 
 class LaneSnapshotReader:

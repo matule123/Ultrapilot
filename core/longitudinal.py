@@ -19,13 +19,18 @@ PRIORITY = {"emergency": 100, "safety": 90, "obstacle": 80, "traffic": 70,
 def context(state):
     # Small metadata is atomically published with LanePath by SharedState.
     # Never copy/unpickle the large geometry at every pedal/control boundary.
-    lane = state.get("lane_trajectory_identity")
+    lane = state.get("lane_trajectory_longitudinal_identity")
+    if lane is not None:
+        geometry = lane.get("geometry_token")
+    else:
+        lane = state.get("lane_trajectory_identity")
+        geometry = state.get("lane_trajectory_publication_token")
     if lane is None:  # Pre-schema isolated clients only.
         lane = state.get("lane_trajectory", {}) or {}
     return (state.get("autopilot_failure_epoch"), state.get("game_session_id"),
             state.get("active_map_key"), state.get("active_dataset_fingerprint"),
             state.get("navigation_intent_id"), state.get("lane_trajectory_revision"),
-            lane.get("route_build_id"), state.get("lane_trajectory_publication_token"))
+            lane.get("route_build_id"), geometry)
 
 
 def number(value, low=0., high=1.):
