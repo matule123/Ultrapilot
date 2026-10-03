@@ -72,7 +72,7 @@ class UpdateStagingTests(unittest.TestCase):
                 info = update_check.prepared_update_info()
                 self.assertEqual(info["archive_bytes"], len(data))
                 self.assertGreater(info["unpacked_bytes"], 0)
-                self.assertEqual(info["file_count"], 2)
+                self.assertEqual(info["file_count"], 1)
                 self.assertIn("Pripravené na inštaláciu:", progress[-1][1])
                 self.assertIn("stiahnutý balík", progress[-1][1])
                 self.assertEqual(progress[-1][0], 1.0)
@@ -155,7 +155,74 @@ class UpdateStagingTests(unittest.TestCase):
             self.assertEqual(info["archive_bytes"], len(data))
             self.assertEqual(info["total_bytes"], len(data))
             self.assertGreater(info["unpacked_bytes"], 0)
-            self.assertEqual(info["file_count"], 2)
+            self.assertEqual(info["file_count"], 1)
+
+    def test_only_runtime_is_installed_and_user_data_is_preserved(self):
+        data = io.BytesIO()
+        allowed = ["main.py", "bootloader.py", "requirements.txt", "core/engine.py",
+                   "UI/app.py", "SDK/base_plugin.py", "plugins/acc/main.py",
+                   "languages/en.json", "assets/scs_sdk_controller.dll", "PLUGIN_CHANGELOG.md"]
+        excluded = ["PHASE7_FINAL_RESULTS.md", ".codex/config.toml", "tests/test_acc.py",
+                    "tools/audit.py", "docs/report.md", "build/data.bin",
+                    "core/__pycache__/engine.pyc", "core/.codex/config.toml",
+                    "settings.json", "map-cache/map.json", "model-cache/model.bin",
+                    "routes/user.json", "logs/old.log", "evidence-diagnostics/manifest.json",
+                    "route-diagnostics/replay.json", "install.json", "UltraPilot_Installer.exe"]
+        with zipfile.ZipFile(data, "w") as archive:
+            for name in allowed + excluded:
+                archive.writestr("ets2la-main/" + name, "new")
+        with WorkspaceDirectory() as app:
+            for name in excluded:
+                path = os.path.join(app, *name.split("/"))
+                os.makedirs(os.path.dirname(path), exist_ok=True)
+                with open(path, "w") as stream:
+                    stream.write("keep")
+            with mock.patch.object(update_check, "_app_dir", return_value=app):
+                self.assertTrue(update_check._apply_zip_bytes(data.getvalue(), target_commit="abcdef0"))
+            for name in allowed:
+                with open(os.path.join(app, *name.split("/"))) as stream:
+                    self.assertEqual(stream.read(), "new")
+            for name in excluded:
+                with open(os.path.join(app, *name.split("/"))) as stream:
+                    self.assertEqual(stream.read(), "keep")
+            with open(os.path.join(app, "commit.txt")) as stream:
+                self.assertEqual(stream.read(), "abcdef0")
+
+    def test_invalid_archive_is_rejected_before_any_runtime_write(self):
+        for bad_name in ("ets2la-main/../escape.py", "ets2la-main/core/../../escape.py",
+                         "ets2la-main/core/ENGINE.py"):
+            data = io.BytesIO()
+            with zipfile.ZipFile(data, "w") as archive:
+                archive.writestr("ets2la-main/core/engine.py", "new")
+                archive.writestr(bad_name, "bad")
+            with WorkspaceDirectory() as app:
+                with mock.patch.object(update_check, "_app_dir", return_value=app):
+                    self.assertFalse(update_check._apply_zip_bytes(data.getvalue(), target_commit="abcdef0"))
+                self.assertFalse(os.path.exists(os.path.join(app, "core", "engine.py")))
+                self.assertFalse(os.path.exists(os.path.join(app, "commit.txt")))
+
+    def test_developer_only_archive_cannot_advance_commit_marker(self):
+        data = io.BytesIO()
+        with zipfile.ZipFile(data, "w") as archive:
+            archive.writestr("ets2la-main/PHASE7_FINAL_RESULTS.md", "report")
+        with WorkspaceDirectory() as app:
+            with mock.patch.object(update_check, "_app_dir", return_value=app):
+                self.assertFalse(update_check._apply_zip_bytes(data.getvalue(), target_commit="abcdef0"))
+            self.assertEqual(os.listdir(app), [])
+
+    def test_failed_file_replace_preserves_previous_file_and_commit(self):
+        with WorkspaceDirectory() as app:
+            os.makedirs(os.path.join(app, "core"))
+            previous = os.path.join(app, "core", "new_module.py")
+            with open(previous, "w") as stream:
+                stream.write("old")
+            with (mock.patch.object(update_check, "_app_dir", return_value=app),
+                  mock.patch.object(update_check.os, "replace", side_effect=OSError("write blocked"))):
+                self.assertFalse(update_check._apply_zip_bytes(update_archive(), target_commit="abcdef0"))
+            with open(previous) as stream:
+                self.assertEqual(stream.read(), "old")
+            self.assertFalse(os.path.exists(os.path.join(app, "commit.txt")))
+            self.assertEqual(os.listdir(os.path.join(app, "core")), ["new_module.py"])
 
 
 class UpdateUiStateTests(unittest.TestCase):

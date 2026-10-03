@@ -7,13 +7,13 @@ module is the pure logic layer the UI calls into:
 
 * ``VERSION``           — the current app version (kept in sync with installer).
 * ``current_version()`` — same, as a function.
-* ``latest_release()``  — the newest GitHub release tag, or None.
+* ``latest_release()``  — the remote update revision/tag, or None.
 * ``check_for_update()``— ``(available: bool, latest_tag: str)``.
 * ``prepare_update()``  — download and verify without changing the app.
 * ``install_prepared_update()`` — apply the staged package without network I/O.
 * ``perform_update(progress_cb)``— hybrid update: ``git pull`` if the install is a
-  git checkout, otherwise download the latest release zip and overwrite files
-  (settings.json / routes / map-cache are preserved).
+  git checkout, otherwise install only allow-listed runtime files from a ZIP.
+  User settings, caches and diagnostic collections are preserved.
 * ``git_commit()``      — short commit hash for the about/update UI.
 
 All network calls are bounded with timeouts and never raise — on failure they
@@ -285,7 +285,61 @@ def _git_pull(progress_cb=None) -> bool:
 _PROTECTED = {
     "settings.json", "routes", "map-cache", "model-cache", "logs",
     "UltraPilot_Installer.exe", "install.json",
+    "evidence-diagnostics", "route-diagnostics", "ultrapilot.log",
 }
+
+# Explicit runtime allow-list: new developer folders must never ship by default.
+# Keep the same runtime roots as the installer; tools are run from the checkout.
+_RUNTIME_DIRS = {"assets", "core", "languages", "plugins", "sdk", "ui"}
+_RUNTIME_FILES = {"main.py", "bootloader.py", "requirements.txt", "readme.md",
+                  "license", "license.md", "copying", "plugin_changelog.md"}
+_DEVELOPMENT_PARTS = {"__pycache__", "tests", "tools", "docs", "build", "dist",
+                      "node_modules", "ultrapilot.egg-info"}
+
+
+def _runtime_archive_members(archive):
+    """Validate archive paths and return only installable runtime entries."""
+    members = [entry for entry in archive.infolist() if not entry.is_dir()]
+    # GitHub source archives have one wrapper directory. Root-level runtime
+    # packages are also accepted, without dropping their first component.
+    wrappers = {entry.filename.replace("\\", "/").split("/")[0]
+                for entry in members}
+    wrapper = next(iter(wrappers)) if len(wrappers) == 1 else None
+    if wrapper and (wrapper.lower() in _RUNTIME_DIRS or
+                    any("/" not in entry.filename for entry in members)):
+        wrapper = None
+    selected = []
+    seen = set()
+    for entry in members:
+        name = entry.filename.replace("\\", "/")
+        parts = name.split("/")
+        if (name.startswith("/") or any(part in ("", ".", "..") or ":" in part
+                                        for part in parts)):
+            raise ValueError("unsafe update archive path")
+        if wrapper:
+            parts = parts[1:]
+        if not parts:
+            continue
+        lowered = [part.lower() for part in parts]
+        if (lowered[0] in {value.lower() for value in _PROTECTED}
+                or any(part.startswith(".") or part in _DEVELOPMENT_PARTS
+                       for part in lowered)
+                or lowered[-1].endswith((".pyc", ".pyo", ".log", ".spec", ".exe", ".msi"))):
+            continue
+        if not ((len(parts) == 1 and lowered[0] in _RUNTIME_FILES)
+                or (len(parts) > 1 and lowered[0] in _RUNTIME_DIRS)):
+            continue
+        # Never follow archive-provided links; avoid case aliases on Windows.
+        if (entry.external_attr >> 16) & 0o170000 == 0o120000:
+            raise ValueError("symbolic link in update archive")
+        key = "/".join(lowered)
+        if key in seen:
+            raise ValueError("duplicate runtime update path")
+        seen.add(key)
+        selected.append((entry, parts))
+    if not selected:
+        raise ValueError("update archive contains no runtime files")
+    return selected
 
 # Removed production modules that a ZIP update cannot delete merely by
 # extracting the new archive. Paths are explicit and repository-relative.
@@ -306,26 +360,26 @@ def _apply_zip_bytes(data, progress_cb=None, target_commit=None) -> bool:
         bad_member = zf.testzip()
         if bad_member:
             raise ValueError("poškodený súbor v archíve: " + bad_member)
-        names = zf.namelist()
-        # GitHub zips nest under "<repo>-main/".
-        prefix = names[0].split("/")[0] if names else ""
+        members = _runtime_archive_members(zf)
+        app_root = os.path.realpath(_app_dir())
+        # Validate destinations before writing, including existing directory links.
+        for _, parts in members:
+            destination = os.path.realpath(os.path.join(app_root, *parts))
+            if os.path.commonpath((app_root, destination)) != app_root:
+                raise ValueError("update destination escapes application directory")
         replaced = 0
-        for n in names:
-            if n.endswith("/"):
-                continue
-            rel = n[len(prefix) + 1:] if prefix and n.startswith(prefix + "/") else n
-            # ZIP member names always use '/', including on Windows. Validate
-            # each component before turning it into a local path; this also
-            # prevents a malformed archive from escaping the app directory.
-            parts = tuple(part for part in rel.replace("\\", "/").split("/")
-                          if part not in ("", "."))
-            if (not parts or parts[0] in _PROTECTED
-                    or any(part == ".." or ":" in part for part in parts)):
-                continue
+        for member, parts in members:
             dest = os.path.join(_app_dir(), *parts)
             os.makedirs(os.path.dirname(dest) or _app_dir(), exist_ok=True)
-            with open(dest, "wb") as f:
-                f.write(zf.read(n))
+            # A failed write must not truncate the previously working file.
+            fd, temporary = tempfile.mkstemp(prefix=".update-", dir=os.path.dirname(dest))
+            try:
+                with os.fdopen(fd, "wb") as f:
+                    f.write(zf.read(member))
+                os.replace(temporary, dest)
+            finally:
+                if os.path.exists(temporary):
+                    os.remove(temporary)
             replaced += 1
         for rel in _OBSOLETE:
             obsolete = os.path.join(_app_dir(), *rel.split("/"))
@@ -392,10 +446,7 @@ def prepare_update(progress_cb=None, target_commit=None) -> bool:
                 bad_member = archive.testzip()
                 if bad_member:
                     raise ValueError("poškodený súbor v archíve: " + bad_member)
-                members = [member for member in archive.infolist()
-                           if not member.is_dir()]
-                if not members:
-                    raise ValueError("prázdny aktualizačný archív")
+                members = [member for member, _ in _runtime_archive_members(archive)]
                 unpacked_bytes = sum(max(0, int(member.file_size))
                                      for member in members)
                 file_count = len(members)
@@ -448,14 +499,13 @@ def prepared_update_info() -> dict:
         info["archive_bytes"] = actual_archive_bytes
         info["downloaded_bytes"] = actual_archive_bytes
         info["total_bytes"] = actual_archive_bytes
-        if int(info.get("unpacked_bytes", 0) or 0) <= 0:
-            import zipfile
-            with zipfile.ZipFile(archive_path) as archive:
-                members = [member for member in archive.infolist()
-                           if not member.is_dir()]
-                info["unpacked_bytes"] = sum(
-                    max(0, int(member.file_size)) for member in members)
-                info["file_count"] = len(members)
+        # Recompute for old staged packages too, using the same install filter.
+        import zipfile
+        with zipfile.ZipFile(archive_path) as archive:
+            members = [member for member, _ in _runtime_archive_members(archive)]
+            info["unpacked_bytes"] = sum(
+                max(0, int(member.file_size)) for member in members)
+            info["file_count"] = len(members)
         return info
     except Exception:
         return {}

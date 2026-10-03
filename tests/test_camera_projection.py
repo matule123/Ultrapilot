@@ -2,6 +2,7 @@ import math
 import io
 import multiprocessing as mp
 import struct
+import tempfile
 import threading
 import time
 import unittest
@@ -283,50 +284,38 @@ class CameraSnapshotTests(unittest.TestCase):
                 "ets2la-main/core/navigation/runtime_preflight.py",
                 "preflight")
             bundle.writestr("ets2la-main/routes/user.json", "overwrite")
-            bundle.writestr("ets2la-main/../escape.py", "escape")
         response = mock.Mock(status_code=200, content=archive.getvalue())
-        written, removed = {}, []
+        with tempfile.TemporaryDirectory() as root:
+            route = Path(root, "routes", "user.json")
+            route.parent.mkdir(parents=True)
+            route.write_text("user route", encoding="utf-8")
+            obsolete = [Path(root, *name.split("/"))
+                        for name in update_check._OBSOLETE]
+            for path in obsolete:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(b"obsolete")
+            with (mock.patch.object(update_check, "_app_dir", return_value=root),
+                  mock.patch("requests.get", return_value=response) as request):
+                self.assertTrue(update_check._zip_update(target_commit="abcdef0"))
+            self.assertEqual(
+                request.call_args.args[0],
+                "https://github.com/matule123/ets2la/archive/abcdef0.zip")
+            self.assertEqual(Path(root, "core", "camera.py").read_bytes(), b"camera")
+            self.assertEqual(Path(root, "core", "navigation",
+                                  "runtime_preflight.py").read_bytes(), b"preflight")
+            self.assertEqual(route.read_text(encoding="utf-8"), "user route")
+            self.assertTrue(all(not path.exists() for path in obsolete))
+            self.assertEqual(Path(root, "commit.txt").read_text().strip(), "abcdef0")
 
-        class Writer:
-            def __init__(self, path):
-                self.path = path
-
-            def __enter__(self):
-                return self
-
-            def __exit__(self, *_):
-                return False
-
-            def write(self, data):
-                written[self.path] = data
-
-        root = r"C:\UltraPilot"
-        with (mock.patch.object(update_check, "_app_dir", return_value=root),
-              mock.patch("requests.get", return_value=response) as request,
-              mock.patch("builtins.open",
-                         side_effect=lambda path, *_args, **_kwargs: Writer(path)),
-              mock.patch.object(update_check.os, "makedirs"),
-              mock.patch.object(update_check.os.path, "isfile", return_value=True),
-              mock.patch.object(update_check.os, "remove",
-                                side_effect=removed.append)):
-            self.assertTrue(update_check._zip_update(
-                target_commit="abcdef0"))
-
-        self.assertEqual(
-            request.call_args.args[0],
-            "https://github.com/matule123/ets2la/archive/abcdef0.zip")
-
-        camera = str(Path(root, "core", "camera.py"))
-        preflight = str(Path(root, "core", "navigation",
-                             "runtime_preflight.py"))
-        self.assertEqual(written[camera], b"camera")
-        self.assertEqual(written[preflight], b"preflight")
-        self.assertNotIn(str(Path(root, "routes", "user.json")), written)
-        self.assertFalse(any("escape.py" in path for path in written))
-        expected_removed = {
-            str(Path(root, *name.split("/")))
-            for name in update_check._OBSOLETE}
-        self.assertEqual(set(removed), expected_removed)
+            unsafe = io.BytesIO()
+            with zipfile.ZipFile(unsafe, "w") as bundle:
+                bundle.writestr("ets2la-main/core/camera.py", "replacement")
+                bundle.writestr("ets2la-main/../escape.py", "escape")
+            with mock.patch.object(update_check, "_app_dir", return_value=root):
+                self.assertFalse(update_check._apply_zip_bytes(
+                    unsafe.getvalue(), target_commit="badcommit"))
+            self.assertEqual(Path(root, "core", "camera.py").read_bytes(), b"camera")
+            self.assertEqual(Path(root, "commit.txt").read_text().strip(), "abcdef0")
 
     def test_scs_reader_exposes_render_time_from_zone_one_offset_24(self):
         reader = SCSTelemetry()
