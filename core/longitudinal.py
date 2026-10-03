@@ -122,17 +122,42 @@ def rejection(value, binding, now):
     return ""
 
 
+def rejection_details(value, binding, now):
+    """Small immutable description of the actually compared command, not a reread."""
+    fields = ('activation', 'session', 'map', 'dataset', 'intent', 'revision', 'build', 'geometry')
+    result = dict(checked_at=now, expected_context=list(binding))
+    if not isinstance(value, dict):
+        return dict(result, packet_status='MISSING')
+    result.update({k: value.get(k) for k in ('sdk_frame_us', 'observation_timestamp',
+        'computed_at', 'expires_at', 'valid', 'source', 'decision_source', 'reason')})
+    actual = value.get('context')
+    result['actual_context'] = actual
+    if isinstance(actual, (tuple, list)):
+        result['different_fields'] = [name for i, name in enumerate(fields)
+            if i >= len(actual) or i >= len(binding) or actual[i] != binding[i]]
+    else:
+        result['different_fields'] = ['context_missing']
+    for key, dest in (('observation_timestamp', 'observation_age_s'),
+                      ('computed_at', 'decision_age_s'), ('expires_at', 'lease_overrun_s')):
+        try:
+            result[dest] = now - float(value[key])
+        except (KeyError, TypeError, ValueError, OverflowError):
+            result[dest] = None
+    return result
+
+
 def publish(state, truck, source, **values):
     value = packet(state, truck, source, **values)
     state.set("longitudinal_" + source, value)
     return value
 
 
-def read(state, source, now=None, *, required=False, binding=None, diagnostic=None):
+def read(state, source, now=None, *, required=False, binding=None, diagnostic=None, rejection_info=None):
     """One IPC read per producer, never combine scalar throttle/brake reads."""
     value = state.get("longitudinal_" + source)
-    reason = rejection(value, context(state) if binding is None else binding,
-                       time.monotonic() if now is None else now)
+    compared_binding = context(state) if binding is None else binding
+    checked_at = time.monotonic() if now is None else now
+    reason = rejection(value, compared_binding, checked_at)
     if not reason:
         fields = {"acc": ("throttle", "brake"), "policy": ("brake",),
                   "traffic": ("traffic_brake", "light_brake"), "eco": ("smoothing",)}
@@ -156,6 +181,9 @@ def read(state, source, now=None, *, required=False, binding=None, diagnostic=No
         if reason:
             diagnostic.setdefault('rejected_inputs', {})[source] = bounded_input(value)
     if reason:
+        if required and rejection_info is not None and not rejection_info:
+            rejection_info.update(rejection_details(value, compared_binding, checked_at))
+            rejection_info['rejected_source'] = source
         return None, (source + ": " + reason if required else "")
     return value, ""
 
@@ -202,7 +230,7 @@ def finalize(state, truck, throttle, brake, decision, binding):
     return value
 
 
-def engine_decision(state, truck, now=None, *, diagnostic=None):
+def engine_decision(state, truck, now=None, *, diagnostic=None, rejection_info=None):
     """Final fail-closed pedal boundary, including newer emergency evidence."""
     # A producer can publish during any RPC. A clock captured before the read
     # must not label that complete, genuinely newer packet as future-dated.
@@ -210,35 +238,43 @@ def engine_decision(state, truck, now=None, *, diagnostic=None):
     decision_time = lambda: time.monotonic() if now is None else now
     binding = context(state)
     value = state.get(COMMAND_KEY)
+    def reject(reason, compared=value, expected=binding):
+        if rejection_info is not None and not rejection_info:
+            rejection_info.update(rejection_details(compared, expected, decision_time()))
+            rejection_info['vehicle_sdk_frame_us'] = truck.get('sdkFrameTimeUs')
+            rejection_info['vehicle_observation'] = truck.get('_control_observation')
+        return None, reason
     if diagnostic is not None:
         from core.navigation.longitudinal_diagnostics import bounded_input
         diagnostic['requested'] = bounded_input(value)
     vehicle_reason = vehicle_control_observation_rejection(state, truck, decision_time())
     if vehicle_reason:
-        return None, vehicle_reason
+        return reject(vehicle_reason)
     reason = rejection(value, binding, decision_time())
     if reason:
-        return None, reason
+        return reject(reason)
     if (value.get("source") != "autopilot"
             or not isinstance(value.get("emergency"), bool)
             or not isinstance(value.get("decision_source"), str)
             or not value["decision_source"]
             or not isinstance(value.get("reason"), str) or not value["reason"]):
-        return None, "invalid longitudinal decision source, reason or emergency flag"
+        return reject("invalid longitudinal decision source, reason or emergency flag")
     try:
         if int(value["sdk_frame_us"]) > int(truck["sdkFrameTimeUs"]):
-            return None, "longitudinal command is ahead of vehicle observation"
+            return reject("longitudinal command is ahead of vehicle observation")
         throttle, brake = exclusive(value["throttle"], value["brake"])
     except (KeyError, TypeError, ValueError, OverflowError):
-        return None, "invalid longitudinal pedal values"
+        return reject("invalid longitudinal pedal values")
     # Engine-owned traffic floors bypass a slow/unavailable Autopilot tick.
     # Unknown traffic is not free-space evidence. An unavailable legacy sensor
     # supplies no new brake request; the prior command still has its short lease.
     traffic, _ = read(state, "traffic", now, binding=binding, diagnostic=diagnostic)
     current_acc, acc_reason = read(state, "acc", now, binding=binding,
-        required=bool(state.get("longitudinal_acc_active")), diagnostic=diagnostic)
+        required=bool(state.get("longitudinal_acc_active")), diagnostic=diagnostic,
+        rejection_info=rejection_info)
     policy, policy_reason = read(state, "policy", now, binding=binding,
-        required=bool(state.get("longitudinal_policy_active")), diagnostic=diagnostic)
+        required=bool(state.get("longitudinal_policy_active")), diagnostic=diagnostic,
+        rejection_info=rejection_info)
     if diagnostic is not None:
         diagnostic['inputs'] = {k: bounded_input(v) for k, v in (
             ('traffic', traffic), ('acc', current_acc), ('policy', policy))}
@@ -246,19 +282,19 @@ def engine_decision(state, truck, now=None, *, diagnostic=None):
         diagnostic['regulator_mode_status'] = ('PRODUCER_SPEED_CONTROL_REASON'
                                                if current_acc else 'NOT_VERIFIED')
     if acc_reason or policy_reason:
-        return None, acc_reason or policy_reason
+        return reject(acc_reason or policy_reason)
     following = traffic.get('following') if traffic else None
     if current_acc and current_acc.get('following_required') is True:
         # Target loss is not clear-road evidence, including between ACC ticks.
         # The old candidate cannot outlive its source's original short lease.
         if not isinstance(following, dict) or following.get('status') != 'candidate':
-            return None, 'ACC target unavailable or unconfirmed departure'
+            return reject('ACC target unavailable or unconfirmed departure', traffic)
         try:
             cap = number(following['speed_cap_mps'], 0., 140.)
             if float(truck['speed']) > cap:
                 throttle = 0.
         except (KeyError, TypeError, ValueError, OverflowError):
-            return None, 'invalid ACC following constraint'
+            return reject('invalid ACC following constraint', traffic)
     requests = [(value.get("decision_source", "autopilot"),
                  "emergency" if value.get("emergency") else "acc", brake)]
     pending_service = False
@@ -286,14 +322,14 @@ def engine_decision(state, truck, now=None, *, diagnostic=None):
             throttle = 0.
             pending_service = True
             pending_source = "traffic"
-    if state.get("system_state") == "EMERGENCY":
+    if state.get("longitudinal_control_schema") != 1 and state.get("system_state") == "EMERGENCY":
         requests.append(("system_emergency", "emergency", 1.))
     try:
         result = choose(throttle, requests, drive_source=value.get("decision_source", "autopilot"))
     except (KeyError, TypeError, ValueError, OverflowError):
-        return None, "invalid longitudinal safety demand"
+        return reject("invalid longitudinal safety demand")
     if binding != context(state):
-        return None, "longitudinal identity changed during arbitration"
+        return reject("longitudinal identity changed during arbitration", value, context(state))
     result.update(context=binding, sdk_frame_us=value["sdk_frame_us"],
                   observation_timestamp=value["observation_timestamp"],
                   computed_at=value["computed_at"],
@@ -309,6 +345,7 @@ def engine_decision(state, truck, now=None, *, diagnostic=None):
     # Recheck the SAME consumed snapshots after all IPC work. This also rejects
     # a decision that expires in transit instead of returning it as actionable.
     checked_at = decision_time()
+    compared = value
     reason = vehicle_control_observation_rejection(state, truck, checked_at)
     if not reason:
         reason = rejection(value, binding, checked_at)
@@ -318,13 +355,23 @@ def engine_decision(state, truck, now=None, *, diagnostic=None):
                 failure = rejection(consumed, binding, checked_at)
                 if failure:
                     reason = source + ": " + failure
+                    compared = consumed
                     break
     if not reason and binding != context(state):
-        reason = "longitudinal identity changed during arbitration"
+        return reject("longitudinal identity changed during arbitration", value, context(state))
     if reason:
-        return None, reason
+        return reject(reason, compared)
+    if result['emergency']:
+        from core.navigation.longitudinal_diagnostics import bounded_copy
+        result['emergency_evidence'] = bounded_copy(dict(
+            traffic=traffic and {k: traffic.get(k) for k in ('sdk_frame_us',
+                'observation_timestamp', 'traffic_brake', 'following', 'brake_basis')},
+            source=value['decision_source'], source_observation_timestamp=value['observation_timestamp']),
+            limit=8192)[0]
     if diagnostic is not None:
-        diagnostic['selected'] = dict(result)
+        # The same immutable traffic evidence already resides in inputs. Do
+        # not duplicate actor fields in the bounded journal's selected command.
+        diagnostic['selected'] = {k: v for k, v in result.items() if k != 'emergency_evidence'}
     return result, ""
 
 

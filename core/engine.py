@@ -22,6 +22,7 @@ from core.navigation.maneuver_availability import production_data_availability
 from core.control_timing import (
     CadenceMonitor, FrameGate, wait_for_next_tick,
     record_control_fault, first_control_fault,
+    record_control_intervention,
 )
 from core.transmission_mode import (
     TransmissionModeObserver, read_transmission_mode,
@@ -839,6 +840,7 @@ class UltraPilotEngine:
         rear-ending it: the closing speed, not the distance, drives the brake.
         """
         import math
+        self._traffic_brake_basis = None
         if not traffic or not pos:
             self.shared_state.set("lead_distance", None)
             return 0.0
@@ -875,6 +877,8 @@ class UltraPilotEngine:
                 closing = max(0.0, my_speed - lead_speed)
                 if best is None or ahead < best[0]:
                     best = (ahead, closing)
+                    best_actor = dict(target_id=v.get('id'), x=v['x'], y=v.get('y'),
+                                      z=v['z'], yaw=vyaw, speed_mps=lead_speed)
                 continue
 
             # A crossing vehicle is not a same-lane lead.  Brake only when the
@@ -904,9 +908,17 @@ class UltraPilotEngine:
                 continue
             if crossing is None or conflict_t < crossing[0]:
                 crossing = (conflict_t, ahead)
+                crossing_actor = dict(target_id=v.get('id'), x=v['x'], y=v.get('y'),
+                    z=v['z'], yaw=vyaw, speed_mps=lead_speed,
+                    closest_distance_m=math.hypot(closest_x, closest_z),
+                    assumed_envelope_radius_m=collision_radius)
         if best is None:
             if crossing is not None:
                 conflict_t, ahead = crossing
+                self._traffic_brake_basis = dict(kind='linear_crossing_heuristic',
+                    actor=crossing_actor, conflict_time_s=conflict_t,
+                    ahead_reference_m=ahead, producer_timestamp=None,
+                    confirmed_route_conflict=False, coverage_confirmed=False)
                 self.shared_state.set("lead_distance", ahead)
                 if conflict_t <= 1.0:
                     return 1.0
@@ -916,6 +928,9 @@ class UltraPilotEngine:
             self.shared_state.set("lead_distance", None)
             return 0.0
         ahead, closing = best
+        self._traffic_brake_basis = dict(kind='legacy_lead_heuristic', actor=best_actor,
+            ahead_reference_m=ahead, closing_speed_mps=closing,
+            producer_timestamp=None, confirmed_route_conflict=False, coverage_confirmed=False)
         self.shared_state.set("lead_distance", ahead)
 
         # Safety gap we always want to keep (scales a little with our speed).
@@ -1862,7 +1877,8 @@ class UltraPilotEngine:
     # --- Control flush --------------------------------------------------------
     def _automatic_safety_stop(self, reason):
         """Return steering smoothly and ramp brake after producer loss."""
-        record_control_fault(self.shared_state, "engine", reason)
+        record_control_fault(self.shared_state, "engine", reason,
+            details=getattr(self, '_longitudinal_rejection_detail', None))
         first_reason = first_control_fault(self.shared_state, reason)
         self.shared_state.update_batch({
             "autopilot_control_state": "controlled_stop",
@@ -1887,9 +1903,10 @@ class UltraPilotEngine:
         brake = min(0.70, current_brake + SAFETY_BRAKE_RAMP_UP * dt)
         if self.shared_state.get("longitudinal_control_schema") == 1:
             from core.longitudinal import read
-            traffic, _ = read(self.shared_state, "traffic", now)
-            if (self.shared_state.get("system_state") == "EMERGENCY"
-                    or (traffic and traffic["traffic_brake"] > .7)):
+            # Validate after receiving the snapshot, not against a clock
+            # captured before IPC could publish a genuinely newer emergency.
+            traffic, _ = read(self.shared_state, "traffic")
+            if traffic and traffic["traffic_brake"] > .7:
                 # A navigation failure must not downgrade a current emergency
                 # into the ordinary producer-loss ramp. The simple-auto
                 # standstill/reverse protection below still has precedence.
@@ -1898,21 +1915,26 @@ class UltraPilotEngine:
             truck = ((self.shared_state.get("telemetry", {}) or {})
                      .get("truck", {}) or {})
             try:
-                fresh = 0.0 <= now - float(self.shared_state.get(
+                checked_at = time.monotonic()
+                fresh = 0.0 <= checked_at - float(self.shared_state.get(
                     "telemetry_timestamp", 0.0)) <= 0.5
                 if self.shared_state.get("telemetry_control_schema") == 1:
                     # Use the original metadata in this very truck observation,
                     # not a scalar timestamp potentially from the next frame.
                     fresh = not vehicle_control_observation_rejection(
-                        self.shared_state, truck, now)
+                        self.shared_state, truck, checked_at)
                 stopped = abs(float(truck["speed"])) < 0.05
                 int(truck["gear"])
             except (KeyError, TypeError, ValueError, OverflowError):
                 fresh = stopped = False
             if fresh and stopped:
                 brake = 0.0
-                self.shared_state.set("autopilot_active", False)
-                self.shared_state.set("longitudinal_command", None)
+                self.shared_state.update_batch({
+                    'autopilot_active': False, 'longitudinal_command': None,
+                    'autopilot_disable_reason': first_reason,
+                    'autopilot_terminal_reason': reason,
+                    'navigation_status': f'Autopilot vypnutý: {first_reason}',
+                })
         self._last_output_steering = steering
         self._last_output_brake = brake
         self.shared_state.set("automatic_safety_stop_reason",
@@ -1931,6 +1953,7 @@ class UltraPilotEngine:
         if journal is not None and journal.enabled:
             source = dict(journal.source() or {})
             source.update(phase='safety_stop', safety_reason=first_control_fault(self.shared_state, reason),
+                          intervention=self.shared_state.get('autopilot_intervention'),
                           selected={'throttle': 0., 'brake': brake, 'source': 'engine_safety',
                                     'reason': reason, 'emergency': True})
             journal.bind(source)
@@ -2020,6 +2043,12 @@ class UltraPilotEngine:
                 phase = 'safety_stop'
             source.update(phase=phase, output_intent={'throttle': throttle, 'brake': brake,
                 'source': 'engine_launch' if phase.startswith('launch') else 'engine', 'reason': reason})
+            record = self.shared_state.get('autopilot_intervention')
+            if isinstance(record, dict) and record.get('epoch') == source.get('activation'):
+                # Decision context and consumed inputs are already immutable
+                # in this same flush. Avoid duplicating them in the fixed byte
+                # budget, while retaining the first event's own time/identity.
+                source['intervention'] = record
             journal.bind(source)
 
     def _record_drive_boundary(self, action, truck, *, selector=None,
@@ -2078,6 +2107,7 @@ class UltraPilotEngine:
         """Bounded final check before a GPS packet can accompany propulsion."""
         self._gps_output_expiry = None
         packet = self.shared_state.get("nav_steering_debug", {}) or {}
+        self._gps_output_compared_packet = packet
         if (isinstance(packet, dict)
                 and packet.get("calculation_packet_schema_version") is not None
                 and packet.get("authority_valid") is False
@@ -2147,6 +2177,7 @@ class UltraPilotEngine:
         everything once and then leave the controls untouched — so the driver
         keeps full manual control of a real wheel (writing 0 every frame would
         fight the player's steering through the SCS SDK input)."""
+        self._longitudinal_rejection_detail = None
         safety_hazard = bool(self.shared_state.get(
             "safety_hazard_active", False))
         truck_telemetry = ((self.shared_state.get("telemetry", {}) or {})
@@ -2272,6 +2303,10 @@ class UltraPilotEngine:
         if (control_heartbeat <= 0.0
                 or time.monotonic() - control_heartbeat > 0.5):
             self._was_active = True
+            self._longitudinal_rejection_detail = dict(
+                source='autopilot_heartbeat', checked_at=time.monotonic(),
+                heartbeat_timestamp=control_heartbeat,
+                heartbeat_age_s=time.monotonic()-control_heartbeat)
             self._automatic_safety_stop("autopilot control heartbeat is stale")
             return
         self._was_active = True
@@ -2291,7 +2326,19 @@ class UltraPilotEngine:
         gps_output_reason = (self._gps_output_packet_rejection_reason(
             time.monotonic(), snapshot) if gps_control else "")
         if gps_output_reason:
-            record_control_fault(self.shared_state, "engine", gps_output_reason)
+            compared = getattr(self, '_gps_output_compared_packet', {})
+            keys = ('calculation_sequence', 'sdk_frame_us', 'observation_timestamp',
+                'computed_at', 'authority_revision', 'route_build_id', 'navigation_intent_id',
+                'source_game_session_id', 'source_map_key', 'source_dataset_fingerprint')
+            self._longitudinal_rejection_detail = dict(
+                source='gps_packet', checked_at=time.monotonic(),
+                packet={k: compared.get(k) for k in keys} if isinstance(compared, dict) else None,
+                packet_status='AVAILABLE' if isinstance(compared, dict) else 'INVALID_TYPE',
+                expected_lane={k: snapshot.get(k) for k in keys if k in snapshot}
+                    if isinstance(snapshot, dict) else None,
+                rejection=gps_output_reason)
+            record_control_fault(self.shared_state, "engine", gps_output_reason,
+                                 details=self._longitudinal_rejection_detail)
             if not getattr(self, "_gps_propulsion_suppressed", False):
                 self._record_drive_boundary(
                     "suppress_invalid_gps_packet", truck_telemetry,
@@ -2408,8 +2455,10 @@ class UltraPilotEngine:
         from core.longitudinal import engine_decision, exclusive, context
         longitudinal = None
         if self.shared_state.get("longitudinal_control_schema") == 1:
+            self._longitudinal_rejection_detail = {}
             longitudinal, pedal_reason = engine_decision(self.shared_state, truck_telemetry,
-                diagnostic=getattr(self, '_longitudinal_trace', None))
+                diagnostic=getattr(self, '_longitudinal_trace', None),
+                rejection_info=self._longitudinal_rejection_detail)
             if pedal_reason:
                 if self._wait_for_first_pedal_command(truck_telemetry, pedal_reason):
                     return
@@ -2418,6 +2467,13 @@ class UltraPilotEngine:
             self._first_pedal_request = None
             self._first_pedal_started_at = None
             throttle, brake = longitudinal["throttle"], longitudinal["brake"]
+            if longitudinal['emergency']:
+                record_control_intervention(self.shared_state, 'engine',
+                    'EMERGENCY_BRAKE', 'Núdzové brzdenie: ' + longitudinal['source'],
+                    'emergency', details={'winner': longitudinal['source'],
+                        'decision': longitudinal['reason'], 'sdk_frame_us': longitudinal['sdk_frame_us'],
+                        'observation_timestamp': longitudinal['observation_timestamp'],
+                        'evidence': longitudinal.get('emergency_evidence')})
         else:
             # Pre-schema offline clients still pass the same exclusive/range
             # physical guard. Live Engine initialization always requires schema 1.
@@ -2475,10 +2531,14 @@ class UltraPilotEngine:
             except (KeyError, TypeError, ValueError, OverflowError):
                 stopped = not_reversing = False
             if stopped and not_reversing:
+                reason = first_control_fault(self.shared_state,
+                    "jednoduchá automatická: brzda pri zastavení môže zvoliť R")
+                record_control_fault(self.shared_state, 'engine', reason)
                 self.shared_state.update_batch({
                     "autopilot_active": False,
-                    "autopilot_disable_reason":
-                        "jednoduchá automatická: brzda pri zastavení môže zvoliť R",
+                    "autopilot_disable_reason": reason,
+                    'navigation_status': f'Autopilot vypnutý: {reason}',
+                    'longitudinal_command': None,
                     CTL_THROTTLE: 0.0, CTL_BRAKE: 0.0, CTL_STEERING: 0.0,
                 })
                 self.controller.release_all()
@@ -2515,8 +2575,17 @@ class UltraPilotEngine:
             else:
                 commit_reason = ""
             if commit_reason:
+                from core.longitudinal import rejection_details
+                self._longitudinal_rejection_detail = rejection_details(
+                    longitudinal, commit_context, commit_at)
                 self._automatic_safety_stop(commit_reason)
                 return
+        if (longitudinal and not longitudinal.get('emergency')
+                and self.shared_state.get('autopilot_control_state') != 'controlled_stop'):
+            record = self.shared_state.get('autopilot_intervention')
+            if isinstance(record, dict) and record.get('kind') == 'emergency':
+                self.shared_state.update_batch({'autopilot_intervention': None,
+                                                'control_intervention_engine': None})
         # Release the opposing held channel BEFORE applying the new positive
         # channel, including when the previous physical frame was braking.
         self._bind_longitudinal_output('active', throttle, brake,
@@ -2540,6 +2609,7 @@ class UltraPilotEngine:
             "throttle": throttle, "brake": brake,
             "source": longitudinal["source"] if longitudinal else "legacy_offline",
             "reason": longitudinal["reason"] if longitudinal else "exclusive pedal guard",
+            "emergency": bool(longitudinal and longitudinal.get('emergency')),
             "written_at": time.monotonic(),
             "sdk_frame_us": truck_telemetry.get("sdkFrameTimeUs"),
             "source_sdk_frame_us": longitudinal["sdk_frame_us"] if longitudinal else None,
@@ -2996,6 +3066,10 @@ class UltraPilotEngine:
                             truck.get('speed', 0.), crossing_only=True)
                         if following.get('emergency'):
                             traffic_brake = 1.
+                            self._traffic_brake_basis = dict(kind='protective_route_candidate',
+                                target_id=following.get('target_id'), gap_m=following.get('gap_m'),
+                                reason=following.get('reason'), producer_timestamp=None,
+                                confirmed_route_conflict=False, coverage_confirmed=False)
                         self.shared_state.set('lead_distance', following.get('gap_m'))
                     # Stop on red / go on green.
                     self.shared_state.update_batch({
@@ -3021,6 +3095,7 @@ class UltraPilotEngine:
                         traffic_brake=traffic_brake, light_brake=self._light_brake(light),
                         light=light, lead_distance=self.shared_state.get("lead_distance"),
                         following=following,
+                        brake_basis=self._traffic_brake_basis,
                         expires_at=following.get('expires_at', float('inf')))
                 except Exception as error:
                     self.shared_state.set("longitudinal_traffic", None)

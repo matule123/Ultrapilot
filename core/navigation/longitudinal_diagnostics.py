@@ -15,7 +15,7 @@ INPUT_KEYS = (
     'control_target_kmh', 'speed_control_reason', 'following_status',
     'following_target_id', 'following_required', 'following_confirmed',
     'traffic_brake', 'light_brake', 'speed_cap_kmh', 'planned_speed_ms',
-    'controller_mode', 'mode', 'following',
+    'controller_mode', 'mode', 'following', 'brake_basis',
 )
 
 
@@ -84,7 +84,15 @@ class PedalJournal:
         self._held = {'throttle': None, 'brake': None}
 
     def bind(self, value):
+        # Keep the rare first intervention beside the decision, not repeated
+        # inside its already bounded producer snapshots. Both allocations count
+        # against the unchanged total journal byte budget.
+        intervention = value.get('intervention') if isinstance(value, dict) else None
+        if intervention is not None:
+            value = {k: v for k, v in value.items() if k != 'intervention'}
+        self._local.intervention, extra = bounded_copy(intervention, limit=16384)
         self._local.source, self._local.size = bounded_copy(value, limit=32768) if value is not None else (None, 64)
+        self._local.size += extra
 
     def source(self):
         return getattr(self._local, 'source', None)
@@ -117,6 +125,7 @@ class PedalJournal:
                 call_returned_at_s=returned, call_returned=error is None,
                 error=error, backend=evidence, pair_after=dict(self._held),
                 source=self.source(), game_consumption_verified=False))
+            self._events[-1]['intervention'] = getattr(self._local, 'intervention', None)
             self._sizes.append(size)
             self._bytes += size
 

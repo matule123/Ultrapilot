@@ -24,6 +24,7 @@ _ACTIVITY = (
     "autopilot unavailable", "vyberám d",
 )
 _TECHNICAL_LOG_MARKERS = (
+    "control intervention:",  # Structured state supplies the concise banner.
     "map: truck=", "nearest_seg=", "truckposition", "truck position",
     "truck_world_pos", "coordinatex", "coordinatez", "heading=",
     "system transitioning", "follow_lane", "follow lane", "cruise ->",
@@ -70,6 +71,23 @@ def _friendly_activity_message(message):
         if marker in low:
             return text
     return message
+
+
+def _intervention_message(record):
+    """Presentation only; an unproven traffic candidate never creates yield authority."""
+    kind = record.get('kind')
+    if kind == 'yield':
+        return 'Čakám na prednosť – ' + str(record.get('reason') or 'nebezpečná medzera')
+    if kind == 'emergency':
+        return 'Núdzové brzdenie – možná dopravná hrozba'
+    reason = str(record.get('reason') or 'neplatné riadiace údaje')
+    if 'stale' in reason or 'expired' in reason:
+        reason = 'riadiace údaje nie sú čerstvé'
+    elif 'identity' in reason or 'activation changed' in reason:
+        reason = 'zmenila sa identita riadiaceho povelu'
+    elif 'ACC target' in reason:
+        reason = 'stratil sa dopravný kandidát; voľná cesta nie je potvrdená'
+    return 'Technická chyba – bezpečne odovzdávam riadenie: ' + reason
 
 
 class DynamicIsland(QWidget):
@@ -156,6 +174,26 @@ class DynamicIsland(QWidget):
     def _poll_log(self):
         """Read new records written by the engine, UI, HUD and all plugins."""
         state = getattr(self.parentWidget(), "state", None)
+        record = state.get('autopilot_intervention') if state is not None else None
+        if (isinstance(record, dict)
+                and record.get('epoch') == state.get('autopilot_failure_epoch')):
+            if record.get('sequence') != getattr(self, '_shown_intervention_sequence', None):
+                self._shown_intervention_sequence = record.get('sequence')
+                self.show_record(_intervention_message(record), 'WARNING', '', 'Autopilot')
+            if (state.get('autopilot_active')
+                    and (state.get('autopilot_control_state') == 'controlled_stop'
+                         or (state.get('longitudinal_applied') or {}).get('emergency'))):
+                self._hide_timer.stop()
+                self._intervention_held = True
+                return
+            if getattr(self, '_intervention_held', False):
+                self._intervention_held = False
+                self._hide_timer.start(4500)
+            if self._hide_timer.isActive():
+                return
+        elif getattr(self, '_intervention_held', False):
+            self._intervention_held = False
+            self._hide_timer.start(4500)
         if not self._update_notice_seen and state is not None:
             commit = state.get("update_startup_commit", "")
             if commit:

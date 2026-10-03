@@ -1,5 +1,12 @@
 # Phase 7 — Final longitudinal verification
 
+**2026-10-03 intervention follow-up:** [Roundabout stopping and first cause](PHASE7_ROUNDABOUT_INTERVENTION_20261003.md)
+documents reproduced unbound planner brake authority, silent Engine stopping
+and misclassified automatic replay export, their offline fixes and retained
+emergency/identity/gear protections. The exact historical first pedal rejection
+is unavailable. Predictive yield remains blocked by missing actor path,
+publisher freshness, verified yield location and coverage; no live success claimed.
+
 **2026-10-03 commit/curve follow-up:** [Pedal commit and curve approach](PHASE7_COMMIT_AND_CURVE_REGRESSIONS_20261003.md)
 documents reproduced early pedal-selection and inconsistent braking-preview defects,
 their local corrections, physical-write regressions and modeled before/after results.

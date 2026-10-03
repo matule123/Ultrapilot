@@ -1,5 +1,21 @@
 # Odložená a nedokončená práca
 
+## Zastavenie pred objazdom a prvý dôvod – 3. 10. 2026
+
+[PHASE7_ROUNDABOUT_INTERVENTION_20261003.md](PHASE7_ROUNDABOUT_INTERVENTION_20261003.md)
+uvádza offline opravu neviazanej brzdovej autority starého stavu planneru,
+prvého dôvodu v Engine/UI/exporte a chybného označenia automatického vypnutia
+ako manuálneho. Pri incidente 18:40:40 chýba skutočne vybraný pedálový povel,
+preto nemožno dokázať premávku verzus expiráciu/identitu. Nové logovanie
+neobnovuje historické údaje a herné potvrdenie zostáva otvorené.
+
+Predvídavé dávanie prednosti, automatické čakanie a opätovný rozjazd na objazde
+nie sú podporované. Chýba pôvodný čas/generácia traffic producenta,
+potvrdená smerovaná dráha aktéra, miesto prednosti/konfliktu a pokrytie.
+Reaktívny kandidát ani prázdny buffer nedokazujú bezpečnú medzeru.
+Ochrana jednoduchej automatiky pred brzdením do R zostáva zapnutá;
+pri bezpečnostnom zastavení odovzdá riadenie vodičovi. Nová jazda sa nežiada.
+
 ## Pozdĺžne povely a spomaľovanie pred objazdom – 3. 10. 2026
 
 [PHASE7_COMMIT_AND_CURVE_REGRESSIONS_20261003.md](PHASE7_COMMIT_AND_CURVE_REGRESSIONS_20261003.md)

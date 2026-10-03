@@ -487,7 +487,7 @@ class Plugin(BasePlugin):
     """
 
     NAME = "autopilot"
-    VERSION = "1.0.2"
+    VERSION = "1.0.3"
 
     def on_start(self):
         logging.info("Autopilot Plugin started (Phase 1 tuning).")
@@ -694,10 +694,13 @@ class Plugin(BasePlugin):
             return None
         try:
             directory = os.path.join(app_dir(), "route-diagnostics")
+            from core.control_timing import first_control_fault_record
+            first = first_control_fault_record(self.sdk.shared_state)
             path = replay.export(
                 directory, reason=event,
                 identity={**self._steering_replay_identity(),
-                          "detail": str(detail or "")})
+                          "detail": str(detail or ""),
+                          "control_intervention": first})
             logging.info(
                 "Dense steering replay exported: samples=%d reason=%s path=%s",
                 len(replay), event, path)
@@ -1274,7 +1277,11 @@ class Plugin(BasePlugin):
             # polluting route-diagnostics.
             replay = getattr(self, "_steering_replay", None)
             if replay is not None and len(replay) >= 20:
-                self._export_and_rotate_steering_replay("manual_disable")
+                from core.control_timing import first_control_fault_record
+                first = first_control_fault_record(self.sdk.shared_state)
+                self._export_and_rotate_steering_replay(
+                    'automatic_disable' if first else 'manual_disable',
+                    first['reason'] if first else '')
         if not autopilot_engaged or not was_active:
             self._reset_steering_dynamics(observed_game_steering)
         self._was_active = autopilot_engaged
@@ -1331,7 +1338,11 @@ class Plugin(BasePlugin):
         # stop; once stationary we release all automation and disengage.
         if autopilot_engaged and not navigation_authority_safe:
             if self._control_failure_epoch == self.sdk.shared_state.get("autopilot_failure_epoch"):
-                record_control_fault(self.sdk.shared_state, "autopilot", authority_reason)
+                record_control_fault(self.sdk.shared_state, "autopilot", authority_reason,
+                    details={'steering': {k: accepted_packet.get(k) for k in (
+                        'calculation_sequence', 'sdk_frame_us', 'observation_timestamp',
+                        'computed_at', 'authority_revision', 'route_build_id', 'navigation_intent_id')},
+                        'rejection': authority_reason})
                 self.sdk.shared_state.update_batch({
                     "autopilot_control_state": "controlled_stop",
                     "autopilot_stop_epoch": self._control_failure_epoch,
@@ -1424,7 +1435,11 @@ class Plugin(BasePlugin):
             return
         # 2. Safety states — these still brake hard, but through the ramp so
         #    the truck doesn't lock up and spin.
-        if system_state == "EMERGENCY":
+        # The slow planner's scalar state is presentation, not fresh traffic
+        # authority. In schema 1 emergency demands use the immutable current
+        # requests below and the independent last-boundary emergency guard.
+        if (system_state == "EMERGENCY"
+                and self.sdk.shared_state.get('longitudinal_control_schema') != 1):
             self._longitudinal_decision = {"source": "system_emergency",
                 "reason": "emergency brake demand", "emergency": True}
             self._set_brake(1.0, dt)
@@ -1476,11 +1491,14 @@ class Plugin(BasePlugin):
         strict_longitudinal = self.sdk.shared_state.get("longitudinal_control_schema") == 1
         input_failure = ""
         if strict_longitudinal:
+            rejected_input = {}
             acc, input_failure = read(self.sdk.shared_state, "acc", binding=self._longitudinal_binding,
-                required=bool(self.sdk.shared_state.get("longitudinal_acc_active", False)))
+                required=bool(self.sdk.shared_state.get("longitudinal_acc_active", False)),
+                rejection_info=rejected_input)
             traffic, _ = read(self.sdk.shared_state, "traffic", binding=self._longitudinal_binding)
             policy, policy_failure = read(self.sdk.shared_state, "policy", binding=self._longitudinal_binding,
-                required=bool(self.sdk.shared_state.get("longitudinal_policy_active", False)))
+                required=bool(self.sdk.shared_state.get("longitudinal_policy_active", False)),
+                rejection_info=rejected_input)
             input_failure = input_failure or policy_failure
             # Collision is a relay of the same traffic minimum, not another
             # independent depth/coverage sensor or a second braking controller.
@@ -1523,7 +1541,7 @@ class Plugin(BasePlugin):
             # camera lane detection at an intersection. Stop predictably.
             requested_brake = max(requested_brake, 0.70)
 
-        if system_state == "AVOID_OBSTACLE":
+        if system_state == "AVOID_OBSTACLE" and not strict_longitudinal:
             requested_brake = max(requested_brake,
                                   float(np.clip(0.5 + (0.5 * danger_level), 0.5, 1.0)))
 
@@ -1633,7 +1651,8 @@ class Plugin(BasePlugin):
             if ceiling is not None and abs(speed) > ceiling and decision["throttle"] > 0:
                 decision.update(throttle=0., source="speed_constraint", reason="speed ceiling coast")
         if input_failure:
-            record_control_fault(self.sdk.shared_state, "autopilot", input_failure)
+            record_control_fault(self.sdk.shared_state, "autopilot", input_failure,
+                                 details=rejected_input)
             self.sdk.shared_state.update_batch({"autopilot_control_state": "controlled_stop",
                 "autopilot_stop_epoch": self._control_failure_epoch})
             decision.update(throttle=0., brake=.70, source="safety", reason=input_failure)
@@ -2101,7 +2120,8 @@ class Plugin(BasePlugin):
         vehicle-jerk guarantee; the actuator and truck determine that response.
         """
         requested = max(0.0, min(1.0, float(requested)))
-        emergency = (self.sdk.shared_state.get("system_state") == "EMERGENCY"
+        emergency = ((self.sdk.shared_state.get('longitudinal_control_schema') != 1
+                      and self.sdk.shared_state.get("system_state") == "EMERGENCY")
                      or getattr(self, "_longitudinal_decision", {}).get("emergency", False))
         self._last_brake = requested if emergency else self._ramp(self._last_brake, requested, dt,
                                       BRAKE_RAMP_UP, BRAKE_RAMP_DOWN)

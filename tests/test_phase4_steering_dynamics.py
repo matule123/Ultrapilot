@@ -560,7 +560,7 @@ class Phase4SteeringDynamicsTests(unittest.TestCase):
         with mock.patch.object(
                 plugin, "_export_and_rotate_steering_replay") as export:
             plugin.on_tick(0.01)
-        export.assert_called_once_with("manual_disable")
+        export.assert_called_once_with("manual_disable", "")
         self.assertEqual(plugin.sdk.controller.steering, 0.0)
         self.assertAlmostEqual(plugin._steering_dynamics.command, 0.18)
 

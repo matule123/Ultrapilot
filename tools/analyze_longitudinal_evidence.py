@@ -127,6 +127,7 @@ def analyze_rows(rows):
                 backend_returned_at_s=backend.get('returned_at_s'),
                 pair_after=pair, requested=source.get('requested'), selected=source.get('selected'),
                 output_intent=source.get('output_intent'), winner=selected.get('source'), reason=reason,
+                intervention=event.get('intervention'),
                 input_rejections=source.get('input_rejections'), rejected_inputs=source.get('rejected_inputs'),
                 actual_speed_mps=source.get('actual_speed_mps'),
                 requested_speed_kmh=acc.get('requested_speed_kmh'),

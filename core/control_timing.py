@@ -9,12 +9,67 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import math
+import logging
 import threading
 import time
 from typing import Hashable, Optional
 
 
-def record_control_fault(state, producer, reason):
+def first_control_fault_record(state):
+    epoch = state.get("autopilot_failure_epoch")
+    faults = [state.get("autopilot_first_fault_" + producer)
+              for producer in ("engine", "autopilot")]
+    intervention = state.get('autopilot_intervention')
+    if isinstance(intervention, dict) and intervention.get('kind') == 'emergency':
+        faults.append(intervention)
+    faults = [f for f in faults if isinstance(f, dict)
+              and f.get("epoch") == epoch and f.get("reason")]
+    return min(faults, key=lambda f: (f["observed_at"], f.get('sequence', 0))) if faults else None
+
+
+def _intervention_record(state, producer, code, reason, kind, details):
+    from core.longitudinal import context
+    telemetry = state.get('telemetry')
+    truck = telemetry.get('truck') if isinstance(telemetry, dict) else None
+    truck = truck if isinstance(truck, dict) else {}
+    observation = truck.get('_control_observation')
+    observation = observation if isinstance(observation, dict) else {}
+    try:
+        binding = list(context(state))
+    except (AttributeError, TypeError, ValueError):
+        binding = None  # Malformed authority is not reconstructed by logging.
+    return dict(epoch=state.get('autopilot_failure_epoch'), sequence=time.monotonic_ns(),
+        observed_at=time.monotonic(), producer=producer, source=producer,
+        code=code, kind=kind, reason=str(reason)[:512],
+        context=binding, sdk_frame_us=truck.get('sdkFrameTimeUs'),
+        observation_timestamp=observation.get('observed_at'), details=details)
+
+
+def record_control_intervention(state, producer, code, reason, kind, *, details=None):
+    """Bounded decision-edge evidence; never grants authority or a safe gap.
+
+    A later emergency/token cleanup cannot replace the first technical fault.
+    The producer owns its signature slot; unchanged decisions do not log per tick.
+    """
+    from core.navigation.longitudinal_diagnostics import bounded_copy
+    first = first_control_fault_record(state)
+    if first:
+        state.set('autopilot_intervention', first)
+        return first
+    epoch = state.get('autopilot_failure_epoch')
+    key = 'control_intervention_' + producer
+    previous = state.get(key)
+    if (isinstance(previous, dict) and previous.get('epoch') == epoch
+            and previous.get('code') == code and previous.get('reason') == reason):
+        return previous
+    record = _intervention_record(state, producer, code, reason, kind,
+                                  bounded_copy(details, limit=8192)[0])
+    state.update_batch({key: record, 'autopilot_intervention': record})
+    logging.warning('Control intervention: %s', record)
+    return record
+
+
+def record_control_fault(state, producer, reason, *, details=None):
     """Remember each producer's first rejection in this engagement.
 
     Separate producer slots avoid a read/modify/write race over one shared
@@ -25,18 +80,19 @@ def record_control_fault(state, producer, reason):
     key = "autopilot_first_fault_" + producer
     previous = state.get(key)
     if not isinstance(previous, dict) or previous.get("epoch") != epoch:
-        state.set(key, {"epoch": epoch, "reason": str(reason),
-                        "observed_at": time.monotonic(), "producer": producer})
+        from core.navigation.longitudinal_diagnostics import bounded_copy
+        record = _intervention_record(state, producer, 'TECHNICAL_CONTROL_STOP',
+            reason, 'technical', bounded_copy(details, limit=8192)[0])
+        state.set(key, record)
+        first = first_control_fault_record(state)
+        state.set('autopilot_intervention', first)
+        logging.warning('Control intervention: %s', record)
+    return first_control_fault_record(state)
 
 
 def first_control_fault(state, fallback):
-    epoch = state.get("autopilot_failure_epoch")
-    faults = [state.get("autopilot_first_fault_" + producer)
-              for producer in ("engine", "autopilot")]
-    faults = [fault for fault in faults if isinstance(fault, dict)
-              and fault.get("epoch") == epoch and fault.get("reason")]
-    return (min(faults, key=lambda fault: fault["observed_at"])["reason"]
-            if faults else str(fallback))
+    first = first_control_fault_record(state)
+    return first['reason'] if first else str(fallback)
 
 
 @dataclass(frozen=True)

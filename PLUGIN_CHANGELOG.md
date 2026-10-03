@@ -48,6 +48,19 @@ Commit: `3ef65c7`.
 
 ## Autopilot
 
+### 1.0.3 — 2026-10-03
+
+**Fixed**
+
+- Consume emergency/obstacle braking from current immutable longitudinal requests instead of an unbound, slower planner state; retain the legacy pre-schema behavior and immediate current emergency response.
+- Preserve the first control-intervention reason across controlled stopping, stationary simple-auto brake release and later activation/gear cleanup.
+- Export an Engine-originated safety disengagement as automatic rather than manual, with the first decision record; keep explicit manual disengagement separate by activation epoch.
+- Retain the actually rejected producer values for fault reporting instead of rereading a later packet. Steering, launch/handoff, transmission mode rules and freshness limits are unchanged.
+
+**Known limitation**
+
+- Predictive roundabout yield and automatic waiting/restart are not implemented: actor source timestamps, confirmed directed conflict paths, yield position and coverage are unavailable. Reactive traffic candidates are not proof of a safe entry gap.
+
 ### 1.0.2 — 2026-10-03
 
 **Fixed**
