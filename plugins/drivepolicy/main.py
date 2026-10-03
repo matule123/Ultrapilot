@@ -2,6 +2,7 @@ import logging
 import math
 from sdk.base_plugin import BasePlugin
 from core.navigation.route import curve_speed_limit_ms, iter_path_xz
+from core.longitudinal import context, read, publish, curve_input
 
 
 # === Tuning =================================================================
@@ -74,30 +75,36 @@ class Plugin(BasePlugin):
     a pile of independent, sometimes-contradictory requests."""
 
     NAME = "drivepolicy"
-    VERSION = "1.0.0"
+    VERSION = "1.0.1"
 
     def on_start(self):
         logging.info("DrivePolicy plugin started.")
         self.enabled = True
+        self.sdk.set("longitudinal_policy_active", True)
         # Smoothed plan values so a single noisy sample can't yank the target.
         self._planned = None
         self._lane = BASE_LANE_OFFSET_M
 
     def on_stop(self):
+        self.sdk.set("longitudinal_policy_active", False)
         self.sdk.set("planned_speed_ms", None)
         self.sdk.set("aux_brake_request", 0.0)
+        self.sdk.set("longitudinal_policy", None)
         self.sdk.set("drive_lane_offset", None)
 
     # ====================================================================
     #  SPEED POLICY
     # ====================================================================
-    def _compute_planned_speed(self, dt):
+    def _compute_planned_speed(self, dt, truck=None):
         """Lowest safe speed (m/s) implied by all the limits right now."""
-        truck = self.sdk.telemetry.get("truck", {}) or {}
+        if truck is None:
+            truck = self.sdk.telemetry.get("truck", {}) or {}
         limits = []
 
         # 1. Road-class cap (km/h → m/s), published by the map plugin.
-        road_cap = self.sdk.get("road_speed_cap")
+        strict = self.sdk.get("longitudinal_control_schema") == 1
+        road, _ = read(self.sdk.shared_state, "road", binding=getattr(self, "_longitudinal_binding", None)) if strict else (None, "")
+        road_cap = (road.get("speed_cap_kmh") if road else None) if strict else self.sdk.get("road_speed_cap")
         if road_cap:
             try:
                 limits.append(float(road_cap) / 3.6)
@@ -110,12 +117,13 @@ class Plugin(BasePlugin):
             limits.append(float(sl))
 
         # 3. Curve-safe speed from the measured path curvature.
-        radius = self.sdk.get("path_curvature_radius")
+        curve = curve_input(self.sdk.shared_state, binding=getattr(self, "_longitudinal_binding", None)) if strict else None
+        radius = (curve["radius_m"] if curve else None) if strict else self.sdk.get("path_curvature_radius")
         if radius:
             try:
                 R = float(radius)
-                distance = float(self.sdk.get(
-                    "path_curve_distance_m", 0.0) or 0.0)
+                distance = (curve["distance_m"] if strict else float(self.sdk.get(
+                    "path_curve_distance_m", 0.0) or 0.0))
                 curve_limit = curve_speed_limit_ms(
                     R, distance, A_LAT_MAX)
                 if math.isfinite(curve_limit):
@@ -124,7 +132,8 @@ class Plugin(BasePlugin):
                 pass
 
         # 4. Lead vehicle: hold a ~3 s time-gap.
-        lead = self.sdk.get("lead_distance")
+        traffic, _ = read(self.sdk.shared_state, "traffic", binding=getattr(self, "_longitudinal_binding", None)) if strict else (None, "")
+        lead = (traffic.get("lead_distance") if traffic else None) if strict else self.sdk.get("lead_distance")
         if lead and lead > 0:
             try:
                 limits.append(float(lead) / 3.0)
@@ -132,7 +141,7 @@ class Plugin(BasePlugin):
                 pass
 
         # 5. Red/yellow light ahead: ramp to a near-stop as we approach.
-        light = self.sdk.get("traffic_light")
+        light = (traffic.get("light") if traffic else None) if strict else self.sdk.get("traffic_light")
         if light:
             color = light.get("color")
             ldist = float(light.get("distance", 999.0) or 999.0)
@@ -141,6 +150,8 @@ class Plugin(BasePlugin):
 
         plan = min(limits) if limits else 25.0
         plan = max(0.0, min(plan, 40.0))   # clamp 0..144 km/h
+        self._longitudinal_policy_expiry = min((v["expires_at"] for v in (road, traffic, curve)
+                                               if v is not None), default=float("inf"))
 
         # Asymmetric lag: drop fast (safe), rise slow (don't lunge into trouble).
         if self._planned is None:
@@ -152,7 +163,9 @@ class Plugin(BasePlugin):
                 self._planned += (plan - self._planned) * fall
             else:
                 self._planned += (plan - self._planned) * rise
-        return float(self._planned)
+        # A smoothed preference may rise slowly, but cannot override a
+        # currently lower hard constraint. No regulator gain is changed.
+        return float(min(self._planned, plan))
 
     def _compute_aux_brake(self, speed_ms, planned):
         """0..1 aux-brake nudge when we're carrying more speed than the plan."""
@@ -378,12 +391,17 @@ class Plugin(BasePlugin):
     # ====================================================================
     def on_tick(self, delta_time: float):
         dt = max(delta_time, 1e-3)
+        binding = context(self.sdk.shared_state)
+        self._longitudinal_binding = binding
         truck = self.sdk.telemetry.get("truck", {}) or {}
         speed_ms = abs(float(truck.get("speed", 0.0) or 0.0))
 
-        planned = self._compute_planned_speed(dt)
+        planned = self._compute_planned_speed(dt, truck)
         self.sdk.set("planned_speed_ms", planned)
         self.sdk.set("aux_brake_request", self._compute_aux_brake(speed_ms, planned))
+        publish(self.sdk.shared_state, truck, "policy", binding=binding,
+                planned_speed_ms=planned, brake=self._compute_aux_brake(speed_ms, planned),
+                expires_at=self._longitudinal_policy_expiry)
 
         # Smooth the lane offset too so the trailer nudge doesn't twitch.
         target_lane = self._compute_lane_offset()

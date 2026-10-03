@@ -494,7 +494,7 @@ class Plugin(BasePlugin):
     """
 
     NAME = "autopilot"
-    VERSION = "1.0.0"
+    VERSION = "1.0.1"
 
     def on_start(self):
         logging.info("Autopilot Plugin started (Phase 1 tuning).")
@@ -538,6 +538,7 @@ class Plugin(BasePlugin):
         self._last_passive_timing_sequence = None
 
     def on_stop(self):
+        self.sdk.shared_state.set("longitudinal_command", None)
         executor = getattr(self, "_steering_executor", None)
         if executor is not None:
             executor.stop()
@@ -613,8 +614,17 @@ class Plugin(BasePlugin):
 
     def _apply_throttle(self, throttle: float, dt: float):
         """Slew the throttle smoothly (eco smoothing if active)."""
-        if self.sdk.shared_state.get("eco_active", False):
-            alpha = float(self.sdk.shared_state.get("eco_smoothing", 0.15))
+        if self._last_brake > 0.0:
+            self._last_throttle = 0.0
+            self.sdk.controller.set_throttle(0.0)
+            return
+        from core.longitudinal import read
+        strict = self.sdk.shared_state.get("longitudinal_control_schema") == 1
+        eco, _ = read(self.sdk.shared_state, "eco") if strict else (None, "")
+        if eco or (not strict and self.sdk.shared_state.get("eco_active", False)):
+            alpha = float(eco["smoothing"] if eco else self.sdk.shared_state.get("eco_smoothing", 0.15))
+            if not math.isfinite(alpha) or not 0.0 <= alpha <= 1.0:
+                alpha = 1.0
             throttle = (alpha * throttle) + ((1 - alpha) * self._last_throttle)
         throttle = self._ramp(self._last_throttle, max(0.0, min(1.0, throttle)),
                               dt, THROTTLE_RAMP, THROTTLE_RAMP)
@@ -1025,11 +1035,21 @@ class Plugin(BasePlugin):
         return snapshot, packet
 
     def on_tick(self, delta_time: float):
+        from core.longitudinal import context, finalize, COMMAND_KEY
+        self._longitudinal_binding = context(self.sdk.shared_state)
+        self._longitudinal_decision = {"source": "autopilot", "reason": "autopilot state"}
+        self._longitudinal_truck = {}
         self._passive_timing_input = None
         self._launch_tick = None
         self._launch_target_throttle = 0.0
         try:
             self._control_tick(delta_time)
+            if self.sdk.shared_state.get("autopilot_active", False):
+                finalize(self.sdk.shared_state, self._longitudinal_truck,
+                         self._last_throttle, self._last_brake,
+                         self._longitudinal_decision, self._longitudinal_binding)
+            else:
+                self.sdk.shared_state.set(COMMAND_KEY, None)
             launch_tick = self._launch_tick
             if launch_tick is not None:
                 # A single receipt only after the entire control tick, including
@@ -1072,6 +1092,7 @@ class Plugin(BasePlugin):
         forward_history = self.sdk.shared_state.get("simple_auto_forward_history")
         launch = self.sdk.shared_state.get("simple_auto_launch")
         truck = self.sdk.telemetry.get("truck", {}) or {}
+        self._longitudinal_truck = truck
         if (launch and forward_history
                 and tuple(launch.get("context", ())) == tuple(forward_history.get("context", ()))):
             observation, _reason = vehicle_control_observation(self.sdk.shared_state, truck)
@@ -1406,6 +1427,8 @@ class Plugin(BasePlugin):
         # 2. Safety states — these still brake hard, but through the ramp so
         #    the truck doesn't lock up and spin.
         if system_state == "EMERGENCY":
+            self._longitudinal_decision = {"source": "system_emergency",
+                "reason": "emergency brake demand", "emergency": True}
             self._set_brake(1.0, dt)
             self._automatic_brake_stop = bool(
                 autopilot_engaged and speed_kmh < 1.0
@@ -1431,6 +1454,9 @@ class Plugin(BasePlugin):
             return
 
         if system_state == "PAY_TOLL":
+            self._longitudinal_decision = {"source": "toll", "reason": "toll stop/payment"}
+            self._last_throttle = 0.0
+            self.sdk.controller.set_throttle(0.0)
             toll_nav_active = bool(navigation_authority_safe
                 and self.sdk.shared_state.get("nav_active", False))
             self._last_steering = self._ramp_steering(
@@ -1448,19 +1474,42 @@ class Plugin(BasePlugin):
             return
 
         # --- Gather all brake requests, combine via max() -------------------
-        collision_brake = float(self.sdk.shared_state.get("collision_brake_request", 0.0) or 0.0)
+        from core.longitudinal import read, choose
+        strict_longitudinal = self.sdk.shared_state.get("longitudinal_control_schema") == 1
+        input_failure = ""
+        if strict_longitudinal:
+            acc, input_failure = read(self.sdk.shared_state, "acc", binding=self._longitudinal_binding,
+                required=bool(self.sdk.shared_state.get("longitudinal_acc_active", False)))
+            traffic, _ = read(self.sdk.shared_state, "traffic", binding=self._longitudinal_binding)
+            policy, policy_failure = read(self.sdk.shared_state, "policy", binding=self._longitudinal_binding,
+                required=bool(self.sdk.shared_state.get("longitudinal_policy_active", False)))
+            input_failure = input_failure or policy_failure
+            # Collision is a relay of the same traffic minimum, not another
+            # independent depth/coverage sensor or a second braking controller.
+            collision_brake = 0.0
+            traffic_brake = float(traffic.get("traffic_brake", 0.)) if traffic else 0.
+            light_brake = float(traffic.get("light_brake", 0.)) if traffic else 0.
+            aux_brake = float(policy.get("brake", 0.)) if policy else 0.
+            acc_throttle = float(acc["throttle"]) if acc else .35
+            acc_brake = float(acc["brake"]) if acc else 0.
+        else:
+            collision_brake = float(self.sdk.shared_state.get("collision_brake_request", 0.0) or 0.0)
+            acc_throttle = self.sdk.shared_state.get("acc_throttle", .35)
+            acc_brake = self.sdk.shared_state.get("acc_brake", 0.)
         try:
             traffic_age = time.monotonic() - float(
                 self.sdk.shared_state.get(
                     "traffic_snapshot_timestamp", 0.0) or 0.0)
         except (TypeError, ValueError, OverflowError):
             traffic_age = float("inf")
-        traffic_brake = (float(self.sdk.shared_state.get(
+        legacy_traffic_brake = (float(self.sdk.shared_state.get(
             "traffic_brake", 0.0) or 0.0)
             if (self.sdk.shared_state.get("traffic_snapshot_valid", False)
                 and 0.0 <= traffic_age <= 0.5) else 0.0)
-        light_brake = float(self.sdk.shared_state.get("light_brake", 0.0) or 0.0)
-        aux_brake = float(self.sdk.shared_state.get("aux_brake_request", 0.0) or 0.0)
+        if not strict_longitudinal:
+            traffic_brake = legacy_traffic_brake
+            light_brake = float(self.sdk.shared_state.get("light_brake", 0.0) or 0.0)
+            aux_brake = float(self.sdk.shared_state.get("aux_brake_request", 0.0) or 0.0)
         maneuver_brake = (float(maneuver_approach.get(
             "brake_request", 0.0) or 0.0)
             if not approach_reason else 0.0)
@@ -1469,7 +1518,7 @@ class Plugin(BasePlugin):
         # traffic_brake/collision_brake, so it must not become a duplicate
         # braking channel.
         vision_brake = 0.0
-        requested_brake = max(collision_brake, traffic_brake, light_brake,
+        requested_brake = max(float(acc_brake or 0.), collision_brake, traffic_brake, light_brake,
                               aux_brake, maneuver_brake, vision_brake)
         if navigation_unreliable:
             # A GPS route with a mismatched map must never fall through to
@@ -1489,6 +1538,12 @@ class Plugin(BasePlugin):
         radius = self.sdk.shared_state.get("path_curvature_radius", None)
         curve_distance = self.sdk.shared_state.get(
             "path_curve_distance_m", 0.0)
+        curve = None
+        if strict_longitudinal:
+            from core.longitudinal import curve_input
+            curve = curve_input(self.sdk.shared_state, binding=self._longitudinal_binding)
+            radius = curve["radius_m"] if curve else None
+            curve_distance = curve["distance_m"] if curve else 0.
         curve_factor = 1.0          # throttle multiplier (set below)
         curve_limit_ms = float("inf")
         curve_brake = 0.0
@@ -1551,21 +1606,46 @@ class Plugin(BasePlugin):
 
         # 3. Apply braking THROUGH THE RAMP (anti-jerk). This is the key change:
         #    the truck brakes firmly but progressively, never a step to 1.0.
-        self._set_brake(requested_brake, dt)
+        requests = [("acc", "emergency" if strict_longitudinal and acc and acc.get("emergency") else "acc", float(acc_brake or 0.)),
+                    ("traffic", "traffic", traffic_brake),
+                    ("traffic_light", "traffic", light_brake),
+                    ("collision", "traffic", collision_brake),
+                    ("speed_policy", "curve", aux_brake),
+                    ("maneuver", "maneuver", maneuver_brake),
+                    ("curve", "curve", curve_brake)]
+        # Keep the existing obstacle/navigation demands and fallback curve law.
+        if requested_brake > max((r[2] for r in requests), default=0.):
+            requests.append(("autopilot_safety" if navigation_unreliable else "autopilot",
+                             "safety" if navigation_unreliable else "obstacle", requested_brake))
+        try:
+            decision = choose(float(acc_throttle if acc_throttle is not None else .35) * curve_factor,
+                              requests, drive_source="acc" if acc_throttle is not None else "cruise")
+        except (TypeError, ValueError, OverflowError):
+            input_failure = "invalid longitudinal producer values"
+            decision = {"throttle": 0., "brake": 0., "source": "invalid", "reason": input_failure}
+        self._longitudinal_decision = decision
+        if strict_longitudinal:
+            decision["expires_at"] = min((p["expires_at"] for p in (acc, traffic, policy)
+                                          if p is not None), default=float("inf"))
+            if curve:
+                decision["expires_at"] = min(decision["expires_at"], curve["expires_at"])
+            from core.longitudinal import speed_ceiling
+            ceiling, expires = speed_ceiling(self.sdk.shared_state, binding=self._longitudinal_binding)
+            decision["expires_at"] = min(decision["expires_at"], expires)
+            if ceiling is not None and abs(speed) > ceiling and decision["throttle"] > 0:
+                decision.update(throttle=0., source="speed_constraint", reason="speed ceiling coast")
+        if input_failure:
+            record_control_fault(self.sdk.shared_state, "autopilot", input_failure)
+            self.sdk.shared_state.update_batch({"autopilot_control_state": "controlled_stop",
+                "autopilot_stop_epoch": self._control_failure_epoch})
+            decision.update(throttle=0., brake=.70, source="safety", reason=input_failure)
+        self._set_brake(decision["brake"], dt)
         self._automatic_brake_stop = bool(
             autopilot_engaged and speed_kmh < 1.0
             and self._last_brake > BRAKE_MIN_HOLD)
 
         # 4. Longitudinal control from ACC outputs
-        acc_throttle = self.sdk.shared_state.get("acc_throttle", None)
-        acc_brake = self.sdk.shared_state.get("acc_brake", None)
-        braking = self._last_brake > BRAKE_MIN_HOLD
-        if acc_throttle is not None and acc_brake is not None:
-            # Never accelerate while any brake is being applied.
-            target_throttle = 0.0 if braking else float(acc_throttle) * curve_factor
-        else:
-            # Fallback if ACC is disabled / not running yet: gentle cruise.
-            target_throttle = 0.0 if braking else 0.35 * curve_factor
+        target_throttle = 0.0 if self._last_brake > 0.0 else decision["throttle"]
         self._launch_target_throttle = target_throttle
         self._apply_throttle(target_throttle, dt)
 
@@ -2022,8 +2102,13 @@ class Plugin(BasePlugin):
         Also clears the throttle the moment the brake engages (engine braking +
         avoids fighting the brakes), which the old code did abruptly."""
         requested = max(0.0, min(1.0, float(requested)))
-        self._last_brake = self._ramp(self._last_brake, requested, dt,
+        emergency = (self.sdk.shared_state.get("system_state") == "EMERGENCY"
+                     or getattr(self, "_longitudinal_decision", {}).get("emergency", False))
+        self._last_brake = requested if emergency else self._ramp(self._last_brake, requested, dt,
                                       BRAKE_RAMP_UP, BRAKE_RAMP_DOWN)
+        if self._last_brake > 0.0:
+            self._last_throttle = 0.0
+            self.sdk.controller.set_throttle(0.0)
         self.sdk.controller.set_brake(self._last_brake)
 
     def _reset_steering_dynamics(self, command: float = 0.0) -> float:

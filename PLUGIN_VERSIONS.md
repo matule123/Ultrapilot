@@ -31,6 +31,11 @@ map, toll, tts and turnsignals. This is not a certification of completeness
 or a reconstruction of older releases.
 
 Map subsequently advanced to 1.0.1 for the post-localization freshness fix.
+Phase 7.1 advances Map to 1.0.2 and acc, autopilot, collision, drivepolicy and
+ecodrive to 1.0.1 for their longitudinal-contract fixes. Core changes do not
+advance unaffected plugin versions. These coordinated runtime files belong
+to one application build; independent mixed-version plugin deployment is
+not supported.
 The plugin's `VERSION` declaration is always the source of truth for its
 current version; the baseline list is historical.
 

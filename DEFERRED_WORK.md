@@ -1,6 +1,6 @@
 # Odložená a nedokončená práca
 
-Stav k 2. 10. 2026. Toto je plán ďalšej práce, nie prísľub termínu.
+Stav k 3. 10. 2026. Toto je plán ďalšej práce, nie prísľub termínu.
 
 ## Fáza 6 – administratívne uzavretá v overenom rozsahu
 
@@ -46,10 +46,18 @@ ju zatiaľ neobsahuje. Herné potvrdenie jej dokončenia zostáva otvorené.
 Samostatne zostáva herné overenie reálnej automatiky, úplnej zastavovacej dráhy
 a vylúčenia ručného plynu chýbajúcim raw kanálom. Nová jazda sa teraz nežiada.
 
-## Navrhovaná ďalšia samostatná úloha – plyn, brzda a ACC
+## Fáza 7.1 – jednotná arbitráž plynu a brzdy
 
-Zdokumentovať arbitráž existujúcich pohonných a brzdových intentov a offline
-reprodukovať súbeh bezpečnostného zastavenia, ACC, neplatnej premávky a manuálneho
-zásahu. Kritériá stanoviť pred ladením; zachovať nulový pohon pri strate autority
-alebo spiatočke a ochranu jednoduchej automatiky pred brzdením do R.
-Fáza 6 túto úlohu neimplementuje; rozsah a obmedzenia sú v záverečnom reporte.
+Implementácia a cielené offline overenie sú v
+[PHASE7_STAGE1_RESULTS.md](PHASE7_STAGE1_RESULTS.md). Jeden identitou a časom
+viazaný povel prechádza poslednou bránou Engine; EcoDrive neobnoví plyn počas
+brzdenia. Núdzová požiadavka zostáva nad bežným pohonom. Nasadenie ani herné
+potvrdenie nového toku neprebehli; celú pytest sadu spustí používateľ.
+
+## Fáza 7.2 – komfort plynu, brzdy a ACC (otvorené)
+
+Samostatne stanoviť a merať pozdĺžne zrýchlenie, jerk, rýchlostnú chybu,
+odstup a prechody medzi pohonom, dojazdom a brzdením. Existujúce PID zisky a
+bežné rampy sa vo Fáze 7.1 neladili. Historické steering replaye bez párovaných
+pedálových kanálov nedokazujú príčinu používateľom vnímanej prudkosti.
+Nevytvárať stop-and-go ani považovať chýbajúce traffic coverage za voľný priestor.

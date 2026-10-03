@@ -68,7 +68,7 @@ class Plugin(BasePlugin):
     """
 
     NAME = "map"
-    VERSION = "1.0.1"
+    VERSION = "1.0.2"
 
     def on_start(self):
         logging.info("Map (navigation) plugin started.")
@@ -2270,6 +2270,8 @@ class Plugin(BasePlugin):
         net = self.road_net
         if net is None or not getattr(net, "loaded", False) or not pos:
             return
+        from core.longitudinal import context, publish
+        binding = context(self.sdk.shared_state)
         rt = net.road_type_at(pos)
         if not rt:
             return
@@ -2285,6 +2287,16 @@ class Plugin(BasePlugin):
             "dirt": 35,
         }
         cap = caps.get(rtype, 70)
+        observation = getattr(self, "_road_type_observation", {}) or {}
+        xyz = observation.get("tractor_position")
+        coherent = (isinstance(xyz, (list, tuple)) and len(xyz) == 3
+                    and tuple(pos) == (xyz[0], xyz[2]))
+        truck = {"sdkFrameTimeUs": observation.get("sdk_frame_us"),
+                 "_control_observation": {"schema_version": 1,
+                    "sdk_frame_us": observation.get("sdk_frame_us"),
+                    "observed_at": observation.get("timestamp"), "valid": coherent}}
+        publish(self.sdk.shared_state, truck, "road", binding=binding,
+                speed_cap_kmh=float(cap), road_type=rtype)
         prev = self.sdk.get("road_speed_cap", None)
         # Only publish when it changes, to avoid spamming shared state every tick.
         if prev != cap:
@@ -2671,6 +2683,7 @@ class Plugin(BasePlugin):
         # slows down on narrow/local/dirt sectors and keeps full speed on
         # motorways/expressways. Drives the "nech ide pomalšie na poľných /
         # úzkych cestách" behaviour.
+        self._road_type_observation = vehicle_observation
         self._publish_road_type(pos)
         road_type_finished_at = time.monotonic()
 
@@ -2963,6 +2976,7 @@ class Plugin(BasePlugin):
                     route, "last_steering_debug", {}) or {})
                 calculation_finished_at = time.monotonic()
                 steering_debug.update({
+                    "longitudinal_curve_profile": dict(curve_profile),
                     "computed_at": calculation_finished_at,
                     "observation_timestamp": vehicle_observation.get("timestamp"),
                     # Passive phase markers, in the same monotonic clock as

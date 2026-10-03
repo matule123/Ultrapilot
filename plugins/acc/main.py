@@ -2,6 +2,7 @@ import logging
 import numpy as np
 from sdk.base_plugin import BasePlugin
 from core.pid import PID
+from core.longitudinal import context, read, publish
 from plugins.acc.settings import settings
 
 class Plugin(BasePlugin):
@@ -13,11 +14,12 @@ class Plugin(BasePlugin):
     """
 
     NAME = "acc"
-    VERSION = "1.0.0"
+    VERSION = "1.0.1"
 
     def on_start(self):
         logging.info("ACC Plugin started with professional PID control.")
         self.enabled = True
+        self.sdk.set("longitudinal_acc_active", True)
 
         # Initialize PID for speed maintenance
         # Kp: Proportional (fast response), Ki: Integral (eliminates steady-state error), Kd: Derivative (damps oscillations)
@@ -27,25 +29,34 @@ class Plugin(BasePlugin):
     def on_stop(self):
         logging.info("ACC Plugin stopped.")
         self.enabled = False
+        self.sdk.set("longitudinal_acc_active", False)
+        self.sdk.set("longitudinal_acc", None)
+        self.sdk.shared_state.update_batch({"acc_throttle": None, "acc_brake": None})
 
     def on_tick(self, delta_time: float):
         if not self.enabled:
             return
 
         # 1. Telemetry & State
+        binding = context(self.sdk.shared_state)
         truck = self.sdk.telemetry.get("truck", {}) or {}
         speed = truck.get("speed", 0) or 0
         # Handle both m/s and km/h inputs
         speed_kmh = abs(speed) * 3.6 if abs(speed) < 200 else abs(speed)
 
         # Get danger level from perception/traffic analysis
-        danger_level = self.sdk.shared_state.get("danger_level", 0) or 0
+        strict = self.sdk.get("longitudinal_control_schema") == 1
+        traffic, _ = read(self.sdk.shared_state, "traffic", binding=binding) if strict else (None, "")
+        danger_level = (traffic["traffic_brake"] if traffic else 0.) if strict else self.sdk.get("danger_level", 0) or 0
 
         # 2. Emergency Collision Avoidance
         if danger_level > settings.emergency_brake_threshold:
             logging.warning("ACC: EMERGENCY BRAKING ACTIVE!")
             self.sdk.shared_state.set("acc_throttle", 0.0)
             self.sdk.shared_state.set("acc_brake", 1.0)
+            publish(self.sdk.shared_state, truck, "acc", binding=binding,
+                    throttle=0., brake=1., emergency=True, requested_speed_kmh=None,
+                    constrained_speed_kmh=None, expires_at=traffic["expires_at"] if traffic else float("inf"))
             self.sdk.shared_state.set("tts_message", "Collision alert! Emergency braking.")
             return
 
@@ -67,7 +78,8 @@ class Plugin(BasePlugin):
         # plugin classifies the road under us and publishes road_speed_cap (km/h);
         # when present it overrides the user target (a truck can't do 90 on a
         # single-lane dirt road, regardless of what the driver set).
-        road_cap = self.sdk.shared_state.get("road_speed_cap", None)
+        road_packet, _ = read(self.sdk.shared_state, "road", binding=binding) if strict else (None, "")
+        road_cap = (road_packet.get("speed_cap_kmh") if road_packet else None) if strict else self.sdk.get("road_speed_cap")
         if road_cap is not None:
             try:
                 effective_target_speed = min(effective_target_speed, float(road_cap))
@@ -77,7 +89,8 @@ class Plugin(BasePlugin):
         # Coherent plan from the speed planner (m/s → km/h). When present this
         # is the single combined "how fast is safe right now" value (curvature
         # + lead + light + caps); we never exceed it.
-        plan_ms = self.sdk.shared_state.get("planned_speed_ms", None)
+        policy, _ = read(self.sdk.shared_state, "policy", binding=binding) if strict else (None, "")
+        plan_ms = (policy.get("planned_speed_ms") if policy else None) if strict else self.sdk.get("planned_speed_ms")
         if plan_ms is not None:
             try:
                 effective_target_speed = min(effective_target_speed, float(plan_ms) * 3.6)
@@ -87,7 +100,8 @@ class Plugin(BasePlugin):
         if danger_level > 0.05:
             # Non-linear reduction for smoother approach: speed drops faster as danger increases
             reduction_factor = max(0.3, 1.0 - (danger_level ** 1.5 * 3))
-            effective_target_speed = max(20.0, base_target_speed * reduction_factor)
+            effective_target_speed = min(effective_target_speed,
+                                         max(20.0, base_target_speed * reduction_factor))
             logging.debug(f"ACC: Adjusting target speed to {effective_target_speed:.1f} km/h due to traffic")
 
         self.speed_pid.set_setpoint(effective_target_speed)
@@ -109,6 +123,14 @@ class Plugin(BasePlugin):
         else:
             self.sdk.shared_state.set("acc_throttle", throttle_val)
             self.sdk.shared_state.set("acc_brake", 0.0)
+
+        publish(self.sdk.shared_state, truck, "acc", binding=binding,
+                throttle=float(throttle_val) if speed_kmh <= effective_target_speed + 2 else 0.,
+                brake=float(brake_power) if speed_kmh > effective_target_speed + 2 else 0.,
+                emergency=False, requested_speed_kmh=base_target_speed,
+                constrained_speed_kmh=effective_target_speed,
+                expires_at=min((v["expires_at"] for v in (traffic, road_packet, policy)
+                                if v is not None), default=float("inf")))
 
         # Update UI tags
         self.tags.acc_speed = effective_target_speed

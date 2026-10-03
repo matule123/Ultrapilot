@@ -572,7 +572,15 @@ class UiChromeTests(unittest.TestCase):
         versions = page.findChildren(QLabel, "PluginVersion")
         self.assertEqual(len(versions), 12)
         self.assertTrue(all(label.text().startswith("v") for label in versions))
-        self.assertEqual(page._installed_versions["acc"], "1.0.0")
+        from core.paths import app_dir
+        from core.plugin_metadata import installed_plugin_version
+        from pathlib import Path
+        declared = installed_plugin_version(Path(app_dir()) / "plugins" / "acc" / "main.py")
+        self.assertIsNotNone(declared)
+        self.assertEqual(page._installed_versions["acc"], declared)
+        self.assertEqual(len([label for label in versions
+                             if label.text() == f"v{declared}"]),
+                         sum(value == declared for value in page._installed_versions.values()))
         page.close()
 
     def test_plugin_toggle_does_not_change_live_state_when_save_fails(self):

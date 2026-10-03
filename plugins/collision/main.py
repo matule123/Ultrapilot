@@ -1,5 +1,6 @@
 import logging
 import time
+from core.longitudinal import read
 from sdk.base_plugin import BasePlugin
 
 
@@ -17,7 +18,7 @@ class Plugin(BasePlugin):
     """
 
     NAME = "collision"
-    VERSION = "1.0.0"
+    VERSION = "1.0.1"
 
     def on_start(self):
         logging.info("Collision Avoidance plugin started.")
@@ -26,6 +27,7 @@ class Plugin(BasePlugin):
     def on_stop(self):
         logging.info("Collision Avoidance plugin stopped.")
         self.sdk.set("collision_brake_request", 0.0)
+        self.sdk.set("longitudinal_collision", None)
 
     def on_tick(self, delta_time: float):
         if not self.enabled:
@@ -55,3 +57,9 @@ class Plugin(BasePlugin):
         else:
             self.sdk.set("collision_brake_request", 0.0)
             self.tags.collision_status = "Clear"
+        if self.sdk.get("longitudinal_control_schema") == 1:
+            # A relay cannot refresh an old traffic observation's lease.
+            value, _ = read(self.sdk.shared_state, "traffic")
+            self.sdk.set("longitudinal_collision", value)
+            if value is None:
+                self.tags.collision_status = "Traffic unavailable or stale"

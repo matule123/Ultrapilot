@@ -1,5 +1,6 @@
 import logging
 from sdk.base_plugin import BasePlugin
+from core.longitudinal import context, publish
 
 
 class Plugin(BasePlugin):
@@ -15,7 +16,7 @@ class Plugin(BasePlugin):
     """
 
     NAME = "ecodrive"
-    VERSION = "1.0.0"
+    VERSION = "1.0.1"
     DEFAULT_ENABLED = False  # opt-in
 
     def on_start(self):
@@ -25,11 +26,16 @@ class Plugin(BasePlugin):
     def on_stop(self):
         logging.info("EcoDrive Plugin stopped.")
         self.sdk.shared_state.set("eco_active", False)
+        self.sdk.set("longitudinal_eco", None)
 
     def on_tick(self, delta_time: float):
+        binding = context(self.sdk.shared_state)
+        truck = self.sdk.telemetry.get("truck", {}) or {}
         # Publish eco parameters for the Autopilot to apply.
         self.sdk.shared_state.set("eco_active", True)
         self.sdk.shared_state.set("eco_smoothing", self.smoothing_factor)
+        publish(self.sdk.shared_state, truck, "eco", binding=binding,
+                smoothing=self.smoothing_factor)
         if self.tags is not None:
             self.tags.eco_active = True
             self.tags.eco_smoothing = self.smoothing_factor

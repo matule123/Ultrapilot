@@ -296,6 +296,8 @@ class UltraPilotEngine:
         if self.shared_state.get("telemetry_valid") is None:
             self.shared_state.set("telemetry_valid", False)
         self.shared_state.set("telemetry_control_schema", 1)
+        self.shared_state.set("longitudinal_control_schema", 1)
+        self.shared_state.set("longitudinal_command", None)
 
     def start(self):
         self.running = True
@@ -781,7 +783,7 @@ class UltraPilotEngine:
             logging.warning("Could not start ignition worker: %s", e)
 
     # --- Traffic following ----------------------------------------------------
-    def _lead_brake(self, traffic, pos, heading):
+    def _lead_brake(self, traffic, pos, heading, speed_ms=None):
         """Brake (0..1) for the closest vehicle ahead in our lane, else 0.
 
         Phase 1 tuning — uses **time-to-collision** instead of a bare distance
@@ -797,7 +799,7 @@ class UltraPilotEngine:
         px, pz = pos
         sin_h, cos_h = math.sin(heading), math.cos(heading)
         # Our forward speed (m/s) for relative-velocity math.
-        my_speed = float(self.shared_state.get("truck_speed_ms", 0.0) or 0.0)
+        my_speed = float(self.shared_state.get("truck_speed_ms", 0.0) or 0.0) if speed_ms is None else float(speed_ms)
         best = None  # (ahead, closing_speed)
         crossing = None  # (time_to_conflict, ahead)
         for v in traffic:
@@ -1392,6 +1394,19 @@ class UltraPilotEngine:
             self._cancel_auto_drive_engagement_unlocked(
                 observation_reason)
             return True
+        from core.longitudinal import launch_rejection
+        longitudinal_reason = launch_rejection(self.shared_state)
+        if longitudinal_reason:
+            if (longitudinal_reason.startswith(("acc:", "policy:"))
+                    and time.monotonic() <= pending["deadline_at"]):
+                # Wait for the producer's new activation epoch without asking
+                # for a second N, applying old drive or renewing the deadline.
+                self.controller.release_all()
+                self.shared_state.set("navigation_status",
+                    "Čakám na čerstvý pozdĺžny povel – pohon vypnutý")
+                return True
+            self._cancel_auto_drive_engagement_unlocked(longitudinal_reason)
+            return True
         now = time.monotonic()
         if frame < pending["last_frame"]:
             self._cancel_auto_drive_engagement_unlocked(
@@ -1788,19 +1803,34 @@ class UltraPilotEngine:
             self, "_last_output_brake",
             self.shared_state.get(CTL_BRAKE, 0.0) or 0.0))
         brake = min(0.70, current_brake + SAFETY_BRAKE_RAMP_UP * dt)
+        if self.shared_state.get("longitudinal_control_schema") == 1:
+            from core.longitudinal import read
+            traffic, _ = read(self.shared_state, "traffic", now)
+            if (self.shared_state.get("system_state") == "EMERGENCY"
+                    or (traffic and traffic["traffic_brake"] > .7)):
+                # A navigation failure must not downgrade a current emergency
+                # into the ordinary producer-loss ramp. The simple-auto
+                # standstill/reverse protection below still has precedence.
+                brake = 1.0
         if getattr(self, "_active_transmission_mode", None) == 0:
             truck = ((self.shared_state.get("telemetry", {}) or {})
                      .get("truck", {}) or {})
             try:
                 fresh = 0.0 <= now - float(self.shared_state.get(
                     "telemetry_timestamp", 0.0)) <= 0.5
+                if self.shared_state.get("telemetry_control_schema") == 1:
+                    # Use the original metadata in this very truck observation,
+                    # not a scalar timestamp potentially from the next frame.
+                    fresh = not vehicle_control_observation_rejection(
+                        self.shared_state, truck, now)
                 stopped = abs(float(truck["speed"])) < 0.05
-                not_reversing = int(truck["gear"]) >= 0
+                int(truck["gear"])
             except (KeyError, TypeError, ValueError, OverflowError):
-                fresh = stopped = not_reversing = False
-            if fresh and stopped and not_reversing:
+                fresh = stopped = False
+            if fresh and stopped:
                 brake = 0.0
                 self.shared_state.set("autopilot_active", False)
+                self.shared_state.set("longitudinal_command", None)
         self._last_output_steering = steering
         self._last_output_brake = brake
         self.shared_state.set("automatic_safety_stop_reason",
@@ -1977,6 +2007,8 @@ class UltraPilotEngine:
         if self._flush_auto_drive_engagement(truck_telemetry):
             return
         if not self.shared_state.get("autopilot_active", False):
+            if self.shared_state.get("longitudinal_command") is not None:
+                self.shared_state.set("longitudinal_command", None)
             self._clear_simple_auto_forward_history()
             self._active_transmission_generation = None
             self._active_transmission_mode = None
@@ -2081,6 +2113,22 @@ class UltraPilotEngine:
         steering = self.shared_state.get(CTL_STEERING, 0.0)
         throttle = self.shared_state.get(CTL_THROTTLE, 0.0)
         brake = self.shared_state.get(CTL_BRAKE, 0.0)
+        from core.longitudinal import engine_decision, exclusive, context
+        longitudinal = None
+        if self.shared_state.get("longitudinal_control_schema") == 1:
+            longitudinal, pedal_reason = engine_decision(self.shared_state, truck_telemetry)
+            if pedal_reason:
+                self._automatic_safety_stop(pedal_reason)
+                return
+            throttle, brake = longitudinal["throttle"], longitudinal["brake"]
+        else:
+            # Pre-schema offline clients still pass the same exclusive/range
+            # physical guard. Live Engine initialization always requires schema 1.
+            try:
+                throttle, brake = exclusive(throttle, brake)
+            except (TypeError, ValueError, OverflowError):
+                self._automatic_safety_stop("invalid longitudinal pedal values")
+                return
         snapshot = self.shared_state.get("lane_trajectory", {}) or {}
 
         gps_control = self.shared_state.get("navigation_source") == "gps_lane"
@@ -2140,6 +2188,8 @@ class UltraPilotEngine:
                         throttle=0.0, brake=brake, steering=steering)
                 self._forward_throttle_suppressed = True
                 throttle = 0.0
+                if longitudinal:
+                    longitudinal.update(source="transmission", reason="forward ratio or motion not confirmed")
                 self.shared_state.set(CTL_THROTTLE, 0.0)
             else:
                 self._forward_throttle_suppressed = False
@@ -2152,6 +2202,13 @@ class UltraPilotEngine:
             else:
                 throttle = 0.0
                 self.shared_state.set(CTL_THROTTLE, 0.0)
+                if longitudinal:
+                    longitudinal.update(source="parking_brake", reason="parking hold not released")
+
+        if truck_telemetry.get("parkBrake") is True:
+            throttle = 0.0
+            if longitudinal:
+                longitudinal.update(source="parking_brake", reason="parking brake engaged")
 
         # In simple automatic the service brake held at rest can select R.
         # There is no proven automatic hill-hold input here; hand control back
@@ -2245,8 +2302,39 @@ class UltraPilotEngine:
                 selector=False, steering=0.0, throttle=0.0, brake=0.0)
             return
         steering_write_returned_at_s = time.monotonic()
-        self.controller.set_throttle(throttle)
-        self.controller.set_brake(brake)
+        if longitudinal is not None and (
+                context(self.shared_state) != tuple(longitudinal["context"])
+                or not 0. <= time.monotonic() - longitudinal["observation_timestamp"] <= .5
+                or time.monotonic() > longitudinal["expires_at"]):
+            self._automatic_safety_stop("longitudinal command expired or identity changed before write")
+            return
+        # Release the opposing held channel BEFORE applying the new positive
+        # channel, including when the previous physical frame was braking.
+        if brake > 0.0:
+            self.controller.set_throttle(0.0)
+            self.controller.set_brake(brake)
+        else:
+            self.controller.set_brake(0.0)
+            if not self.shared_state.get("autopilot_active", False):
+                self.controller.release_all()
+                self._was_active = False
+                return
+            self.controller.set_throttle(throttle)
+        if not self.shared_state.get("autopilot_active", False):
+            self.controller.release_all()
+            self.shared_state.set("longitudinal_command", None)
+            self._was_active = False
+            return
+        self.shared_state.set("longitudinal_applied", {
+            "throttle": throttle, "brake": brake,
+            "source": longitudinal["source"] if longitudinal else "legacy_offline",
+            "reason": longitudinal["reason"] if longitudinal else "exclusive pedal guard",
+            "written_at": time.monotonic(),
+            "sdk_frame_us": truck_telemetry.get("sdkFrameTimeUs"),
+            "source_sdk_frame_us": longitudinal["sdk_frame_us"] if longitudinal else None,
+            "source_observation_timestamp": longitudinal["observation_timestamp"] if longitudinal else None,
+            "context": longitudinal["context"] if longitudinal else None,
+        })
         if (simple_auto_forward and starting
                 and not getattr(getattr(self.controller, "scs", None), "connected", False)):
             self._revoke_simple_auto_launch(
@@ -2675,13 +2763,15 @@ class UltraPilotEngine:
                 # so it is never promoted to Phase 5D maneuver evidence.
                 try:
                     from core.sdk.ets2la_data import nearest_light_ahead
+                    from core.longitudinal import context as longitudinal_context
+                    traffic_binding = longitudinal_context(self.shared_state)
                     traffic = self.ets2la.read_traffic()
                     lights = self.ets2la.read_traffic_lights()
                     pos = (truck.get("x", 0.0), truck.get("z", 0.0))
                     hdg = truck.get("rotation", 0.0)
                     light = nearest_light_ahead(lights, pos, hdg)
                     # Lead-vehicle following: brake for the nearest car ahead in our lane.
-                    traffic_brake = self._lead_brake(traffic, pos, hdg)
+                    traffic_brake = self._lead_brake(traffic, pos, hdg, truck.get("speed", 0.0))
                     traffic_available = bool(self.ets2la.traffic_available)
                     from core.navigation.traffic_producer import capture_traffic
                     maneuver_capture = capture_traffic(self.ets2la,
@@ -2698,7 +2788,19 @@ class UltraPilotEngine:
                         "traffic_snapshot_failure": ("" if traffic_available
                             else "ETS2LA traffic shared-memory buffer unavailable"),
                     })
+                    from core.longitudinal import publish as publish_longitudinal
+                    traffic_truck = {**truck, "_control_observation": {
+                        "schema_version": 1, "sdk_frame_us": truck.get("sdkFrameTimeUs"),
+                        "observed_at": telemetry_timestamp, "valid": bool(truck.get("pose_valid", False)),
+                    }}
+                    publish_longitudinal(self.shared_state, traffic_truck, "traffic",
+                        binding=traffic_binding,
+                        evidence_valid=bool(traffic_available or light is not None),
+                        traffic_available=traffic_available,
+                        traffic_brake=traffic_brake, light_brake=self._light_brake(light),
+                        light=light, lead_distance=self.shared_state.get("lead_distance"))
                 except Exception as error:
+                    self.shared_state.set("longitudinal_traffic", None)
                     # Never retain actuator-facing values from an older frame.
                     self.shared_state.update_batch({
                         "traffic": [], "traffic_light": None,

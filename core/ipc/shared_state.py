@@ -12,7 +12,12 @@ def lane_publication_batch(data):
     """
     if "lane_trajectory" not in data:
         return data
-    return {**data, "lane_trajectory_publication_token": uuid.uuid4().hex}
+    snapshot = data["lane_trajectory"] or {}
+    identity = {key: snapshot.get(key) for key in (
+        "navigation_intent_id", "revision", "route_build_id",
+        "source_game_session_id", "source_map_key", "source_dataset_fingerprint")}
+    return {**data, "lane_trajectory_publication_token": uuid.uuid4().hex,
+            "lane_trajectory_identity": identity}
 
 
 class LaneSnapshotReader:
