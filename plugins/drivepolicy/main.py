@@ -75,7 +75,7 @@ class Plugin(BasePlugin):
     a pile of independent, sometimes-contradictory requests."""
 
     NAME = "drivepolicy"
-    VERSION = "1.0.1"
+    VERSION = "1.0.2"
 
     def on_start(self):
         logging.info("DrivePolicy plugin started.")
@@ -134,7 +134,12 @@ class Plugin(BasePlugin):
         # 4. Lead vehicle: hold a ~3 s time-gap.
         traffic, _ = read(self.sdk.shared_state, "traffic", binding=getattr(self, "_longitudinal_binding", None)) if strict else (None, "")
         lead = (traffic.get("lead_distance") if traffic else None) if strict else self.sdk.get("lead_distance")
-        if lead and lead > 0:
+        # Route-aligned following is owned by ACC's existing speed controller;
+        # do not add a second distance/3 cap on top of its time-gap law.
+        following = traffic.get('following') if traffic else None
+        if lead and lead > 0 and not (self.sdk.get('longitudinal_acc_active')
+                and isinstance(following, dict) and following.get('status')
+                    in ('candidate', 'no_candidate_unproven_coverage')):
             try:
                 limits.append(float(lead) / 3.0)
             except (TypeError, ValueError):

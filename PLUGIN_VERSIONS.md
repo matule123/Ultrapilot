@@ -41,6 +41,9 @@ and pedal-recovery fixes. EcoDrive's preference producer and the other plugins
 are unchanged; consuming its preference differently does not release EcoDrive.
 The plugin's `VERSION` declaration is always the source of truth for its
 current version; the baseline list is historical.
+Phase 7.3 advances ACC to 1.1.0 for route-candidate constraints and source-loss
+handling, and DrivePolicy to 1.0.2 to avoid duplicate following constraints.
+Engine/core guards do not release unchanged Autopilot, Map or Collision plugins.
 
 ## Display and runtime metadata
 

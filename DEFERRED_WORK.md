@@ -62,8 +62,13 @@ rieši aj bežnú brzdu; integrál sa nenabíja pri vypnutí alebo vonkajšom br
 Komfort v ETS2 zostáva neoverený. Pedálová rampa nie je záruka fyzického jerk.
 Celú pytest sadu spustí používateľ; nasadenie v tejto úlohe neprebehlo.
 
-## Fáza 7.3 – ACC (otvorené)
+## Fáza 7.3 – ACC (implementované ochranné zlepšenia, neúplný vstupný dôkaz)
 
-Samostatne riešiť výber a kontinuitu existujúceho ACC cieľa a odstupové kritériá.
-Pred ďalším ladením doložiť časovo priradené pedálové kanály a odozvu vozidla.
-Nevytvárať nové stop-and-go ani považovať chýbajúce traffic coverage za voľný priestor.
+[PHASE7_STAGE3_RESULTS.md](PHASE7_STAGE3_RESULTS.md) opisuje výber kandidáta
+pozdĺž LanePath, odstupové obmedzenie pre existujúci PID a odmietnutie obnovenia
+plynu po strate cieľa. Dvojité čítanie legacy bufferu nepotvrdzuje čerstvosť
+producenta; chýba jeho timestamp/generácia, LaneId a úplnosť pokrytia.
+Spoľahlivé živé ACC preto nie je potvrdené. Prázdny buffer po sledovaní vyžaduje
+odovzdanie vodičovi; nevzniklo automatické stop-and-go ani nový dopravný senzor.
+Fáza 7.4 má spoločne overiť aktuálny pozdĺžny tok a výslovne oddeliť tieto
+obmedzenia od meraného držania rýchlosti a bezpečnostných zásahov.

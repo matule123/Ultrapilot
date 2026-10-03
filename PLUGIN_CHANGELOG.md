@@ -68,6 +68,24 @@ Commit: `3ef65c7`.
 
 ## ACC
 
+### 1.1.0 — 2026-10-03
+
+**Added**
+
+- Apply route-projected traffic candidate speed ceilings through the existing speed PID and paired pedal arbitration.
+- Retain target attribution within a bounded gap tie while every nearer hazard still constrains speed and emergency response.
+- Publish explicit unverified-candidate, unavailable-source and driver-takeover states; no bumper-clearance or complete-coverage claim.
+
+**Fixed**
+
+- Prevent missing, expired, ambiguous or empty/uncovered traffic after an observed target from restoring drive; require driver acknowledgement after target loss.
+- Preserve original evidence expiry and immediate emergency demands, including while target-loss handling is latched.
+- Hand low-speed following to the driver rather than introduce unverified stop-and-go.
+
+**Known limitation**
+
+- The installed legacy traffic ABI has no publisher timestamp/generation, actor LaneId or coverage certificate. Reliable live following remains unverified.
+
 ### 1.0.2 — 2026-10-03
 
 **Fixed**
@@ -91,6 +109,12 @@ Commit: `3ef65c7`.
 - Consume current bound traffic and speed constraints without changing PID gains.
 
 ## DrivePolicy
+
+### 1.0.2 — 2026-10-03
+
+**Fixed**
+
+- Avoid applying the legacy lead-distance/3 speed cap on top of ACC's route-candidate time-gap ceiling when ACC owns following. Preserve the fallback when ACC is disabled or route following is unavailable.
 
 ### 1.0.1 — 2026-10-03
 

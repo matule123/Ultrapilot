@@ -783,7 +783,49 @@ class UltraPilotEngine:
             logging.warning("Could not start ignition worker: %s", e)
 
     # --- Traffic following ----------------------------------------------------
-    def _lead_brake(self, traffic, pos, heading, speed_ms=None):
+    def _route_lead_observation(self, capture, truck, binding):
+        """Protective route candidate from one raw capture, never confirmed ACC."""
+        from core.acc_following import RouteLeadSelector, observation
+        if capture.session != str(binding[1]):
+            return dict(status='traffic_receiver_session_changed', confirmed=False)
+        observed = observation(capture, time.monotonic())
+        if observed['status'] not in ('observed', 'empty_unproven_coverage'):
+            return dict(status=observed['status'], confirmed=False)
+        try:
+            from core.longitudinal import context
+            token = self.shared_state.get('lane_trajectory_publication_token')
+            if not token or context(self.shared_state) != binding:
+                raise ValueError('route identity unavailable')
+            selector = getattr(self, '_acc_selector', None)
+            if selector is None:
+                selector = self._acc_selector = RouteLeadSelector()
+            if selector.binding != binding:
+                lane = self.shared_state.get('lane_trajectory') or {}
+                expected = dict(source_game_session_id=binding[1], source_map_key=binding[2],
+                    source_dataset_fingerprint=binding[3], navigation_intent_id=binding[4],
+                    revision=binding[5], route_build_id=binding[6])
+                if lane.get('valid') is not True or any(
+                        v is None or lane.get(k) != v for k, v in expected.items()):
+                    raise ValueError('route identity unavailable')
+                selector.prepare(lane['points'], binding)
+            debug = self.shared_state.get('nav_steering_debug') or {}
+            identity = self.shared_state.get('lane_trajectory_identity') or {}
+            if (debug.get('authority_valid') is not True
+                    or debug.get('trajectory_identity') != identity
+                    or not 0 <= time.monotonic()-float(debug['observation_timestamp']) <= .5):
+                raise ValueError('route calculation unavailable')
+            result = selector.select(observed['actors'], truck, float(debug['tracking_progress_m']))
+            if context(self.shared_state) != binding:
+                raise ValueError('route identity changed during traffic projection')
+            result.update(receiver_time=observed['receiver_time'], source_timestamp=None,
+                          source_sequence=None, complete=False, atomic=False,
+                          expires_at=min(observed['receiver_time']+.5,
+                                         float(debug['observation_timestamp'])+.5))
+            return result
+        except (KeyError, TypeError, ValueError, OverflowError):
+            return dict(status='route_unavailable_or_ambiguous', confirmed=False)
+
+    def _lead_brake(self, traffic, pos, heading, speed_ms=None, *, crossing_only=False):
         """Brake (0..1) for the closest vehicle ahead in our lane, else 0.
 
         Phase 1 tuning — uses **time-to-collision** instead of a bare distance
@@ -803,15 +845,27 @@ class UltraPilotEngine:
         best = None  # (ahead, closing_speed)
         crossing = None  # (time_to_conflict, ahead)
         for v in traffic:
+            # Legacy display defaults must not become measured zero velocity or
+            # same-height evidence. A known other deck cannot be a lead/conflict.
+            try:
+                vyaw, lead_speed = float(v['yaw']), float(v['speed'])
+                if not all(math.isfinite(n) for n in (v['x'], v['z'], vyaw, lead_speed)):
+                    continue
+                ego_y = (self.shared_state.get('telemetry') or {}).get('truck', {}).get('y')
+                if ego_y is not None and 'y' in v and (
+                        not math.isfinite(float(v['y'])) or abs(float(v['y'])-float(ego_y)) > 1.5):
+                    continue
+            except (KeyError, TypeError, ValueError, OverflowError):
+                continue
             dx, dz = v["x"] - px, v["z"] - pz
             ahead = dx * (-sin_h) + dz * (-cos_h)
             lateral = dx * cos_h - dz * sin_h
             if not (2.0 < ahead < 120.0):
                 continue
-            vyaw = v.get("yaw", heading)
             facing = math.cos(vyaw - heading)   # ~1 same dir, ~-1 oncoming
-            lead_speed = float(v.get("speed", 0.0) or 0.0)
             if facing >= math.cos(math.radians(35.0)):
+                if crossing_only:
+                    continue
                 if abs(lateral) >= 2.6:
                     continue
                 closing = max(0.0, my_speed - lead_speed)
@@ -2776,6 +2830,16 @@ class UltraPilotEngine:
                     from core.navigation.traffic_producer import capture_traffic
                     maneuver_capture = capture_traffic(self.ets2la,
                         self.shared_state.get("game_session_id"), time.monotonic())
+                    following = self._route_lead_observation(maneuver_capture, truck, traffic_binding)
+                    if (self.shared_state.get('longitudinal_acc_active')
+                            and following['status'] in ('candidate', 'no_candidate_unproven_coverage')):
+                        # Retain crossing protection; route-based lead demand
+                        # uses the existing ACC PID rather than two brake laws.
+                        traffic_brake = self._lead_brake(traffic, pos, hdg,
+                            truck.get('speed', 0.), crossing_only=True)
+                        if following.get('emergency'):
+                            traffic_brake = 1.
+                        self.shared_state.set('lead_distance', following.get('gap_m'))
                     # Stop on red / go on green.
                     self.shared_state.update_batch({
                         "traffic": traffic,
@@ -2798,7 +2862,9 @@ class UltraPilotEngine:
                         evidence_valid=bool(traffic_available or light is not None),
                         traffic_available=traffic_available,
                         traffic_brake=traffic_brake, light_brake=self._light_brake(light),
-                        light=light, lead_distance=self.shared_state.get("lead_distance"))
+                        light=light, lead_distance=self.shared_state.get("lead_distance"),
+                        following=following,
+                        expires_at=following.get('expires_at', float('inf')))
                 except Exception as error:
                     self.shared_state.set("longitudinal_traffic", None)
                     # Never retain actuator-facing values from an older frame.

@@ -17,7 +17,7 @@ class Plugin(BasePlugin):
     """
 
     NAME = "acc"
-    VERSION = "1.0.2"
+    VERSION = "1.1.0"
 
     def on_start(self):
         logging.info("ACC Plugin started with bounded speed PID control.")
@@ -36,12 +36,19 @@ class Plugin(BasePlugin):
         self._last_observation = None
         self._speed_braking = False
         self._was_driving = False
+        self._following_binding = None
+        self._followed_target = False
+        self._following_fault = ''
 
     def on_stop(self):
         logging.info("ACC Plugin stopped.")
         self.enabled = False
         self.speed_pid.reset()
         self._last_observation = None
+        self._followed_target = False
+        self._following_binding = None
+        self._following_fault = ''
+        self.sdk.set('acc_following_status', 'disabled')
         self.sdk.set("longitudinal_acc_active", False)
         self.sdk.set("longitudinal_acc", None)
         self.sdk.shared_state.update_batch({"acc_throttle": None, "acc_brake": None})
@@ -74,6 +81,31 @@ class Plugin(BasePlugin):
         # Get danger level from perception/traffic analysis
         traffic, _ = read(self.sdk.shared_state, "traffic", binding=binding) if strict else (None, "")
         danger_level = (traffic["traffic_brake"] if traffic else 0.) if strict else self.sdk.get("danger_level", 0) or 0
+        if binding != self._following_binding:
+            self._following_binding = binding
+            self._followed_target = False
+            self._following_fault = ''
+        following = traffic.get('following') if traffic else None
+        following_cap = None
+        following_reason = ('traffic unavailable; cruise only' if following is None
+                            else 'no route candidate; traffic coverage unproven')
+        if isinstance(following, dict) and following.get('status') == 'candidate':
+            try:
+                following_cap = float(following['speed_cap_mps']) * 3.6
+                if (not math.isfinite(following_cap) or not 0 <= following_cap <= 500.
+                        or not isinstance(following.get('target_id'), str)
+                        or not following['target_id']):
+                    raise ValueError('invalid following constraint')
+                self._followed_target = True
+                following_reason = 'observed route candidate; reliable sensor freshness unproven'
+            except (KeyError, TypeError, ValueError, OverflowError):
+                following_cap = None
+        # No cached pedal/target lease is extended. After target loss the
+        # existing required-producer guard removes drive and controls stopping.
+        # Empty/uncovered buffers cannot prove that the old target departed.
+        if strict and self._followed_target and following_cap is None:
+            self._following_fault = 'ACC target unavailable or unconfirmed departure; driver takeover required'
+        self.sdk.set('acc_following_status', following_reason)
 
         # 2. Emergency Collision Avoidance
         if danger_level > settings.emergency_brake_threshold:
@@ -84,6 +116,12 @@ class Plugin(BasePlugin):
                     throttle=0., brake=1., emergency=True, requested_speed_kmh=None,
                     constrained_speed_kmh=None, expires_at=traffic["expires_at"] if traffic else float("inf"))
             self.sdk.shared_state.set("tts_message", "Collision alert! Emergency braking.")
+            return
+
+        if self._following_fault:
+            self._reset_control()
+            self._publish_pedals(truck, binding, 0., 0., valid=False,
+                reason=self._following_fault)
             return
 
         # 3. Dynamic Target Speed Calculation
@@ -141,6 +179,17 @@ class Plugin(BasePlugin):
             effective_target_speed = min(effective_target_speed,
                                          max(20.0, base_target_speed * reduction_factor))
             logging.debug(f"ACC: Adjusting target speed to {effective_target_speed:.1f} km/h due to traffic")
+
+        if following_cap is not None:
+            effective_target_speed = min(effective_target_speed, following_cap)
+            hard_limits.append(following_cap)
+            if following_cap < 3.6 and speed < 1.:
+                # No unverified automatic stop-and-go at reference-point gaps.
+                self._reset_control()
+                self._following_fault = 'ACC low-speed following requires driver takeover; stop-and-go unavailable'
+                self._publish_pedals(truck, binding, 0., 0., valid=False,
+                    reason=self._following_fault)
+                return
 
         # Invalid preferences are not an instruction to accelerate. SDK limits
         # remain hard ceilings; upward pacing never delays a lower current cap.
@@ -240,12 +289,17 @@ class Plugin(BasePlugin):
                 constrained_speed_kmh=effective_target_speed,
                 control_target_kmh=self._control_target,
                 speed_control_reason="speed service brake" if self._speed_braking else "speed tracking",
+                following_status=following_reason,
+                following_target_id=following.get('target_id') if isinstance(following, dict) else None,
+                following_confirmed=False,
+                following_required=self._followed_target,
                 expires_at=min((v["expires_at"] for v in (traffic, road_packet, policy)
                                 if v is not None), default=float("inf")))
 
         # Update UI tags
         self.tags.acc_speed = effective_target_speed
-        self.tags.acc_status = "Active" if self.enabled else "Disabled"
+        self.tags.acc_status = ('Candidate following (unverified)' if following_cap is not None
+                                else 'Cruise; traffic coverage unproven')
         self._last_requested_drive = float(throttle_val) if not self._speed_braking else 0.
         if strict:
             self._last_observation = (frame, stamp, speed, effective_target_speed)
@@ -262,8 +316,9 @@ class Plugin(BasePlugin):
         if target is not None:
             self.tags.acc_speed = target
         self.tags.acc_status = reason
+        self.sdk.set('acc_following_status', reason)
         self.sdk.shared_state.update_batch({"acc_throttle": throttle, "acc_brake": brake})
         publish(self.sdk.shared_state, truck, "acc", binding=binding, evidence_valid=valid,
                 throttle=throttle, brake=brake, emergency=False,
                 requested_speed_kmh=target, constrained_speed_kmh=target,
-                speed_control_reason=reason)
+                speed_control_reason=reason, following_required=self._followed_target)

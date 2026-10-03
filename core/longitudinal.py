@@ -188,6 +188,18 @@ def engine_decision(state, truck, now=None):
         required=bool(state.get("longitudinal_policy_active")))
     if acc_reason or policy_reason:
         return None, acc_reason or policy_reason
+    following = traffic.get('following') if traffic else None
+    if current_acc and current_acc.get('following_required') is True:
+        # Target loss is not clear-road evidence, including between ACC ticks.
+        # The old candidate cannot outlive its source's original short lease.
+        if not isinstance(following, dict) or following.get('status') != 'candidate':
+            return None, 'ACC target unavailable or unconfirmed departure'
+        try:
+            cap = number(following['speed_cap_mps'], 0., 140.)
+            if float(truck['speed']) > cap:
+                throttle = 0.
+        except (KeyError, TypeError, ValueError, OverflowError):
+            return None, 'invalid ACC following constraint'
     requests = [(value.get("decision_source", "autopilot"),
                  "emergency" if value.get("emergency") else "acc", brake)]
     pending_service = False
