@@ -36,6 +36,9 @@ ecodrive to 1.0.1 for their longitudinal-contract fixes. Core changes do not
 advance unaffected plugin versions. These coordinated runtime files belong
 to one application build; independent mixed-version plugin deployment is
 not supported.
+Phase 7.2 advances only ACC and Autopilot from 1.0.1 to 1.0.2 for speed/PID
+and pedal-recovery fixes. EcoDrive's preference producer and the other plugins
+are unchanged; consuming its preference differently does not release EcoDrive.
 The plugin's `VERSION` declaration is always the source of truth for its
 current version; the baseline list is historical.
 

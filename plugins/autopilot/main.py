@@ -34,10 +34,10 @@ MIN_LANE_TRAJECTORY_CONFIDENCE = CONFIDENCE_THRESHOLD
 # validated built trajectories (0.970-0.980). Exactly 0.72 is accepted.
 VISION_STEER_FOLLOW_BLEND = 0.72  # used only without authoritative GPS geometry
 VISION_DEADZONE = 0.03       # ignore vision lane offset noise below this
-BRAKE_RAMP_UP = 2.5          # brake can rise this fast per second (anti-jerk)
+BRAKE_RAMP_UP = 2.5          # service-pedal rise input/s, not a physical jerk bound
 BRAKE_RAMP_DOWN = 4.0        # brake releases faster than it engages
 BRAKE_MIN_HOLD = 0.04        # below this, treat brake as zero (avoid flutter)
-THROTTLE_RAMP = 3.0          # throttle slew rate per second
+THROTTLE_RAMP = 0.8          # ordinary rise input/s; withdrawal is immediate
 ENGAGEMENT_DEFAULT_LATERAL_M = 1.10
 ENGAGEMENT_MAX_LATERAL_M = 1.50
 ENGAGEMENT_MAX_HEADING_RAD = math.radians(18.0)
@@ -494,7 +494,7 @@ class Plugin(BasePlugin):
     """
 
     NAME = "autopilot"
-    VERSION = "1.0.1"
+    VERSION = "1.0.2"
 
     def on_start(self):
         logging.info("Autopilot Plugin started (Phase 1 tuning).")
@@ -613,8 +613,9 @@ class Plugin(BasePlugin):
             return max(target, current - max_step)
 
     def _apply_throttle(self, throttle: float, dt: float):
-        """Slew the throttle smoothly (eco smoothing if active)."""
-        if self._last_brake > 0.0:
+        """Pace ordinary drive recovery; never delay withdrawal or safety."""
+        if (self._last_brake > 0.0 or throttle <= 0.0
+                or not math.isfinite(dt) or dt <= 0.0):
             self._last_throttle = 0.0
             self.sdk.controller.set_throttle(0.0)
             return
@@ -625,9 +626,13 @@ class Plugin(BasePlugin):
             alpha = float(eco["smoothing"] if eco else self.sdk.shared_state.get("eco_smoothing", 0.15))
             if not math.isfinite(alpha) or not 0.0 <= alpha <= 1.0:
                 alpha = 1.0
-            throttle = (alpha * throttle) + ((1 - alpha) * self._last_throttle)
+            # Preserve the old 0.15 response at 50 ms, independent of tick rate.
+            # Eco preference acts only on drive increases, never on withdrawal.
+            alpha = 1.0 - (1.0 - alpha) ** (min(dt, .1) / .05)
+            if throttle > self._last_throttle:
+                throttle = (alpha * throttle) + ((1 - alpha) * self._last_throttle)
         throttle = self._ramp(self._last_throttle, max(0.0, min(1.0, throttle)),
-                              dt, THROTTLE_RAMP, THROTTLE_RAMP)
+                              min(dt, .1), THROTTLE_RAMP, float("inf"))
         self._last_throttle = throttle
         self.sdk.controller.set_throttle(throttle)
 
@@ -2097,10 +2102,11 @@ class Plugin(BasePlugin):
 
     # --- Brake ramp -----------------------------------------------------------
     def _set_brake(self, requested: float, dt: float):
-        """Apply the brake command through a ramp so it never jerks.
+        """Ramp ordinary service demand; emergency bypasses the pedal ramp.
 
-        Also clears the throttle the moment the brake engages (engine braking +
-        avoids fighting the brakes), which the old code did abruptly."""
+        Drive removal is immediate. A pedal-rate bound is not a physical
+        vehicle-jerk guarantee; the actuator and truck determine that response.
+        """
         requested = max(0.0, min(1.0, float(requested)))
         emergency = (self.sdk.shared_state.get("system_state") == "EMERGENCY"
                      or getattr(self, "_longitudinal_decision", {}).get("emergency", False))

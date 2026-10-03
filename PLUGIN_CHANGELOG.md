@@ -41,6 +41,18 @@ Commit: `3ef65c7`.
 
 ## Autopilot
 
+### 1.0.2 — 2026-10-03
+
+**Fixed**
+
+- Pace ordinary throttle recovery at 0.8 input/s while withdrawing drive immediately.
+- Interpret the existing EcoDrive rise preference in elapsed time rather than once per tick; never smooth zero drive or braking withdrawal.
+- Preserve emergency brake bypass, paired-command arbitration, launch/handoff and unchanged steering.
+
+**Known limitation**
+
+- A pedal-rate bound is not a measured ETS2 acceleration or jerk limit; comfort is verified only in the documented offline model.
+
 ### 1.0.1 — 2026-10-03
 
 **Fixed**
@@ -55,6 +67,20 @@ Commit: `3ef65c7`.
 - Comfort gains and ordinary pedal ramps are unchanged. Offline arbitration verification is not a game-comfort result.
 
 ## ACC
+
+### 1.0.2 — 2026-10-03
+
+**Fixed**
+
+- Use the existing speed PID as one bounded signed drive/service-brake request, including downhill load compensation.
+- Remove target derivative kick, condition integral accumulation on available authority/output, and reset memory on invalid timing, identity changes, inactive control and external braking.
+- Use original SDK observation intervals; duplicate frames do not advance integration or renew packet validity.
+- Pace only upward target recovery, apply lower constraints immediately and add service-brake hysteresis.
+- Validate speed preferences and preserve immediate emergency demands and original evidence leases.
+
+**Known limitation**
+
+- New gains are evaluated across explicit offline noise, delay, grade and load cases; no live-game comfort certification or new ACC target-acquisition feature is claimed.
 
 ### 1.0.1 — 2026-10-03
 

@@ -54,10 +54,16 @@ viazaný povel prechádza poslednou bránou Engine; EcoDrive neobnoví plyn poč
 brzdenia. Núdzová požiadavka zostáva nad bežným pohonom. Nasadenie ani herné
 potvrdenie nového toku neprebehli; celú pytest sadu spustí používateľ.
 
-## Fáza 7.2 – komfort plynu, brzdy a ACC (otvorené)
+## Fáza 7.2 – stabilita rýchlosti a pedálov (implementované offline)
 
-Samostatne stanoviť a merať pozdĺžne zrýchlenie, jerk, rýchlostnú chybu,
-odstup a prechody medzi pohonom, dojazdom a brzdením. Existujúce PID zisky a
-bežné rampy sa vo Fáze 7.1 neladili. Historické steering replaye bez párovaných
-pedálových kanálov nedokazujú príčinu používateľom vnímanej prudkosti.
-Nevytvárať stop-and-go ani považovať chýbajúce traffic coverage za voľný priestor.
+[PHASE7_STAGE2_RESULTS.md](PHASE7_STAGE2_RESULTS.md) uvádza reprodukcie,
+kritériá a porovnanie rovnakých uzavretých scenárov. Jediný existujúci ACC PID
+rieši aj bežnú brzdu; integrál sa nenabíja pri vypnutí alebo vonkajšom brzdení.
+Komfort v ETS2 zostáva neoverený. Pedálová rampa nie je záruka fyzického jerk.
+Celú pytest sadu spustí používateľ; nasadenie v tejto úlohe neprebehlo.
+
+## Fáza 7.3 – ACC (otvorené)
+
+Samostatne riešiť výber a kontinuitu existujúceho ACC cieľa a odstupové kritériá.
+Pred ďalším ladením doložiť časovo priradené pedálové kanály a odozvu vozidla.
+Nevytvárať nové stop-and-go ani považovať chýbajúce traffic coverage za voľný priestor.
