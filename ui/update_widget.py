@@ -19,7 +19,7 @@ import sys
 from PyQt6.QtCore import Qt, QTimer, QRectF, QPointF, QPoint, QElapsedTimer
 from PyQt6.QtGui import QPainter, QPen, QColor, QIcon
 from PyQt6.QtWidgets import (QWidget, QHBoxLayout, QVBoxLayout, QLabel,
-                             QPushButton, QProgressBar, QDialog, QFrame)
+                             QPushButton, QProgressBar, QDialog, QFrame, QScrollArea)
 from PyQt6.QtCore import QThread, pyqtSignal
 
 
@@ -461,6 +461,96 @@ class UpdateConfirmDialog(QDialog):
         self.primary_btn.clicked.connect(self.install_requested.emit)
 
 
+class AppReleaseDialog(QDialog):
+    """Scrollable release notes; separate from commit download confirmation."""
+
+    def __init__(self, notice, state=None, parent=None):
+        super().__init__(parent)
+        self.setObjectName("AppReleaseDialog")
+        self.setWindowTitle(f"UltraPilot v{notice['version']} je tu!")
+        self.resize(650, 620)
+        self.setMinimumSize(440, 350)
+        p = _ui_palette(state)
+        self.setStyleSheet(
+            f"QDialog#AppReleaseDialog{{background:{p['bg']};}}"
+            f"QLabel{{color:{p['text']};background:transparent;font-size:13px;}}"
+            f"QFrame#ReleaseCard{{background:{p['card']};border:1px solid {p['border']};border-radius:12px;}}"
+            f"QScrollArea{{border:none;background:transparent;}}"
+            f"QPushButton{{background:{ACCENT};color:white;border:0;border-radius:8px;padding:11px 24px;font-weight:600;}}"
+            f"QPushButton:hover{{background:{ACCENT_HOVER};}}")
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(28, 24, 28, 22)
+        layout.setSpacing(12)
+
+        def label(text, target, style=""):
+            widget = QLabel(str(text))
+            widget.setTextFormat(Qt.TextFormat.PlainText)
+            widget.setWordWrap(True)
+            if style:
+                widget.setStyleSheet(style)
+            target.addWidget(widget)
+            return widget
+
+        label("ULTRAPILOT  /  NOVÁ VERZIA", layout,
+              f"color:{p['title']};font-size:11px;font-weight:700;")
+        label(f"v{notice['version']} je tu!", layout, "font-size:30px;font-weight:700;")
+        label(f"Z v{notice['previous_version']} na v{notice['version']}  ·  commit {notice['commit']}",
+              layout, f"color:{p['muted']};font-size:12px;")
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        content = QWidget()
+        content.setObjectName("ReleaseContent")
+        content.setStyleSheet("QWidget#ReleaseContent{background:transparent;}")
+        body = QVBoxLayout(content)
+        body.setContentsMargins(0, 8, 8, 8)
+        body.setSpacing(14)
+
+        def card(title):
+            frame = QFrame()
+            frame.setObjectName("ReleaseCard")
+            inner = QVBoxLayout(frame)
+            inner.setContentsMargins(18, 16, 18, 18)
+            inner.setSpacing(9)
+            label(title, inner, "font-size:16px;font-weight:600;")
+            body.addWidget(frame)
+            return inner
+
+        app = card("Aktualizácie UltraPilotu")
+        for change in notice.get("changes", []):
+            label("•  " + change, app)
+        if not notice.get("changes"):
+            label("Pre túto verziu zatiaľ neboli publikované poznámky k vydaniu.",
+                  app, f"color:{p['muted']};")
+        label("Zmeny pluginov", body, "font-size:19px;font-weight:600;")
+        label("Jednotlivé vydania od predchádzajúcej verzie UltraPilotu.",
+              body, f"color:{p['muted']};font-size:12px;")
+        for plugin in notice.get("plugins", []):
+            before = "v" + plugin['previous_version'] if plugin.get('previous_version') else "nový plugin"
+            section = card(f"{plugin['name']}  ·  {before} → v{plugin['version']}")
+            for release in plugin.get("releases", []):
+                label("v" + release['version'], section,
+                      f"color:{p['title']};font-size:13px;font-weight:700;")
+                for change in release.get("changes", []):
+                    label("•  " + change, section)
+            if not plugin.get("releases"):
+                label("Podrobnosti tejto zmeny zatiaľ nie sú v changelogu.", section,
+                      f"color:{p['muted']};")
+        if not notice.get("plugins"):
+            label("Žiadne zmeny verzií pluginov.", body, f"color:{p['muted']};")
+        body.addStretch()
+        scroll.setWidget(content)
+        layout.addWidget(scroll, 1)
+        footer = QHBoxLayout()
+        installed = label("Aktualizácia je nainštalovaná.", footer,
+                          f"color:{p['muted']};font-size:12px;")
+        installed.setWordWrap(False)
+        footer.addStretch()
+        close = QPushButton("Rozumiem")
+        close.clicked.connect(self.accept)
+        footer.addWidget(close)
+        layout.addLayout(footer)
+
+
 class UpdateCheckerWidget(QWidget):
     """Compact sidebar widget: version label + check/update button + spinner."""
 
@@ -474,10 +564,29 @@ class UpdateCheckerWidget(QWidget):
         self._download_worker = None
         self._install_worker = None
         self._update_dialog = None
+        self._release_dialog = None
         self._update_available = False
         self._build()
         # Auto-check once shortly after launch (non-blocking).
         QTimer.singleShot(2500, self.check)
+        QTimer.singleShot(1000, self._show_release_notice)
+
+    def _show_release_notice(self):
+        getter = getattr(self.state, "get", None)
+        notice = getter("app_release_notice", None) if callable(getter) else None
+        if not notice or self._release_dialog is not None:
+            return
+        self._release_dialog = AppReleaseDialog(notice, self.state, self.window())
+        self._release_dialog.finished.connect(lambda _: self._ack_release_notice(notice))
+        # Non-modal: notes must not block the main UI or control loop.
+        self._release_dialog.show()
+
+    def _ack_release_notice(self, notice):
+        from core.app_release import acknowledge_release
+        try:
+            acknowledge_release(notice)
+        except Exception:
+            logging.getLogger(__name__).exception("Could not acknowledge release notes")
 
     def _build(self):
         # Vertical layout so each element gets its own row and nothing is

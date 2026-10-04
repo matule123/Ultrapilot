@@ -222,7 +222,12 @@ class DynamicIsland(QWidget):
             if commit:
                 self._update_notice_seen = True
                 self._update_notice_until = time.monotonic() + 5.0
-                self.show_record(f"Aktualizované úspešne · verzia {commit}",
+                from core.update_check import VERSION
+                version = state.get("update_startup_version", VERSION)
+                release = state.get("app_release_notice")
+                message = (f"UltraPilot v{version} je tu! · commit {commit}" if release
+                           else f"Aktualizované úspešne · UltraPilot v{version} · commit {commit}")
+                self.show_record(message,
                                  "INFO", "", "UltraPilot")
         if (state is not None and state.get("autopilot_active", False)
                 and state.get("autopilot_control_state") == "controlled_stop"):

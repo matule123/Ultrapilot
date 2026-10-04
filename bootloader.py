@@ -106,6 +106,8 @@ def run_splash(shared_dict):
         splash.show_update_installation()
         from core.update_check import git_commit
         state.set("update_startup_commit", git_commit())
+        from core.update_check import VERSION
+        state.set("update_startup_version", VERSION)
     splash.show()
 
     def finish_when_ready():
@@ -231,6 +233,19 @@ def main():
     # ONE shared manager dict, handed to every process.
     manager = mp.Manager()
     shared_dict = manager.dict()
+    # Resolve release metadata before launching UI processes (no startup race).
+    try:
+        from pathlib import Path
+        from core.app_release import release_notice
+        from core.update_check import VERSION, git_commit, _update_cache_dir
+        notice = release_notice(Path(__file__).resolve().parent, _update_cache_dir(),
+                                VERSION, git_commit())
+        if notice:
+            shared_dict["app_release_notice"] = notice
+            shared_dict["update_startup_commit"] = git_commit()
+            shared_dict["update_startup_version"] = VERSION
+    except Exception:
+        logging.exception("Could not prepare app release announcement")
 
     targets = {
         "Splash": run_splash,
