@@ -2,6 +2,14 @@
 
 Release history for individual plugins. See [PLUGIN_VERSIONS.md](PLUGIN_VERSIONS.md) for versioning rules.
 
+## Core/application fixes — unreleased, 2026-10-04
+
+- Keep the planned service-stop witness independent of passive diagnostic truncation. Retain only fixed consumed fields; real joint ACC/DrivePolicy/signal inputs must not erase brake continuity evidence.
+- Seed the existing continuous service-brake state from an actual positive planned brake write during the already validated, bounded moving zero-ratio transition. Do not authorize anonymous neutral, stationary re-press, reverse or expired launch.
+- Compact identical metadata within an immutable pedal-journal decision, restoring explicit fields on reading/export. Account for shared provenance once while preserving the 64 KB/128-event limits and ordered paired writes.
+- Preserve the current simple/real-automatic launch, signal clearance contract, steering behavior and 500 ms freshness checks. Core-only changes do not bump unchanged plugin versions.
+- Verification and live limitations: [PHASE7_SIGNAL_LIFECYCLE_REGRESSION_20261004.md](PHASE7_SIGNAL_LIFECYCLE_REGRESSION_20261004.md).
+
 ## Map
 
 ### 1.0.4 — 2026-10-04

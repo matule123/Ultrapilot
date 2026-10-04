@@ -71,6 +71,108 @@ def bounded_input(value):
     return bounded_copy(result)[0]
 
 
+def compact_decision(value):
+    """Reference identical consumed metadata within ONE immutable journal row.
+
+    Do not collapse a rejected/older packet's identity into the current one.
+    References point only to this row, never to a mutable IPC slot or another
+    event. Pedals, source times, selection and stop provenance remain explicit.
+    """
+    if not isinstance(value, dict) or not isinstance(value.get('context'), (list, tuple)):
+        return value
+    result = dict(value)
+    binding = tuple(value['context'])
+    inputs = value.get('inputs') if isinstance(value.get('inputs'), dict) else {}
+    def same_observation(item):
+        keys = ('sdk_frame_us', 'observation_timestamp')
+        if all(k in item and item[k] == value.get(k) for k in keys):
+            item = {k: v for k, v in item.items() if k not in keys}
+            item['observation_reference'] = 'decision'
+        return item
+    for group in ('inputs', 'limits'):
+        if not isinstance(value.get(group), dict):
+            continue
+        compacted = {}
+        for name, original in value[group].items():
+            item = original
+            if isinstance(item, dict):
+                consumed = inputs.get(name)
+                limit_keys = {'source', 'context', 'sdk_frame_us', 'observation_timestamp',
+                              'computed_at', 'expires_at', 'valid',
+                              'speed_cap_kmh' if name == 'road' else 'planned_speed_ms'}
+                if (group == 'limits' and isinstance(consumed, dict)
+                        and item.keys() <= limit_keys
+                        and all(k in consumed and (
+                            tuple(consumed[k]) == tuple(v) if k == 'context'
+                            and isinstance(consumed[k], (list, tuple)) and isinstance(v, (list, tuple))
+                            else consumed[k] == v) for k, v in item.items())):
+                    # The ceiling read exactly the recorded producer packet.
+                    compacted[name] = {'input_reference': name}
+                    continue
+                if isinstance(item.get('context'), (list, tuple)) and tuple(item['context']) == binding:
+                    item = {k: v for k, v in item.items() if k != 'context'}
+                    item['context_reference'] = 'decision'
+                item = same_observation(item)
+            compacted[name] = item
+        result[group] = compacted
+    selected = value.get('selected')
+    if (isinstance(selected, dict) and isinstance(selected.get('context'), (list, tuple))
+            and tuple(selected['context']) == binding):
+        result['selected'] = {k: v for k, v in selected.items() if k != 'context'}
+        result['selected']['context_reference'] = 'decision'
+        result['selected'] = same_observation(result['selected'])
+    requested = value.get('requested')
+    if isinstance(requested, dict) and requested.get('source') == 'autopilot':
+        # The Autopilot command contract has no actor/following fields. Preserve
+        # its OWN complete identity/time/pedals, including rejected old commands;
+        # don't spend space describing absent fields from other producer types.
+        result['requested'] = {k: v for k, v in requested.items()
+            if k not in ('unavailable_field_schema', 'unavailable_field_mask', 'following')}
+        if (selected is not None and isinstance(requested.get('context'), (list, tuple))
+                and tuple(requested['context']) == binding):
+            result['requested'].pop('context')
+            result['requested']['context_reference'] = 'decision'
+        # A rejected/earlier command retains any differing frame/time verbatim.
+        result['requested'] = same_observation(result['requested'])
+    return result
+
+
+def expand_decision(value):
+    """Restore the existing external field contract from this row's metadata.
+
+    Stored references share immutable scalar/list values; no IPC reread and no
+    timestamp repair. Export/readers continue to receive explicit source fields.
+    """
+    if not isinstance(value, dict):
+        return value
+    result = dict(value)
+    def expand(item):
+        if not isinstance(item, dict):
+            return item
+        item = dict(item)
+        if item.pop('context_reference', None) == 'decision':
+            item['context'] = value['context']
+        if item.pop('observation_reference', None) == 'decision':
+            item.update({k: value[k] for k in ('sdk_frame_us', 'observation_timestamp')})
+        return item
+    if isinstance(value.get('inputs'), dict):
+        result['inputs'] = {k: expand(v) for k, v in value['inputs'].items()}
+    if isinstance(value.get('limits'), dict):
+        limits = {}
+        for k, v in value['limits'].items():
+            if isinstance(v, dict) and v.get('input_reference') == k:
+                consumed = result['inputs'][k]
+                v = {key: consumed[key] for key in ('source', 'context', 'sdk_frame_us',
+                    'observation_timestamp', 'computed_at', 'expires_at', 'valid',
+                    'speed_cap_kmh' if k == 'road' else 'planned_speed_ms') if key in consumed}
+            limits[k] = expand(v)
+        result['limits'] = limits
+    for k in ('selected', 'requested'):
+        if k in result:
+            result[k] = expand(result[k])
+    return result
+
+
 class PedalJournal:
     CAPACITY = 128
     MAX_BYTES = 65536
@@ -81,6 +183,7 @@ class PedalJournal:
         self._lock = threading.Lock()
         self._events = deque(maxlen=self.CAPACITY)
         self._sizes = deque(maxlen=self.CAPACITY)
+        self._source_uses = {}
         self._bytes = 0
         self._sequence = 0
         self._decision_sequence = 0
@@ -95,11 +198,11 @@ class PedalJournal:
         if intervention is not None:
             value = {k: v for k, v in value.items() if k != 'intervention'}
         self._local.intervention, extra = bounded_copy(intervention, limit=16384)
-        self._local.source, self._local.size = bounded_copy(value, limit=32768) if value is not None else (None, 64)
+        self._local.source, self._local.size = bounded_copy(compact_decision(value), limit=32768) if value is not None else (None, 64)
         self._local.size += extra
 
     def source(self):
-        source = getattr(self._local, 'source', None)
+        source = expand_decision(getattr(self._local, 'source', None))
         intervention = getattr(self._local, 'intervention', None)
         # Nested release_all binding must carry the separately budgeted first
         # intervention into the actual zero writes and restore it afterwards.
@@ -123,11 +226,28 @@ class PedalJournal:
             return
         with self._lock:
             self._sequence += 1
-            size = getattr(self._local, 'size', 64) + 2048
-            while self._events and (len(self._events) == self.CAPACITY or self._bytes+size > self.MAX_BYTES):
+            source = getattr(self._local, 'source', None)
+            intervention = getattr(self._local, 'intervention', None)
+            key = (id(source), id(intervention))
+            source_size = getattr(self._local, 'size', 64)
+            # All writes under one bind share the SAME immutable source object.
+            # Charge it once, plus each event, instead of dropping the throttle
+            # write merely because the paired brake repeats its provenance.
+            while self._events and (len(self._events) == self.CAPACITY or self._bytes+2048
+                    +(source_size if key not in self._source_uses else 0) > self.MAX_BYTES):
                 self._events.popleft()
-                self._bytes -= self._sizes.popleft()
+                old_key = self._sizes.popleft()
+                self._bytes -= 2048
+                uses = self._source_uses[old_key]
+                uses['count'] -= 1
+                if uses['count'] == 0:
+                    self._bytes -= uses['size']
+                    del self._source_uses[old_key]
                 self._dropped += 1
+            if key not in self._source_uses:
+                self._source_uses[key] = dict(count=0, size=source_size)
+                self._bytes += source_size
+            self._source_uses[key]['count'] += 1
             verified = evidence.get('status') == 'MAPPING_WRITE_RETURNED'
             self._held[channel] = evidence.get('value') if verified else None
             self._events.append(dict(
@@ -135,10 +255,10 @@ class PedalJournal:
                 backend_mode=backend, call_started_at_s=started,
                 call_returned_at_s=returned, call_returned=error is None,
                 error=error, backend=evidence, pair_after=dict(self._held),
-                source=self.source(), game_consumption_verified=False))
-            self._events[-1]['intervention'] = getattr(self._local, 'intervention', None)
-            self._sizes.append(size)
-            self._bytes += size
+                source=source, game_consumption_verified=False))
+            self._events[-1]['intervention'] = intervention
+            self._sizes.append(key)
+            self._bytes += 2048
 
     def drain(self):
         with self._lock:
@@ -148,9 +268,14 @@ class PedalJournal:
                           game_consumption_verified=False)
             self._events.clear()
             self._sizes.clear()
+            self._source_uses.clear()
             self._bytes = 0
             self._dropped = 0
-            return result
+        for event in result['events']:
+            event['source'] = expand_decision(event['source'])
+            if isinstance(event['source'], dict) and event.get('intervention') is not None:
+                event['source'] = {**event['source'], 'intervention': event['intervention']}
+        return result
 
 
 def source_snapshot(state, truck, pending):

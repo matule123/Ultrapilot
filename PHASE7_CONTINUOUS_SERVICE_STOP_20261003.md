@@ -1,5 +1,13 @@
 # Continuous service-brake planned waiting
 
+**2026-10-04 incident follow-up:**
+[Continuous-stop lifecycle regression](PHASE7_SIGNAL_LIFECYCLE_REGRESSION_20261004.md)
+repairs the runtime witness erased by diagnostic budgeting, the first planned
+brake during an admitted moving zero ratio, and paired-write journal export.
+Joint production-producer tests now cover repeated red/wait/green/restart cycles.
+The incomplete historical pedal record and live SDK-consumption uncertainty are
+explicitly retained; this is not a game-confirmed verdict.
+
 **2026-10-04 follow-up:** [Producer-timed signal restart](PHASE7_SIGNAL_STOP_RESUME_20261004.md)
 implements the user-authorized route/head relevance heuristic and a versioned
 producer sidecar. The supported single-signal path now restarts offline without

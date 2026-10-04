@@ -175,3 +175,18 @@ Samostatný blokátor ACC zostáva timestamp/generácia traffic producenta,
 nepreukázaná príslušnosť k pruhu/pokrytie a neznámy rozdiel referenčných bodov
 od nárazníkov. Diagnostické doplnenie tieto údaje nevytvorí. Nový senzor, DLL,
 stop-and-go ani nadchádzanie nie sú súčasťou uzavretia Fázy 7.
+
+## Zastavenie a semaforový rozjazd – oprava incidentu 4. 10.
+
+[PHASE7_SIGNAL_LIFECYCLE_REGRESSION_20261004.md](PHASE7_SIGNAL_LIFECYCLE_REGRESSION_20261004.md)
+dokumentuje úzke opravy core: strata dôvodu plánovaného zastavenia cez limit
+diagnostickej kópie, prvá brzda pri potvrdenom prechodnom nulovom prevode a
+export skutočných párov pedálových zápisov. Opakované cykly červená–čakanie–zelená
+prešli offline cez oboch skutočných producentov, Autopilot, Engine a Controller.
+Samotný incident nemá záznam pôvodného zdroja brzdy; ten sa spätne nevymýšľa.
+
+Herná spotreba súvislej SDK brzdy pri státí a následný rozjazd na relevantnú
+zelenú zostávajú neoverené. Po celej sade používateľa a schválenom spoločnom
+nasadení core stačí overiť podporovaný jeden semaforový cyklus. Výber hlavy je
+geometrická heuristika; chýbajúca alebo nejednoznačná zelená ani zmiznuté auto
+nesmú povoliť pokračovanie. Parkovacia brzda vodiča zostáva mimo autority.

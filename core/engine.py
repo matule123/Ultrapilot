@@ -2818,7 +2818,8 @@ class UltraPilotEngine:
             previous_hold = getattr(self, '_service_brake_hold', None)
             next_hold = after_write(previous_hold, self.controller,
                                     simple_auto_context(self.shared_state),
-                                    truck_telemetry, longitudinal, time.monotonic())
+                                    truck_telemetry, longitudinal, time.monotonic(),
+                                    forward_history=getattr(self, '_simple_auto_forward_history', None))
             if (brake > 0
                     and (previous_hold or hasattr(getattr(self.controller, 'scs', None),
                                                   '_brake_write_receipt'))

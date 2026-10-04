@@ -369,17 +369,17 @@ def engine_decision(state, truck, now=None, *, diagnostic=None, rejection_info=N
             source=value['decision_source'], source_observation_timestamp=value['observation_timestamp']),
             limit=8192)[0]
     if result['brake'] > 0:
-        # Capture only consumed inputs, never a later scalar light/ACC snapshot.
-        # This explains a standstill handover; it does not prove a safe gap or
-        # provide parking-brake authority. No serialization or unbounded actors.
-        from core.navigation.longitudinal_diagnostics import bounded_copy
+        # Runtime stop witness, separate from the lossy diagnostic byte budget.
+        # Only fixed scalar fields from the SAME consumed packets are retained;
+        # no actor arrays, display geometry or later scalar IPC reads. A passive
+        # journal may omit oversized data, but cannot erase the reason required
+        # to establish continuous service braking in the physical control path.
         stop = dict(
             source=result['source'], reason=result['reason'], brake=result['brake'],
             traffic=traffic and {k: traffic.get(k) for k in ('sdk_frame_us',
-                'observation_timestamp', 'traffic_brake', 'light_brake', 'light',
-                'following', 'brake_basis')},
+                'observation_timestamp', 'traffic_brake', 'light_brake')},
             acc=current_acc and {k: current_acc.get(k) for k in ('sdk_frame_us',
-                'observation_timestamp', 'brake', 'following_status', 'speed_control_reason')},
+                'observation_timestamp', 'brake', 'following_status')},
             policy=policy and {k: policy.get(k) for k in ('sdk_frame_us',
                 'observation_timestamp', 'brake', 'reason')},
             source_observation_timestamp=value['observation_timestamp'])
@@ -389,10 +389,14 @@ def engine_decision(state, truck, now=None, *, diagnostic=None, rejection_info=N
         if isinstance(signal, dict) and stop.get('traffic') is not None:
             from core.sdk.signal_snapshot import compact
             stop['traffic']['signal'] = compact(signal)
+        light = (traffic or {}).get('light')
+        if isinstance(light, dict) and stop.get('traffic') is not None:
+            stop['traffic']['light'] = {k: light[k] for k in (
+                'id', 'color', 'distance', 'producer_timestamp', 'producer_generation') if k in light}
         for key in ('traffic', 'acc', 'policy'):
             if isinstance(stop.get(key), dict):
                 stop[key] = {k: v for k, v in stop[key].items() if v is not None}
-        result['stopping_evidence'] = bounded_copy(stop, limit=8192)[0]
+        result['stopping_evidence'] = stop
     if diagnostic is not None:
         # The same immutable traffic evidence already resides in inputs. Do
         # not duplicate actor fields in the bounded journal's selected command.

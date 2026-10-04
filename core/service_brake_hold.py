@@ -49,15 +49,29 @@ def planned_stop(decision):
                 or policy.get('reason') == 'toll stop/payment')
 
 
-def after_write(previous, controller, forward_context, truck, decision, now):
+def after_write(previous, controller, forward_context, truck, decision, now,
+                *, forward_history=None):
     if not decision or decision.get('emergency'):
         return None
     current = receipt(controller)
     if not current.get('positive'):
         return None
+    # Engine has already validated this exact observation with the common
+    # transmission rule. An engaged ratio may briefly be zero while the truck
+    # is still moving forward. Do not discard the first actual planned brake
+    # write in that admitted transition, then reject its stop as lost drive.
+    # A raw zero ratio, launch intent or old confirmation is never sufficient.
+    history = forward_history or {}
+    zero_forward = bool(int(truck['gear']) == 0
+        and history.get('context') == forward_context
+        and history.get('phase') == 'zero_ratio_transition'
+        and history.get('last_frame') == truck['sdkFrameTimeUs']
+        and not history.get('launch_deadline_at')
+        and 0. <= now-history.get('last_observed_at', float('-inf')) <= .5
+        and now <= history.get('zero_deadline_at', float('-inf')))
     if previous and current['chain'] == previous['chain']:
         result = dict(previous)
-    elif (float(truck['speed']) > .05 and int(truck['gear']) > 0
+    elif (float(truck['speed']) > .05 and (int(truck['gear']) > 0 or zero_forward)
             and truck.get('parkBrake') is False and planned_stop(decision)):
         # Identities are those validated BEFORE this write. Never label a write
         # with a later IPC snapshot that may already belong to another route.
