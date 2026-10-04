@@ -1,66 +1,25 @@
-"""
-Small always-on-top performance overlay (the „hamburger“ panel).
+"""Theme-aware, read-only memory popover with exact published plugin PIDs.
 
-A compact frameless window anchored to the bottom-left of the screen that shows
-the app's total RAM use and a bar per running plugin, refreshing twice a second.
-It mirrors the data ``ui/performance.py`` collects (process tree RSS, plugin
-worker names) so the two stay consistent.
-
-The overlay is opened from the hamburger (≡) button in the main window's
-sidebar footer and can be dragged by its title bar.
+RSS is the process working set, not exclusive physical memory allocation.
 """
 
-import os
 from PyQt6.QtCore import Qt, QTimer, QPoint
 from PyQt6.QtGui import QColor
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QFrame,
-    QGraphicsDropShadowEffect,
+    QGraphicsDropShadowEffect, QPushButton, QProgressBar, QScrollArea,
 )
-
-try:
-    import psutil
-except Exception:
-    psutil = None
+from core.process_memory import collect_memory
 
 
 def _collect(state=None):
-    """Return (app_rss_mb, app_cpu_pct, [(plugin_name, rss_mb, cpu_pct), ...])."""
-    if psutil is None:
-        return 0.0, 0.0, []
-    me = psutil.Process(os.getpid())
-    try:
-        root = me.parent() or me
-    except Exception:
-        root = me
-    procs = [root] + root.children(recursive=True)
-    seen, app_rss, app_cpu, plugins = set(), 0, 0.0, []
-    for p in procs:
-        try:
-            if p.pid in seen:
-                continue
-            seen.add(p.pid)
-            rss = p.memory_info().rss
-            app_rss += rss
-            try:
-                cpu = p.cpu_percent(interval=None)
-            except Exception:
-                cpu = 0.0
-            app_cpu += cpu
-            # Plugin names cannot be recovered reliably from a spawned
-            # python.exe command line on Windows. Exact PIDs are published by
-            # PluginManager and resolved below.
-        except Exception:
-            continue
-    published = state.get("plugin_processes", {}) if state is not None else {}
-    for name, pid in dict(published or {}).items():
-        try:
-            proc = psutil.Process(int(pid))
-            plugins.append((str(name).replace("_", " ").title(),
-                            proc.memory_info().rss, proc.cpu_percent(interval=None)))
-        except Exception:
-            continue
-    return app_rss / 1e6, app_cpu, [(n, r / 1e6, c) for n, r, c in plugins]
+    return collect_memory(state)
+
+
+def _memory(value):
+    if value is None:
+        return "—"
+    return f"{value / 1000:.2f} GB" if value >= 1000 else f"{value:.1f} MB"
 
 
 class PerfOverlay(QWidget):
@@ -74,7 +33,8 @@ class PerfOverlay(QWidget):
             Qt.WindowType.WindowStaysOnTopHint |
             Qt.WindowType.Tool)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
-        self.setFixedSize(330, 390)
+        self.setFixedSize(360, 360)
+        self._rows = {}
         self._drag = None
         # Resolve the palette BEFORE _build() so the labels can read _pal.
         from core.theme import palette
@@ -83,30 +43,47 @@ class PerfOverlay(QWidget):
         self._apply_window_style()
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.refresh)
-        self.timer.start(500)
+        self.timer.setInterval(500)
+        self.refresh()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self.refresh()
+        self.timer.start()
+
+    def hideEvent(self, event):
+        self.timer.stop()
+        super().hideEvent(event)
 
     def restyle(self, theme):
-        """The reference performance console intentionally stays dark."""
         from core.theme import palette
         self._pal = palette(theme)
         self._apply_window_style()
-        self.refresh()
 
     def _apply_window_style(self):
+        p = self._pal
         self.setStyleSheet(
             "PerfOverlay{background:transparent;}"
-            "QFrame#PerfSurface{background:#1D1D1F;"
-            "border:1px solid #D6D6D8;border-radius:5px;}"
-            "QFrame#PerfSurface QWidget{background:transparent;border:none;}"
-            "QLabel{background:transparent;border:none;}"
-            "QLabel#PerfTitle{font-family:Consolas;font-size:12px;"
-            "font-weight:700;color:#F3F4F6;}"
-            "QLabel#PerfBranch{font-family:Consolas;font-size:11px;"
-            "font-weight:650;color:#7DE3F4;}"
-            "QLabel#PerfValue{font-family:Consolas;font-size:11px;"
-            "color:#F3F4F6;}"
-            "QLabel#PerfMuted{font-family:Consolas;font-size:10px;"
-            "color:#9CA3AF;}")
+            "QFrame#PerfSurface{background:" + p['card'] + ";border:1px solid "
+            + p['border'] + ";border-radius:16px;}"
+            "QLabel,QWidget#PerfRows{background:transparent;border:none;color:" + p['text'] + ";}"
+            "QLabel#PerfTitle{font-size:16px;font-weight:750;}"
+            "QLabel#PerfTotal{font-size:27px;font-weight:800;}"
+            "QLabel#PerfMuted{font-size:11px;color:" + p['muted'] + ";}"
+            "QLabel#PerfValue{font-size:12px;font-weight:650;}"
+            "QLabel#PerfBadge{background:" + p['card2'] + ";color:" + p['title']
+            + ";border-radius:8px;padding:5px 9px;font-size:11px;}"
+            "QPushButton#PerfClose{background:transparent;border:none;border-radius:8px;"
+            "font-size:20px;color:" + p['muted'] + ";}"
+            "QPushButton#PerfClose:hover{background:" + p['card2'] + ";}"
+            "QScrollArea{background:transparent;border:none;}"
+            "QScrollBar:vertical{background:transparent;width:7px;margin:0;}"
+            "QScrollBar::handle:vertical{background:" + p['border']
+            + ";min-height:25px;border-radius:3px;}"
+            "QScrollBar::add-line:vertical,QScrollBar::sub-line:vertical{height:0;}"
+            "QScrollBar::add-page:vertical,QScrollBar::sub-page:vertical{background:transparent;}"
+            "QProgressBar{background:" + p['card2'] + ";border:none;border-radius:3px;}"
+            "QProgressBar::chunk{background:" + p['accent2'] + ";border-radius:3px;}")
 
     def show_above(self, anchor):
         """Open as a compact popover directly above the performance button."""
@@ -136,28 +113,102 @@ class PerfOverlay(QWidget):
         body = QVBoxLayout(self.surface)
         body.setContentsMargins(13, 12, 13, 13)
         body.setSpacing(4)
-        title = QLabel("┌ Plugins")
+        body.setSpacing(12)
+        heading = QHBoxLayout()
+        title = QLabel("Výkon aplikácie")
         title.setObjectName("PerfTitle")
-        body.addWidget(title)
-        self.rows_box = QVBoxLayout()
-        self.rows_box.setSpacing(2)
-        body.addLayout(self.rows_box)
-        self.total_lbl = QLabel("└ Total:  — MB")
-        self.total_lbl.setObjectName("PerfTitle")
-        body.addWidget(self.total_lbl)
-        body.addStretch(1)
-
-    def _clear_rows(self):
-        while self.rows_box.count():
-            w = self.rows_box.takeAt(0).widget()
-            if w:
-                w.setParent(None)
-                w.deleteLater()
+        heading.addWidget(title, 1)
+        close = QPushButton("×")
+        close.setObjectName("PerfClose")
+        close.setFixedSize(28, 28)
+        close.setToolTip("Zavrieť kartu výkonu")
+        close.setCursor(Qt.CursorShape.PointingHandCursor)
+        close.clicked.connect(self.hide)
+        heading.addWidget(close)
+        body.addLayout(heading)
+        caption = QLabel("Pamäť UltraPilotu")
+        caption.setObjectName("PerfMuted")
+        body.addWidget(caption)
+        summary = QHBoxLayout()
+        self.total_lbl = QLabel("—")
+        self.total_lbl.setObjectName("PerfTotal")
+        summary.addWidget(self.total_lbl, 1)
+        self.count_lbl = QLabel("0 pluginov")
+        self.count_lbl.setObjectName("PerfBadge")
+        summary.addWidget(self.count_lbl)
+        body.addLayout(summary)
+        plugins_title = QLabel("PLUGINY  ·  PODĽA PAMÄTE")
+        plugins_title.setObjectName("PerfMuted")
+        body.addWidget(plugins_title)
+        self.scroll = QScrollArea()
+        self.scroll.setWidgetResizable(True)
+        self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.rows_widget = QWidget()
+        self.rows_widget.setObjectName("PerfRows")
+        self.rows_box = QVBoxLayout(self.rows_widget)
+        self.rows_box.setContentsMargins(0, 0, 4, 0)
+        self.rows_box.setSpacing(10)
+        self.rows_box.setAlignment(Qt.AlignmentFlag.AlignTop)
+        self.scroll.setWidget(self.rows_widget)
+        body.addWidget(self.scroll, 1)
+        self.empty = QLabel("Čakám na procesy pluginov…")
+        self.empty.setObjectName("PerfMuted")
+        self.empty.setWordWrap(True)
+        body.addWidget(self.empty)
+        footer = QLabel("Pamäť procesov (RSS) · obnova každých 0,5 s")
+        footer.setObjectName("PerfMuted")
+        footer.setWordWrap(True)
+        footer.setToolTip("1 MB = 1 000 000 bajtov. RSS zahŕňa Python a zdieľané stránky; "
+                          "súčet nie je výlučne pridelená fyzická RAM.")
+        body.addWidget(footer)
 
     def refresh(self):
         app_mb, _app_cpu, plugins = _collect(self.state)
-        desired = max(128, min(570, 88 + max(1, len(plugins)) * 25))
-        if desired != self.height():
+        self.total_lbl.setText(_memory(app_mb))
+        count = len(plugins)
+        suffix = "plugin" if count == 1 else "pluginy" if 2 <= count <= 4 else "pluginov"
+        self.count_lbl.setText(f"{count} {suffix}")
+        self.empty.setVisible(not plugins)
+        self.empty.setText("Meranie pamäte nie je dostupné." if app_mb is None
+                           else "Žiadne spustené pluginy.")
+        self.scroll.setVisible(bool(plugins))
+        ordered = sorted(plugins, key=lambda row: (-row[1], row[0]))
+        names = {row[0] for row in ordered}
+        for name in list(self._rows):
+            if name not in names:
+                widget, *_ = self._rows.pop(name)
+                self.rows_box.removeWidget(widget)
+                widget.deleteLater()
+        plugin_total = sum(row[1] for row in plugins)
+        for index, (name, mb, _cpu) in enumerate(ordered):
+            if name not in self._rows:
+                wrap = QWidget()
+                wrap.setFixedHeight(39)
+                layout = QVBoxLayout(wrap)
+                layout.setContentsMargins(0, 0, 0, 0)
+                layout.setSpacing(6)
+                line = QHBoxLayout()
+                label = QLabel(name)
+                label.setObjectName("PerfValue")
+                value = QLabel()
+                value.setObjectName("PerfValue")
+                value.setAlignment(Qt.AlignmentFlag.AlignRight)
+                line.addWidget(label, 1)
+                line.addWidget(value)
+                layout.addLayout(line)
+                bar = QProgressBar()
+                bar.setRange(0, 1000)
+                bar.setFixedHeight(5)
+                bar.setTextVisible(False)
+                layout.addWidget(bar)
+                self._rows[name] = wrap, value, bar
+            wrap, value, bar = self._rows[name]
+            value.setText(_memory(mb))
+            bar.setValue(round(1000 * mb / plugin_total) if plugin_total else 0)
+            bar.setToolTip("Podiel na súčte RSS pluginov")
+            self.rows_box.insertWidget(index, wrap)
+        desired = min(540, 226 + min(6, max(1, len(plugins))) * 49)
+        if self.height() != desired:
             old_bottom = self.y() + self.height()
             self.setFixedHeight(desired)
             screen = self.screen().availableGeometry() if self.screen() else None
@@ -165,43 +216,10 @@ class PerfOverlay(QWidget):
             if screen is not None:
                 y = max(screen.top() + 8, min(y, screen.bottom() - desired - 8))
             self.move(self.x(), y)
-        total = f"{app_mb / 1024:.2f} GB" if app_mb >= 1024 else f"{app_mb:.0f} MB"
-        self.total_lbl.setText(f"└ Total:  {total}")
-        self._clear_rows()
-        if not plugins:
-            lbl = QLabel("│  čakám na procesy pluginov")
-            lbl.setObjectName("PerfMuted")
-            self.rows_box.addWidget(lbl)
-            return
-        ordered = sorted(plugins, key=lambda r: -r[1])
-        for index, (name, mb, cpu) in enumerate(ordered):
-            row = QHBoxLayout()
-            row.setContentsMargins(0, 0, 0, 0)
-            row.setSpacing(3)
-            branch = QLabel("│")
-            branch.setObjectName("PerfBranch")
-            branch.setFixedWidth(11)
-            n = QLabel(name)
-            n.setObjectName("PerfValue")
-            value = f"{mb / 1024:.2f} GB" if mb >= 1024 else f"{mb:.1f} MB"
-            val = QLabel(value)
-            val.setObjectName("PerfValue")
-            val.setFixedWidth(70)
-            val.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-            row.addWidget(branch)
-            row.addWidget(val)
-            dash = QLabel("-")
-            dash.setObjectName("PerfMuted")
-            row.addWidget(dash)
-            row.addWidget(n, 1)
-            wrap = QWidget()
-            wrap.setFixedHeight(23)
-            wrap.setLayout(row)
-            self.rows_box.addWidget(wrap)
 
     # --- drag by the title area ---
     def mousePressEvent(self, e):
-        if e.button() == Qt.MouseButton.LeftButton and e.position().y() <= 30:
+        if e.button() == Qt.MouseButton.LeftButton and e.position().y() <= 52:
             self._drag = e.globalPosition().toPoint() - self.frameGeometry().topLeft()
             e.accept()
 

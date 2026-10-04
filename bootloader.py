@@ -233,6 +233,7 @@ def main():
     # ONE shared manager dict, handed to every process.
     manager = mp.Manager()
     shared_dict = manager.dict()
+    shared_dict["runtime_root_pid"] = os.getpid()
     # Resolve release metadata before launching UI processes (no startup race).
     try:
         from core.paths import app_dir

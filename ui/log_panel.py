@@ -45,6 +45,15 @@ _LEVEL_TAG = {
 }
 
 
+def _message_html(message):
+    """Keep all log text escaped, highlighting only a startup RAM receipt."""
+    prefix, marker, suffix = message.partition(" · RAM: ")
+    if message.startswith("Plugin pripravený: ") and marker:
+        return (html.escape(prefix) + '<span style="color:#BAE6FD;">'
+                + html.escape(marker + suffix) + '</span>')
+    return html.escape(message)
+
+
 class _BufferHandler(logging.Handler):
     """A logging handler that appends formatted HTML lines to a QTextEdit.
 
@@ -65,9 +74,7 @@ class _BufferHandler(logging.Handler):
             col = _LEVEL_COLOR.get(lvl, "#9AA4B2")
             tag = _LEVEL_TAG.get(lvl, "LOG  ")
             # Escape the message so log text can't inject HTML.
-            msg = (record.getMessage() or "").replace("&", "&amp;")\
-                                             .replace("<", "&lt;")\
-                                             .replace(">", "&gt;")
+            msg = _message_html(record.getMessage() or "")
             line = (
                 f'<span style="color:#5B6573;">[{ts}]</span> '
                 f'<span style="color:{col};font-weight:700;">{tag}</span> '
@@ -190,7 +197,7 @@ class LogPage(Page):
                     f'<span style="color:#5B6573;">[{item["time"]}]</span> '
                     f'<span style="color:{color};font-weight:700;">{item["level"]:5}</span> '
                     f'<span style="color:#7DD3FC;">{html.escape(item["src"])}</span> '
-                    f'<span style="color:#E6E8EB;">{html.escape(item["msg"])}</span><br>')
+                    f'<span style="color:#E6E8EB;">{_message_html(item["msg"])}</span><br>')
             else:
                 rendered = f'<span style="color:#7B8491;">{html.escape(line)}</span><br>'
             cursor.insertHtml(rendered)

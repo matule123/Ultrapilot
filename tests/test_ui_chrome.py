@@ -375,13 +375,17 @@ class UiChromeTests(unittest.TestCase):
         overlay = PerfOverlay(State({"ui_theme": "light"}))
         self.assertTrue(overlay.testAttribute(
             Qt.WidgetAttribute.WA_TranslucentBackground))
-        self.assertEqual(overlay.width(), 330)
+        self.assertEqual(overlay.width(), 360)
         self.assertEqual(overlay.surface.objectName(), "PerfSurface")
         self.assertIsNotNone(overlay.surface.graphicsEffect())
         self.assertIn("QFrame#PerfSurface", overlay.styleSheet())
         labels = [label.text() for label in overlay.findChildren(QLabel)]
-        self.assertIn("┌ Plugins", labels)
-        self.assertTrue(any(text.startswith("└ Total:") for text in labels))
+        self.assertIn("Výkon aplikácie", labels)
+        self.assertIn("Pamäť UltraPilotu", labels)
+        self.assertIn("border-radius:16px", overlay.styleSheet())
+        light_style = overlay.styleSheet()
+        overlay.restyle("dark")
+        self.assertNotEqual(light_style, overlay.styleSheet())
         overlay.close()
 
     def test_performance_rows_have_enough_height_and_are_not_clipped(self):
@@ -392,10 +396,30 @@ class UiChromeTests(unittest.TestCase):
             overlay = PerfOverlay(State({"ui_theme": "light"}))
             overlay.refresh()
         self.assertEqual(overlay.rows_box.count(), 10)
-        self.assertEqual(overlay.height(), 338)
-        self.assertTrue(all(overlay.rows_box.itemAt(i).widget().height() == 23
+        self.assertLessEqual(overlay.height(), 540)
+        self.assertTrue(overlay.scroll.widgetResizable())
+        self.assertTrue(all(overlay.rows_box.itemAt(i).widget().height() == 39
                             for i in range(10)))
+        first = overlay.rows_box.itemAt(0).widget()
+        with mock.patch("UI.perf_overlay._collect",
+                        return_value=(512.0, 5.0, plugins)):
+            overlay.refresh()
+        self.assertIs(overlay.rows_box.itemAt(0).widget(), first)
+        self.assertEqual(overlay.total_lbl.text(), "512.0 MB")
+        overlay.show()
+        QApplication.processEvents()
+        self.assertTrue(overlay.timer.isActive())
+        overlay.hide()
+        self.assertFalse(overlay.timer.isActive())
         overlay.close()
+
+    def test_startup_ram_is_highlighted_without_unescaping_log_text(self):
+        from UI.log_panel import _message_html
+        rendered = _message_html("Plugin pripravený: <map> · RAM: 45.2 MB (RSS)")
+        self.assertIn("#BAE6FD", rendered)
+        self.assertIn("&lt;map&gt;", rendered)
+        self.assertNotIn("<map>", rendered)
+        self.assertEqual(_message_html("ordinary <message>"), "ordinary &lt;message&gt;")
 
     def test_navigation_is_game_gps_first_and_live_map_badge_is_visible(self):
         with mock.patch.object(MapPage, "_populate_maps", autospec=True):

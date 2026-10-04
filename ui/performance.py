@@ -1,7 +1,7 @@
-import os
 from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QFrame, QProgressBar
 from PyQt6.QtCore import QTimer, Qt
 from core.theme import palette
+from core.process_memory import collect_memory
 
 try:
     import psutil
@@ -20,7 +20,7 @@ class PerformancePage(QWidget):
         lay.setContentsMargins(10, 10, 10, 10)
         lay.setSpacing(10)
 
-        title = QLabel("Performance")
+        title = QLabel("Výkon aplikácie")
         title.setStyleSheet("font-size:18px;font-weight:700;color:" + self._pal['text'] + ";")
         self._title = title
         lay.addWidget(title)
@@ -28,7 +28,7 @@ class PerformancePage(QWidget):
         summary = QHBoxLayout()
         self.ram_card = QLabel("RAM\n—")
         self.cpu_card = QLabel("CPU\n—")
-        self.proc_card = QLabel("PROCESSES\n—")
+        self.proc_card = QLabel("PLUGINY\n—")
         for card in (self.ram_card, self.cpu_card, self.proc_card):
             card.setMinimumHeight(62)
             card.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -38,7 +38,7 @@ class PerformancePage(QWidget):
             summary.addWidget(card)
         lay.addLayout(summary)
 
-        self.total_lbl = QLabel("System RAM")
+        self.total_lbl = QLabel("Pamäť počítača")
         self.total_lbl.setStyleSheet("color:" + self._pal['muted'] + "; font-weight:bold;")
         lay.addWidget(self.total_lbl)
         self.total_bar = QProgressBar()
@@ -56,17 +56,23 @@ class PerformancePage(QWidget):
         lay.addStretch()
 
         if psutil is None:
-            self.app_lbl.setText("psutil not installed — performance unavailable.")
+            self.app_lbl.setText("Meranie výkonu nie je dostupné.")
 
-        self.timer = QTimer()
+        self.timer = QTimer(self)
         self.timer.timeout.connect(self.refresh)
         self.timer.start(1500)
+        self.restyle(state.get("ui_theme", "light") or "light")
 
     def restyle(self, theme):
         self._pal = palette(theme)
         p = self._pal
         self._title.setStyleSheet("font-size:18px;font-weight:700;color:" + p['text'] + ";")
         self.total_lbl.setStyleSheet("color:" + p['muted'] + "; font-weight:bold;")
+        for card in (self.ram_card, self.cpu_card, self.proc_card):
+            card.setStyleSheet("background:" + p['card2'] + ";color:" + p['text']
+                              + ";border:1px solid " + p['border']
+                              + ";border-radius:12px;padding:10px;font-weight:700;")
+        self.app_lbl.setStyleSheet("color:" + p['text'] + ";font-weight:700;")
         self.rows_frame.setStyleSheet("background:" + p['card'] + "; border:1px solid " + p['border'] + "; border-radius:12px; padding:10px;")
 
     def _clear_rows(self):
@@ -74,6 +80,7 @@ class PerformancePage(QWidget):
             w = self.rows.takeAt(0).widget()
             if w:
                 w.setParent(None)
+                w.deleteLater()
 
     def refresh(self):
         if psutil is None:
@@ -82,57 +89,31 @@ class PerformancePage(QWidget):
         self.total_bar.setValue(int(vm.percent))
         self.total_bar.setFormat(f"{vm.percent:.0f}%  ({(vm.total-vm.available)/1e9:.1f} / {vm.total/1e9:.1f} GB)")
 
-        # Find our process tree (this UI process + parent + siblings).
-        me = psutil.Process(os.getpid())
-        try:
-            root = me.parent() or me
-        except Exception:
-            root = me
-        procs = [root] + root.children(recursive=True)
-        seen, app_rss = set(), 0
-        plugins = []
-        for p in procs:
-            try:
-                if p.pid in seen:
-                    continue
-                seen.add(p.pid)
-                rss = p.memory_info().rss
-                app_rss += rss
-                # multiprocessing names plugin workers "Plugin-<folder>".
-                pname = p.name()
-                try:
-                    mp_name = next((a for a in p.cmdline() if a.startswith("Plugin-")), None)
-                except Exception:
-                    mp_name = None
-                label = mp_name or pname
-                if label.startswith("Plugin-"):
-                    plugins.append((label.replace("Plugin-", "").capitalize(), rss))
-            except Exception:
-                continue
-
-        plug_rss = sum(r for _, r in plugins) or 1
-        self.app_lbl.setText(f"UltraPilot RAM: {app_rss/1e6:.0f} MB total · "
-                             f"plugins {plug_rss/1e6:.0f} MB")
+        app_mb, _, measured = collect_memory(self.state)
+        plugins = [(name, mb) for name, mb, _ in measured]
+        plug_mb = sum(mb for _, mb in plugins)
+        self.app_lbl.setText("Pamäť procesov (RSS) · vrátane Python runtime")
+        self.ram_card.setText(f"RAM APLIKÁCIE\n{app_mb:.0f} MB" if app_mb is not None
+                              else "RAM APLIKÁCIE\n—")
         try:
             cpu = psutil.cpu_percent(interval=None)
         except Exception:
             cpu = 0.0
-        self.ram_card.setText(f"APP RAM\n{app_rss/1e6:.0f} MB")
-        self.cpu_card.setText(f"SYSTEM CPU\n{cpu:.0f}%")
-        self.proc_card.setText(f"PROCESSES\n{len(procs)}")
+        self.cpu_card.setText(f"CPU POČÍTAČA\n{cpu:.0f}%")
+        self.proc_card.setText(f"PLUGINY\n{len(plugins)}")
 
         self._clear_rows()
         if not plugins:
-            lbl = QLabel("No plugin processes running yet (start the app with the game).")
+            lbl = QLabel("Žiadne spustené pluginy.")
             lbl.setStyleSheet("color:" + self._pal['muted'] + ";")
             self.rows.addWidget(lbl)
-        for label, rss in sorted(plugins, key=lambda r: -r[1]):
-            pct = 100 * rss / plug_rss
+        for label, mb in sorted(plugins, key=lambda r: -r[1]):
+            pct = 100 * mb / plug_mb if plug_mb else 0
             row = QHBoxLayout()
             n = QLabel(label); n.setFixedWidth(150)
             n.setStyleSheet("color:" + self._pal['text'] + ";")
             bar = QProgressBar(); bar.setValue(int(pct))
-            bar.setFormat(f"{rss/1e6:.0f} MB  ({pct:.0f}%)")
+            bar.setFormat(f"{mb:.0f} MB  ({pct:.0f}%)")
             row.addWidget(n); row.addWidget(bar)
             holder = QWidget(); holder.setLayout(row)
             self.rows.addWidget(holder)

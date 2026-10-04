@@ -322,17 +322,21 @@ class AboutPage(Page):
     def __init__(self, state):
         super().__init__(state)
         from core.theme import palette
-        from core.update_check import current_version
+        from core.update_check import current_version, git_commit
         self._pal = palette(state.get("ui_theme", "light") or "light")
         self.setObjectName("AboutPage")
         self.title = QLabel("O aplikácii")
         self.title.setObjectName("PageTitle")
         self.layout.addWidget(self.title)
 
+        subtitle = QLabel("Tvoj pomocník na cestách v Euro Truck Simulator 2")
+        subtitle.setObjectName("AboutSubtitle")
+        self.layout.addWidget(subtitle)
+
         self.hero = QFrame()
         self.hero.setObjectName("AboutHero")
         hero_lay = QHBoxLayout(self.hero)
-        hero_lay.setContentsMargins(24, 22, 24, 22)
+        hero_lay.setContentsMargins(26, 26, 26, 26)
         hero_lay.setSpacing(16)
         logo = QLabel()
         logo.setFixedSize(58, 58)
@@ -344,7 +348,7 @@ class AboutPage(Page):
         hero_text.setSpacing(3)
         product = QLabel("UltraPilot")
         product.setObjectName("AboutProduct")
-        version = QLabel(f"Verzia {current_version()}  •  Asistent jazdy pre ETS2")
+        version = QLabel("ASISTENT JAZDY PRE ETS2")
         version.setObjectName("AboutMeta")
         summary = QLabel(
             "Navigácia podľa hernej GPS, udržiavanie v pruhu, adaptívny "
@@ -358,13 +362,35 @@ class AboutPage(Page):
         hero_lay.addLayout(hero_text, 1)
         self.layout.addWidget(self.hero)
 
+        build = QFrame()
+        build.setObjectName("AboutBuild")
+        build_layout = QHBoxLayout(build)
+        build_layout.setContentsMargins(20, 16, 20, 16)
+        for caption, value in (("VERZIA APLIKÁCIE", current_version()),
+                               ("ZOSTAVA", git_commit() or "Neznáma"),
+                               ("SPRACOVANIE ÚDAJOV", "Lokálne v počítači")):
+            column = QVBoxLayout()
+            label = QLabel(caption)
+            label.setObjectName("AboutCaption")
+            detail = QLabel(value)
+            detail.setObjectName("AboutFeatureTitle")
+            detail.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+            column.addWidget(label)
+            column.addWidget(detail)
+            build_layout.addLayout(column, 1)
+        self.layout.addWidget(build)
+
+        section = QLabel("Čo nájdeš v UltraPilote")
+        section.setObjectName("AboutSection")
+        self.layout.addWidget(section)
+
         cards = QHBoxLayout()
         cards.setSpacing(12)
         self._about_cards = []
         for icon_name, heading, detail in (
-                ("navigation", "Navigácia", "Trasa z hernej GPS a presná strednica jazdného pruhu."),
-                ("autopilot", "Asistencia", "Riadenie, odstup a bezpečné zastavenie pod jednou autoritou."),
-                ("visualization", "Zobrazenie", "HUD, AR a live mapa používajú rovnakú revíziu trasy.")):
+                ("navigation", "Navigácia", "Plánovaná trasa z hernej GPS a vedenie podľa jazdného pruhu."),
+                ("autopilot", "Asistencia", "Vedenie volantu a riadenie rýchlosti. Ovládanie môžeš kedykoľvek prevziať."),
+                ("visualization", "Živý prehľad", "Mapa, HUD a upozornenia ti ukážu aktuálny stav jazdy.")):
             card = QFrame()
             card.setObjectName("AboutFeature")
             row = QVBoxLayout(card)
@@ -385,6 +411,12 @@ class AboutPage(Page):
             self._about_cards.append(card)
         self.layout.addLayout(cards)
 
+        tip = QLabel("RÝCHLY ŠTART   ·   Nastav GPS trasu v hre. Klávesom N požiadaj "
+                     "o zapnutie alebo vypnutie autopilota.")
+        tip.setObjectName("AboutTip")
+        tip.setWordWrap(True)
+        self.layout.addWidget(tip)
+
         self.note = QLabel(
             "UltraPilot spracúva hernú telemetriu lokálne. Ide o pomocný systém "
             "pre videohru — jazdu maj vždy pod dohľadom.")
@@ -400,13 +432,21 @@ class AboutPage(Page):
         p = self._pal
         self.setStyleSheet(
             "QWidget#AboutPage{background:" + p['bg'] + ";}"
+            "QLabel{background:transparent;}"
             "QLabel#PageTitle{font-size:24px;font-weight:800;color:" + p['text'] + ";}"
+            "QLabel#AboutSubtitle{font-size:12px;color:" + p['muted'] + ";}"
             "QFrame#AboutHero{background:qlineargradient(x1:0,y1:0,x2:1,y2:1,"
             "stop:0 " + p['hero_a'] + ",stop:1 " + p['hero_b'] + ");"
-            "border:1px solid " + p['border'] + ";border-radius:17px;}"
+            "border:1px solid " + p['border'] + ";border-radius:20px;}"
             "QLabel#AboutProduct{font-size:27px;font-weight:850;color:#FFFFFF;}"
-            "QLabel#AboutMeta{font-size:11px;font-weight:650;color:#A7F3D0;}"
+            "QLabel#AboutMeta{font-size:10px;font-weight:650;color:#BAE6FD;}"
             "QLabel#AboutSummary{font-size:13px;color:#E5E7EB;}"
+            "QFrame#AboutBuild{background:" + p['card'] + ";border:1px solid "
+            + p['border'] + ";border-radius:14px;}"
+            "QLabel#AboutCaption{font-size:10px;font-weight:650;color:" + p['muted'] + ";}"
+            "QLabel#AboutSection{font-size:14px;font-weight:700;color:" + p['text'] + ";}"
+            "QLabel#AboutTip{background:" + p['card2'] + ";border-radius:11px;"
+            "padding:14px;font-size:12px;color:" + p['text'] + ";}"
             "QFrame#AboutFeature{background:" + p['card'] + ";border:1px solid "
             + p['border'] + ";border-radius:14px;}"
             "QLabel#AboutFeatureTitle{font-size:15px;font-weight:750;color:" + p['text'] + ";}"

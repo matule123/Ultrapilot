@@ -173,6 +173,10 @@ class _ETS2LAFormatter(logging.Formatter):
         tag = self.TAGS.get(record.levelno, "LOG")
         ts = self.formatTime(record, "%H:%M:%S")
         msg = record.getMessage()
+        if getattr(record, "plugin_startup_memory", False):
+            prefix, marker, suffix = msg.partition(" · RAM: ")
+            if marker:
+                msg = prefix + "\033[38;2;186;230;253m" + marker + suffix
         # ETS2LA keeps a clear two-space gutter between timestamp and message.
         # Source/line details remain in ultrapilot.log instead of crowding the
         # live console.
@@ -181,6 +185,23 @@ class _ETS2LAFormatter(logging.Formatter):
         if record.exc_info:
             line += "\n" + self.formatException(record.exc_info)
         return line
+
+
+def log_plugin_ready(name, ram_mb):
+    """One startup receipt: plain file text and a pale-blue console RAM value."""
+    memory = f"{ram_mb:.1f} MB (RSS)" if ram_mb is not None else "nedostupná"
+    message = f"Plugin pripravený: {name} · RAM: {memory}"
+    logging.info(message, extra={"plugin_startup_memory": True})
+    # Plugin workers intentionally log recurring messages only to the file.
+    # Mirror just this startup receipt into the inherited Windows console.
+    ensure_windows_console()
+    if sys.stdout is not None:
+        record = logging.LogRecord(name, logging.INFO, "", 0, message, (), None)
+        record.plugin_startup_memory = True
+        try:
+            print(_ETS2LAFormatter().format(record), file=sys.stdout, flush=True)
+        except (OSError, ValueError):
+            pass
 
 
 def _make_console_handler():

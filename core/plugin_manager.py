@@ -55,6 +55,12 @@ def plugin_worker(plugin_class: Type[BasePlugin], plugin_name: str,
         if callable(start_control_worker):
             start_control_worker()
 
+        # Once after initialization, outside the recurring control tick.
+        # RSS is the whole worker process, not exclusive plugin allocations.
+        from core.logger import log_plugin_ready
+        from core.process_memory import resident_mb
+        log_plugin_ready(plugin_name, resident_mb())
+
         tick_dt = 0.01  # 100 Hz
         last_time = time.monotonic()
         while not stop_event.is_set():
