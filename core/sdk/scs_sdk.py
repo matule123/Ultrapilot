@@ -190,7 +190,10 @@ class SCSTelemetry:
             data["renderTime"] = self.read_long_long(24)[0]
 
             # --- Zone 3: truck ints (gear) ---
-            data["truckInt"] = {"gear": self.read_int(504)[0]}
+            # RenCloud SCSTelemetry Zone 3: restStop=500, gear=504,
+            # gearDashboard=508. The displayed gear is not selector authority.
+            data["truckInt"] = {"gear": self.read_int(504)[0],
+                                "gearDashboard": self.read_int(508)[0]}
             # Zone 2 configuration: count at 80, then local wheel vectors in
             # Zone 6. Local +Z is rearwards, relative to truckPlacement.
             data["truckWheelCount"] = self.read_int(80)[0]

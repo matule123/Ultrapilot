@@ -63,10 +63,9 @@ def _draw_hud_route_curve(painter, route_curve):
         painter.drawPath(route_curve)
 
 
-def _gear_text(gear):
-    if not gear:
-        return "N"
-    return str(int(gear)) if gear > 0 else "R"
+def _gear_text(gear, dashboard=None, automatic=False):
+    from core.gear_display import gear_text
+    return gear_text({"gear": gear, "gearDashboard": dashboard}, automatic)
 
 
 def hud_navigation_rejection_reason(state, trajectory, now=None):
@@ -605,6 +604,8 @@ class UltraPilotHUD(QWidget):
             "state": state,
             "speed_kmh": abs(speed) * 3.6 if abs(speed) < 200 else abs(speed),
             "gear": truck.get("gear", 0),
+            "gearDashboard": truck.get("gearDashboard"),
+            "automatic_gear_display": (s.get("ets2_transmission_mode") or {}).get("mode") in (0, 3),
             "active": (bool(s.get("autopilot_active", False))
                        and s.get("autopilot_control_state") != "controlled_stop"),
             "throttle": float(s.get("ctl_throttle", 0.0) or 0.0),
@@ -708,7 +709,8 @@ class UltraPilotHUD(QWidget):
         qp.setPen(QColor("#FFFFFF"))
         qp.setFont(QFont("Segoe UI", 16, QFont.Weight.Bold))
         qp.drawText(QRectF(self.W - 52, 17, 36, 34), Qt.AlignmentFlag.AlignCenter,
-                    _gear_text(d["gear"]))
+                    _gear_text(d["gear"], d.get("gearDashboard"),
+                               d.get("automatic_gear_display", False)))
 
     def _draw_limit_sign(self, qp, x, y, kmh):
         sz = 40

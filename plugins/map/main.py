@@ -69,7 +69,7 @@ class Plugin(BasePlugin):
     """
 
     NAME = "map"
-    VERSION = "1.0.3"
+    VERSION = "1.0.4"
 
     def on_start(self):
         logging.info("Map (navigation) plugin started.")
@@ -551,6 +551,34 @@ class Plugin(BasePlugin):
             self.sdk.get("active_map_key"),
             self.sdk.get("active_dataset_fingerprint"),
         )
+
+    def _trimmed_start_requires_refresh(self, match):
+        """Rebuild an inactive route whose proven first lane was trimmed ahead.
+
+        This is not global projection reacquisition. Only the uniquely owned
+        first lane, same deck and a pose behind its original trim qualify.
+        Active/pending control must still reject an unreachable projection.
+        """
+        if (match is None or self._lane_path is None or self._lane_route is None
+                or self.sdk.get("autopilot_active", False)
+                or self.sdk.get("auto_drive_pending", False)):
+            return False
+        segments = self._lane_path.segments
+        if (not segments or segments[0].lane_id != match.lane_id
+                or sum(s.lane_id == match.lane_id for s in segments) != 1):
+            return False
+        first = segments[0]
+        if (first.lane_change is not None or not first.centerline
+                or self._lane_runtime_metadata(match.lane_id)["elevation_layer"]
+                    != first.elevation_layer):
+            return False
+        start = first.centerline[0]
+        dx, dz = match.point.x - start.x, match.point.z - start.z
+        behind = dx * -math.sin(start.heading) + dz * -math.cos(start.heading)
+        if behind >= 0.0:
+            return False
+        from core.navigation.route import AUTHORITY_PROJECTION_MAX_DISTANCE_M
+        return math.hypot(dx, dz) > AUTHORITY_PROJECTION_MAX_DISTANCE_M
 
     def _new_route_diagnostics(self, uids, pos, altitude, heading,
                                started_monotonic=None, input_key=None):
@@ -1373,7 +1401,10 @@ class Plugin(BasePlugin):
             and not match_in_corridor
             and match.switch_reason in {
                 "lane_change_confirmed", "topology_transition"})
-        if lane_authority_refresh:
+        trimmed_start_refresh = bool(
+            current.get("valid", False) and match_in_corridor
+            and self._trimmed_start_requires_refresh(match))
+        if lane_authority_refresh or trimmed_start_refresh:
             needs_build = True
             self._rolling_route_refresh_needed = True
             if locator_capture is None:
@@ -1395,6 +1426,8 @@ class Plugin(BasePlugin):
                     "lane-authority-refresh",
                     current.get("route_build_id"),
                 )
+            if trimmed_start_refresh:
+                input_key += ("trimmed-start-refresh", current.get("route_build_id"))
             if self._build_guard.input_completed(
                     self.sdk.get("navigation_intent_id"), input_key):
                 if current.get("valid", False):

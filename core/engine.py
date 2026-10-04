@@ -1205,7 +1205,10 @@ class UltraPilotEngine:
             })
             self._first_pedal_request = request_id if new_state else None
             self._first_pedal_started_at = time.monotonic() if new_state else None
-            logging.info("Hotkey N -> %s", msg)
+            if rejection_reason:
+                logging.error("Hotkey N -> %s", msg)
+            else:
+                logging.info("Hotkey N -> %s", msg)
             if not new_state and not pending_started:
                 self._cancel_auto_drive_engagement("autopilot vypnutý")
                 self._release_controller()

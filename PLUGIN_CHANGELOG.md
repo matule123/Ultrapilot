@@ -4,6 +4,14 @@ Release history for individual plugins. See [PLUGIN_VERSIONS.md](PLUGIN_VERSIONS
 
 ## Map
 
+### 1.0.4 — 2026-10-04
+
+**Fixed**
+
+- Rebuild the validated trajectory when manual retreat leaves an inactive truck behind its previous trimmed start on the same uniquely confirmed first lane and elevation layer.
+- Bind the new steering packet to the replacement build and actual SDK pose. Do not rebuild to bypass projection failures during active or pending driving, on another deck or on repeated lane occurrences.
+- Preserve lane topology, the 2.4 m projection limit, the steering controller and the 500 ms freshness limit.
+
 ### 1.0.3 — 2026-10-03
 
 **Fixed**
@@ -213,6 +221,16 @@ Commit: `3ef65c7`.
 
 - Relay the original traffic request without renewing its observation lease or creating a second independent brake authority.
 - Label unavailable/stale traffic explicitly instead of presenting it as clear.
+
+## HUD
+
+### 1.0.1 — 2026-10-04
+
+**Fixed**
+
+- Prefer the current SDK dashboard gear for the gear element instead of inferring neutral from the physical transmission ratio at standstill.
+- Show D for positive displayed gear in automatic modes, preserve numbered manual gears, R and explicit dashboard neutral. Do not infer a selector state from an activation request or retain an old D value.
+- The coordinated core telemetry reader now exposes gearDashboard separately. Gearbox safety checks continue using the original physical gear.
 
 ## Other plugins — 1.0.0 baseline
 

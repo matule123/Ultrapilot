@@ -21,7 +21,7 @@ class HUDManager(BasePlugin):
     Professional HUD Manager.
     Discovers HUD elements and aggregates their data for the AR rendering engine.
     """
-    VERSION = "1.0.0"
+    VERSION = "1.0.1"
 
     def __init__(self, sdk_proxy):
         super().__init__(sdk_proxy)

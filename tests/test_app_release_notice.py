@@ -122,9 +122,18 @@ def test_shipped_release_snapshot_matches_all_plugins():
     from core.app_release import plugin_versions
     root = Path(__file__).resolve().parents[1]
     metadata = json.loads((root / "assets" / "app_release_notes.json").read_text(encoding="utf-8"))
-    assert metadata["releases"]["0.5.0"]["plugin_versions"] == plugin_versions(root)
+    # A published app-release snapshot is historical: later commit-only plugin
+    # fixes must not rewrite the baseline used by the next app release.
+    snapshot = metadata["releases"]["0.5.0"]["plugin_versions"]
+    current = plugin_versions(root)
+    assert set(snapshot) == set(current)
+    for name, version in snapshot.items():
+        assert tuple(map(int, version.split('.'))) <= tuple(map(int, current[name].split('.')))
     history = plugin_history((root / "PLUGIN_CHANGELOG.md").read_text(encoding="utf-8"),
                              {}, plugin_versions(root))
     assert len(history) == 12
     assert all(plugin["releases"] for plugin in history)
-    assert [entry["version"] for entry in next(p for p in history if p["name"] == "map")["releases"]] == ["1.0.0", "1.0.1", "1.0.2", "1.0.3"]
+    map_history = [entry["version"] for entry in next(
+        p for p in history if p["name"] == "map")["releases"]]
+    assert map_history[:4] == ["1.0.0", "1.0.1", "1.0.2", "1.0.3"]
+    assert map_history[-1] == current["map"]

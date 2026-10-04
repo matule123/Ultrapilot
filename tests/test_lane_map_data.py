@@ -23,6 +23,63 @@ class RealMapLaneDataTests(unittest.TestCase):
         cls.net = RoadNetwork()
         assert cls.net.load(DATASET)
 
+    def test_20261004_manual_retreat_rebuilds_trimmed_start_before_activation(self):
+        from plugins.map.main import Plugin
+        from tests.test_lane_authority_integration import MapSDK, Tags
+        from core.navigation.lane_model import LaneId
+        import time
+
+        gps = (5337536182308200131, 5337536179342808338, 5337536180341053530,
+               5337536182664700231, 5337536216542133390, 5337536214763748492,
+               5337536182295601180, 5337536178973708447, 5337536182572426958,
+               5337536180190062103, 5337536178688498239, 5337536181804863812,
+               5337536180898893020, 5337536180160702240, 5337536180047451432,
+               5337536179162457633, 5337536179506390605, 5337536181704204340,
+               5337536179200201307, 5337536181402237978, 5337536182475979803,
+               5337536180525626661, 5337536179338640160, 5337536180873732498,
+               5337536182924768567)
+        lane_id = LaneId(5337536096111037309, 1, 1)
+        road = next(s for s in self.net._build_lane_segments(
+            self.net._road_segment_by_uid[lane_id.road_uid]) if s.lane_id == lane_id)
+        end = road.centerline[-1]
+        # Replay lacks exact poses. These are explicit controlled positions on
+        # the logged incoming lane and reconstructed 25-UID corridor, not
+        # invented historical telemetry. The driver confirmed a manual retreat.
+        start = (end.x + math.sin(end.heading)*19., end.y,
+                 end.z + math.cos(end.heading)*19.)
+        sdk = MapSDK({'game_route_node_uids': gps, 'truck_altitude': end.y,
+                      'lane_trajectory_revision': 0})
+        plugin = Plugin(sdk)
+        plugin.on_start()
+        plugin.road_net = self.net
+        plugin._net_attempted = True
+        plugin.tags = Tags()
+        plugin._update_lane_trajectory((start[0],start[2]), end.heading)
+        old = dict(sdk.get('lane_trajectory'))
+        self.assertTrue(old['valid'], old.get('failure_reason'))
+        self.assertEqual(plugin._lane_match.lane_id, lane_id)
+        pose = (start[0] + math.sin(end.heading)*3., end.y,
+                start[2] + math.cos(end.heading)*3.)
+        sdk.set('truck_world_pos', (pose[0],pose[2]))
+        sdk.set('truck_heading', end.heading)
+        sdk.set('truck_speed_ms', 0.)
+        sdk.set('telemetry_valid', True)
+        sdk.set('vehicle_envelope_snapshot', {
+            'timestamp': time.monotonic(), 'sdk_frame_us': 2_000_000,
+            'tractor_position': pose, 'tractor_heading': end.heading,
+            'tractor_speed_ms': 0., 'tractor_reference_geometry': {
+                'valid': True, 'source': 'controlled_test',
+                'wheelbase_m': 3.8, 'reference_ahead_m': 2.1}})
+        plugin.on_tick(.02)
+        new = sdk.get('lane_trajectory')
+        packet = sdk.get('nav_steering_debug')
+        self.assertNotEqual(new['route_build_id'], old['route_build_id'])
+        self.assertTrue(packet['authority_valid'], packet)
+        self.assertEqual(packet['route_build_id'], new['route_build_id'])
+        self.assertEqual(tuple(packet['authority_lane_id'][:5]), lane_id.sort_key()[:5])
+        self.assertEqual(tuple(packet['authority_lane_id'][5]), lane_id.connector_path)
+        self.assertLess(packet['authority_projection_distance_m'], .01)
+
     def incoming_match(self, uid, gps_uids, lane_index=0):
         lanes = [lane for lane in self.net.lane_segments_near(
                  self.net.nodes[uid], 45.0)
