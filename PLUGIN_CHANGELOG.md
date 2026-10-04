@@ -48,6 +48,40 @@ Commit: `3ef65c7`.
 
 ## Autopilot
 
+### 1.2.0 — 2026-10-04
+
+**Added**
+
+- Resume an existing continuous service-brake wait from two new producer-timed green acquisitions of the same route-selected, locked signal. Reuse the bounded simple-automatic launch and real-automatic Drive-confirmation paths without a new activation or parking-brake command.
+- Reset the prior pedal-ramp state once at the validated restart transfer; current safety and other braking demands still take precedence.
+- Permit a stationary zero ratio in real automatic only under the current Engine-owned brake witness or bounded restart confirmation.
+- Expose waiting/restarting transitions and compact original signal provenance through the existing UI and combined journal.
+
+**Requirements and limitations**
+
+- Requires the coordinated core update and the version-2 signal sidecar from the separately built ETS2LA 1.59 plugin candidate. Legacy buffers cannot authorize restart.
+- Route projection and head orientation are a relevance heuristic, not a proven signal-to-LaneId binding. Ambiguity, missing/stale data, another uncleared stop reason, or authority loss prevent restart.
+- Isolated publication/load and backend-write tests do not confirm game memory patterns, uninterrupted SDK consumption, hill holding or live restart.
+
+### 1.1.0 — 2026-10-03
+
+**Added**
+
+- Accept an Engine-owned continuous service-brake witness in the shared simple-automatic ratio transition. A planned approach that physically wrote positive brake during forward motion can wait at zero speed/ratio without the former false ratio disengagement.
+- Keep current SDK/route/activation checks and reject interrupted write chains, reverse, motion during holding and technical faults. No parking-brake control or unverified automatic restart is introduced.
+- Expose planned waiting and its missing clearance proof in the existing UI and bounded combined journal. Missing signals, unversioned green or disappeared traffic do not authorize resumption.
+
+**Limitation**
+
+- Software-write continuity and the user-observed manual-pedal model are not proof of uninterrupted DLL/game consumption. The current traffic buffers lack producer time/generation for safe automatic release and restart.
+
+### 1.0.4 — 2026-10-03
+
+**Fixed**
+
+- Move routine per-second control/frame diagnostics from INFO to DEBUG. Keep shared diagnostic snapshots and replay recording independent of console verbosity.
+- Preserve activation, disengagement and intervention events at their existing visible levels. No controller, pedal, transmission or steering-timing change in this plugin release.
+
 ### 1.0.3 — 2026-10-03
 
 **Fixed**

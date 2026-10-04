@@ -487,7 +487,7 @@ class Plugin(BasePlugin):
     """
 
     NAME = "autopilot"
-    VERSION = "1.0.3"
+    VERSION = "1.2.0"
 
     def on_start(self):
         logging.info("Autopilot Plugin started (Phase 1 tuning).")
@@ -1092,12 +1092,26 @@ class Plugin(BasePlugin):
         # must not make an earlier, still-valid captured frame look regressed.
         forward_history = self.sdk.shared_state.get("simple_auto_forward_history")
         launch = self.sdk.shared_state.get("simple_auto_launch")
+        service_resume = self.sdk.shared_state.get('service_brake_resume')
         truck = self.sdk.telemetry.get("truck", {}) or {}
         self._longitudinal_truck = truck
+        if (service_resume and tuple(service_resume.get('context', ())) == tuple(self._longitudinal_binding)
+                and time.monotonic() <= service_resume.get('deadline_at', 0.)
+                and getattr(self, '_signal_resume_request', None) != service_resume.get('request_id')):
+            self._signal_resume_request = service_resume['request_id']
+            self._last_brake = self._last_throttle = 0.
         if (launch and forward_history
                 and tuple(launch.get("context", ())) == tuple(forward_history.get("context", ()))):
             observation, _reason = vehicle_control_observation(self.sdk.shared_state, truck)
             self._launch_tick = (launch, truck, observation)
+            if (launch.get('signal_resume')
+                    and getattr(self, '_signal_resume_request', None) != launch.get('request_id')):
+                # Engine has completed the guarded release. Discard the old
+                # hold-ramp state once; current safety/ACC brake demands below
+                # are still evaluated normally and cancel the launch.
+                self._signal_resume_request = launch['request_id']
+                self._last_brake = 0.
+                self._last_throttle = 0.
         speed = truck.get("speed", 0) or 0
         speed_kmh = abs(speed) * 3.6 if abs(speed) < 200 else abs(speed)
         try:
@@ -1421,6 +1435,18 @@ class Plugin(BasePlugin):
                 forward_history)
         else:
             ratio_reason = ratio_reason if gear == 0 else ""
+            if autopilot_engaged and gear == 0:
+                from core.service_brake_hold import real_auto_wait_allowed
+                if real_auto_wait_allowed(self.sdk.shared_state, truck):
+                    ratio_reason = ''
+                    # Real-auto D confirmation is still owned by Engine, not
+                    # inferred from zero ratio or a mapping write.
+                    if service_resume:
+                        self.sdk.controller.set_throttle(0.)
+                        self.sdk.controller.set_brake(0.)
+                        self._last_throttle = self._last_brake = 0.
+                        self._publish_control_tags(speed_kmh, False)
+                        return
         if autopilot_engaged and ratio_reason:
             self.sdk.controller.set_throttle(0.0)
             self._last_throttle = 0.0
@@ -1966,7 +1992,7 @@ class Plugin(BasePlugin):
                 "authority_rejection": authority_reason,
                 "timestamp": time.monotonic(),
             })
-            logging.info(
+            logging.debug(
                 "autopilot: active=%s nav=%s engage=%.2f lane_cte=%.3f "
                 "lane_heading=%.1fdeg vision_off=%.3f "
                 "nav_steer=%.3f nav_target=%.3f "

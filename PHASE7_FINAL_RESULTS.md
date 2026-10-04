@@ -1,5 +1,25 @@
 # Phase 7 — Final longitudinal verification
 
+**2026-10-04 signal follow-up:** [Producer-timed stop and restart](PHASE7_SIGNAL_STOP_RESUME_20261004.md)
+implements locked route-selected signal waiting/restart through the existing
+pedal owner and bounded gearbox paths. The new DLL candidate is reproducibly
+built and isolated-load tested, not installed or game-confirmed. Relevance is
+explicitly heuristic; legacy signals, ambiguity and other uncleared stop reasons
+cannot release the brake. Historical conclusions below retain their build scope.
+
+**Latest 2026-10-03 standstill follow-up:** [Continuous service-brake waiting](PHASE7_CONTINUOUS_SERVICE_STOP_20261003.md)
+implements activation-bound planned waiting from uninterrupted software brake
+writes begun during forward motion. SDK consumption/hill holding remain unverified;
+automatic traffic-cleared restart is blocked by missing producer freshness and
+complete clearance. The following paragraph records the earlier decision.
+
+**Earlier 2026-10-03 follow-up:** [Simple-auto handover and quiet logging](PHASE7_SAFE_STOP_AND_LOGGING_20261003.md)
+documents the measured light-brake approach, missing final historical brake packet,
+explicit driver takeover, preservation of the first intervention through physical
+release/export, and quieter normal logs. Automatic simple-auto hill hold and
+restart remain unsupported: no verified state-setting hold actuator is available.
+These changes are offline only; they do not certify ETS2 waiting or restart.
+
 **2026-10-03 intervention follow-up:** [Roundabout stopping and first cause](PHASE7_ROUNDABOUT_INTERVENTION_20261003.md)
 documents reproduced unbound planner brake authority, silent Engine stopping
 and misclassified automatic replay export, their offline fixes and retained

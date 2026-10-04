@@ -20,7 +20,7 @@ def first_control_fault_record(state):
     faults = [state.get("autopilot_first_fault_" + producer)
               for producer in ("engine", "autopilot")]
     intervention = state.get('autopilot_intervention')
-    if isinstance(intervention, dict) and intervention.get('kind') == 'emergency':
+    if isinstance(intervention, dict) and intervention.get('kind') in ('emergency', 'handover'):
         faults.append(intervention)
     faults = [f for f in faults if isinstance(f, dict)
               and f.get("epoch") == epoch and f.get("reason")]
@@ -48,7 +48,7 @@ def _intervention_record(state, producer, code, reason, kind, details):
 def record_control_intervention(state, producer, code, reason, kind, *, details=None):
     """Bounded decision-edge evidence; never grants authority or a safe gap.
 
-    A later emergency/token cleanup cannot replace the first technical fault.
+    A later emergency/token cleanup cannot replace the first terminal cause.
     The producer owns its signature slot; unchanged decisions do not log per tick.
     """
     from core.navigation.longitudinal_diagnostics import bounded_copy

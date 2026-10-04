@@ -73,9 +73,13 @@ def _friendly_activity_message(message):
     return message
 
 
-def _intervention_message(record):
+def _intervention_message(record, *, driver_handover=False):
     """Presentation only; an unproven traffic candidate never creates yield authority."""
     kind = record.get('kind')
+    if driver_handover and kind != 'handover':
+        return _intervention_message(record) + ' · Prevezmite brzdu a zatiahnite parkovaciu brzdu.'
+    if kind == 'handover':
+        return 'Prevezmite brzdu – automatické držanie a rozjazd nie sú overené. Zatiahnite parkovaciu brzdu.'
     if kind == 'yield':
         return 'Čakám na prednosť – ' + str(record.get('reason') or 'nebezpečná medzera')
     if kind == 'emergency':
@@ -174,12 +178,31 @@ class DynamicIsland(QWidget):
     def _poll_log(self):
         """Read new records written by the engine, UI, HUD and all plugins."""
         state = getattr(self.parentWidget(), "state", None)
+        if (state is not None and state.get('autopilot_active')
+                and state.get('autopilot_control_state') in ('planned_wait', 'resuming')
+                and not state.get('safety_hazard_active')
+                and not (state.get('longitudinal_applied') or {}).get('emergency')):
+            phase = state.get('autopilot_control_state')
+            message = state.get('navigation_status') or 'Čakám so súvislou brzdou'
+            signature = (phase, message)
+            if getattr(self, '_shown_service_wait', False) != signature:
+                self.show_record(message,
+                                 'INFO', '', 'Autopilot')
+                self._shown_service_wait = signature
+            self._hide_timer.stop()
+            return
+        if getattr(self, '_shown_service_wait', False):
+            self._shown_service_wait = False
+            self._hide_timer.start(4500)
         record = state.get('autopilot_intervention') if state is not None else None
         if (isinstance(record, dict)
                 and record.get('epoch') == state.get('autopilot_failure_epoch')):
-            if record.get('sequence') != getattr(self, '_shown_intervention_sequence', None):
-                self._shown_intervention_sequence = record.get('sequence')
-                self.show_record(_intervention_message(record), 'WARNING', '', 'Autopilot')
+            handover = state.get('autopilot_control_state') == 'driver_handover'
+            signature = (record.get('sequence'), handover)
+            if signature != getattr(self, '_shown_intervention_signature', None):
+                self._shown_intervention_signature = signature
+                self.show_record(_intervention_message(record, driver_handover=handover),
+                                 'WARNING', '', 'Autopilot')
             if (state.get('autopilot_active')
                     and (state.get('autopilot_control_state') == 'controlled_stop'
                          or (state.get('longitudinal_applied') or {}).get('emergency'))):

@@ -191,6 +191,14 @@ def vehicle_control_observation_rejection(state, truck, now=None):
     return ""
 
 
+def simple_auto_context(state):
+    evidence = state.get('ets2_transmission_mode', {}) or {}
+    snapshot = state.get('lane_trajectory', {}) or {}
+    return (state.get('simple_auto_activation_token'), evidence.get('generation'),
+            state.get('transmission_mode_preference', 'auto'),
+            *(snapshot.get(key) for key in _FORWARD_IDENTITY_KEYS))
+
+
 def simple_auto_forward_transition(state, truck, history, now=None):
     """Evaluate one ratio observation, without writing controls or shared state.
 
@@ -217,6 +225,9 @@ def simple_auto_forward_transition(state, truck, history, now=None):
         observed_at = float(metadata.get("observed_at", 0.0))
     except (KeyError, TypeError, ValueError, OverflowError):
         return None, "simple automatic vehicle observation is incomplete"
+    hold = state.get('simple_auto_service_hold') or {}
+    from core.longitudinal import context as longitudinal_context
+    hold_binding = longitudinal_context(state) if hold else None
     # All transport reads precede the decision clock. Never compare a newly
     # published timestamp to a time captured before a slow RPC.
     now = time.monotonic() if now is None else now
@@ -244,6 +255,16 @@ def simple_auto_forward_transition(state, truck, history, now=None):
     result = dict(history or {})
     result.update(context=context, last_frame=frame,
                   last_observed_at=observed_at, signature=signature)
+    # Only Engine publishes this witness after an actual uninterrupted positive
+    # SCS brake write begun during forward motion. Engine revalidates its local
+    # receipt before applying pedals. This is not a gear/selector inference.
+    if (hold.get('context') == context and hold.get('phase') in ('braking', 'holding')
+            and tuple(hold.get('command_context', ())) == hold_binding
+            and hold.get('brake', 0) > 0
+            and 0. <= now-hold.get('returned_at', float('-inf')) <= .5
+            and history and not history.get('launch_deadline_at')):
+        result.update(phase='continuous_service_brake', zero_deadline_at=None)
+        return result, ''
     launch_deadline = result.get("launch_deadline_at")
     if launch_deadline is not None:
         if truck.get("parkBrake") is not False:

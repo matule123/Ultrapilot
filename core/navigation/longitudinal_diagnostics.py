@@ -53,17 +53,21 @@ def bounded_input(value):
     # actor arrays and transport buffers before any diagnostic copy.
     if not isinstance(value, dict):
         return None
-    # Explicit unavailable-field list retains unknown semantics without
-    # repeating dozens of null key/value nodes in every producer snapshot.
-    # The fixed source/journal byte limits are unchanged.
+    # Explicit missing-field bitmap retains unknown semantics without a long
+    # repeated field-name string. Bit order is INPUT_KEYS excluding following;
+    # schema 1 fixes that order. Fixed source/journal byte limits are unchanged.
     keys = tuple(k for k in INPUT_KEYS if k != 'following')
     result = {k: value[k] for k in keys if value.get(k) is not None}
-    result['unavailable_fields'] = ','.join(k for k in keys if value.get(k) is None)
+    result['unavailable_field_schema'] = 1
+    result['unavailable_field_mask'] = sum(1 << i for i,k in enumerate(keys) if value.get(k) is None)
     following_keys = (
         'status', 'target_id', 'gap_m', 'speed_mps', 'speed_cap_mps', 'emergency',
         'reason', 'receiver_time', 'source_timestamp', 'source_sequence',
         'complete', 'atomic', 'confirmed', 'expires_at')
     result['following'] = {k: value['following'].get(k) for k in following_keys} if isinstance(value.get('following'), dict) else None
+    if isinstance(value.get('signal'), dict):
+        from core.sdk.signal_snapshot import compact
+        result['signal'] = compact(value['signal'])
     return bounded_copy(result)[0]
 
 
@@ -95,7 +99,14 @@ class PedalJournal:
         self._local.size += extra
 
     def source(self):
-        return getattr(self._local, 'source', None)
+        source = getattr(self._local, 'source', None)
+        intervention = getattr(self._local, 'intervention', None)
+        # Nested release_all binding must carry the separately budgeted first
+        # intervention into the actual zero writes and restore it afterwards.
+        # Returning only the decision silently dropped that event on handover.
+        if isinstance(source, dict) and intervention is not None:
+            return {**source, 'intervention': intervention}
+        return source
 
     def next_decision(self):
         self._decision_sequence += 1  # The Engine I/O lock owns this sequence.
@@ -146,6 +157,19 @@ def source_snapshot(state, truck, pending):
     from core.longitudinal import context
     from core.transmission_mode import vehicle_control_observation
     observed, reason = vehicle_control_observation(state, truck)
+    hold = state.get('simple_auto_service_hold')
+    if isinstance(hold, dict):
+        # Context/activation already belong to this immutable source envelope;
+        # repeating them exhausts the fixed journal source budget.
+        original = hold
+        hold = {k: hold.get(k) for k in ('phase',
+            'chain', 'write_sequence', 'started_frame', 'returned_at',
+            'brake', 'stop_reason', 'automatic_restart_supported', 'restart_blocker',
+            'game_consumption_verified')}
+        lock = original.get('signal_lock')
+        if lock:
+            hold['signal_lock'] = {k: lock[k] for k in ('lifecycle','generation','frame_us','observed_at')}
+            hold['signal_lock']['id'] = lock['candidate']['id']
     return dict(
         context=list(context(state)), sdk_frame_us=truck.get('sdkFrameTimeUs'),
         observation_timestamp=observed.get('observed_at'),
@@ -155,6 +179,7 @@ def source_snapshot(state, truck, pending):
         autopilot_active=bool(state.get('autopilot_active', False)),
         activation=state.get('autopilot_failure_epoch'),
         control_state=state.get('autopilot_control_state'),
+        service_hold=hold,
         regulator_mode=None, regulator_mode_status='NOT_EXPORTED_BY_PRODUCER',
         phase='launch' if pending else ('active' if state.get('autopilot_active') else 'inactive'),
         launch=None if not pending else {

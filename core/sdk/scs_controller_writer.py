@@ -153,6 +153,9 @@ class SCSControlsWriter:
             self._connect()
 
     def _write_float(self, name: str, value: float):
+        # O(1) software-write continuity, independent of diagnostic recording.
+        # It is NOT an acknowledgement that the DLL/game consumed the value.
+        succeeded = False
         diagnostic = (getattr(self, '_pedal_diagnostic_enabled', False)
                       and name in ('aforward', 'abackward'))
         if diagnostic:
@@ -160,6 +163,8 @@ class SCSControlsWriter:
             self._pedal_write_evidence = dict(status='MAPPING_WRITE_NOT_RETURNED',
                 value=None, started_at_s=started, returned_at_s=None, error=None)
         if not self.connected:
+            if name == 'abackward':
+                self._brake_receipt(value, False)
             self._maybe_reconnect()
             if diagnostic:
                 self._pedal_write_evidence.update(status='MAPPING_NOT_CONNECTED',
@@ -167,8 +172,11 @@ class SCSControlsWriter:
             return
         try:
             self._buf.seek(self._offsets[name])
-            self._buf.write(struct.pack("f", float(value)))
+            written = self._buf.write(struct.pack("f", float(value)))
+            if name == 'abackward' and written != _SIZE['f']:
+                raise OSError('incomplete service brake mapping write')
             self._buf.flush()
+            succeeded = True
             if diagnostic:
                 self._pedal_write_evidence.update(status='MAPPING_WRITE_RETURNED',
                     value=struct.unpack('f', struct.pack('f', float(value)))[0],
@@ -179,6 +187,20 @@ class SCSControlsWriter:
             if diagnostic:
                 self._pedal_write_evidence.update(status='MAPPING_WRITE_FAILED',
                     returned_at_s=time.monotonic(), error=type(e).__name__)
+        finally:
+            if name == 'abackward':
+                self._brake_receipt(value, succeeded)
+
+    def _brake_receipt(self, value, succeeded):
+        previous = getattr(self, '_brake_write_receipt', {})
+        chain = previous.get('chain', 0)
+        if not succeeded or value <= 0 or not previous.get('positive'):
+            chain += 1
+        self._brake_write_receipt = dict(
+            sequence=previous.get('sequence', 0) + 1, chain=chain,
+            positive=bool(succeeded and value > 0),
+            value=struct.unpack('f', struct.pack('f', value))[0] if succeeded else None,
+            returned_at=time.monotonic(), game_consumption_verified=False)
 
     def _write_bool(self, name: str, value: bool):
         if not self.connected:

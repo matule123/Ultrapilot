@@ -58,14 +58,33 @@ class Telemetry:
             self.vehicle_profiles = VehicleProfileProvider()
         now = time.monotonic()
         profile = self.vehicle_profiles.update(observation, now)
-        # Diagnostics only: bounded log rate, no disk work or controller changes.
+        # Keep observation evidence independent of console verbosity. A normal
+        # read overlap must not alternate whole wheel/profile JSON at INFO.
+        if not profile.observation_failure:
+            configuration = (profile.token.configuration, profile.model_failure, profile.model is not None)
+            if configuration != getattr(self, '_profile_configuration_log', None):
+                logging.info('Vehicle profile changed: configuration=%s model_available=%s reason=%s',
+                             profile.token.configuration, profile.model is not None, profile.model_failure)
+                self._profile_configuration_log = configuration
+        failure = profile.observation_failure
+        expected = ('', 'SDK_VEHICLE_READ_CHANGED', 'SDK_PROFILE_FRAME_MISMATCH',
+                    'SDK_PAUSED_OR_INACTIVE', 'VEHICLE_OBSERVATION_UNAVAILABLE')
+        if failure != getattr(self, '_profile_failure_log', ''):
+            logging.debug('Vehicle profile observation: %s', failure or 'available')
+            self._profile_failure_log = failure
+        if failure not in expected and failure != getattr(self, '_profile_last_warning', None):
+            logging.warning('Vehicle profile observation: %s', failure)
+            self._profile_last_warning = failure
+        # Full JSON is explicitly opt-in DEBUG and still rate bounded. Avoid
+        # its construction/serialization completely in the normal INFO path.
         signature = (profile.token.configuration, profile.observation_failure, profile.model_failure)
-        if (signature != getattr(self, '_profile_log_signature', None) and
+        if (logging.getLogger().isEnabledFor(logging.DEBUG) and
+                signature != getattr(self, '_profile_log_signature', None) and
                 now-getattr(self, '_profile_logged_at', -10.) >= 10.):
             diagnostic = profile.diagnostic()
             if profile.observation and not profile.observation_failure:
                 diagnostic['observation'] = asdict(profile.observation)
-            logging.info("Vehicle profile: %s", json.dumps(diagnostic, ensure_ascii=True))
+            logging.debug("Vehicle profile: %s", json.dumps(diagnostic, ensure_ascii=True))
             self._profile_log_signature, self._profile_logged_at = signature, now
         return profile
 

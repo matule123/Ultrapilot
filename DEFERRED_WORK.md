@@ -1,5 +1,49 @@
 # Odložená a nedokončená práca
 
+## Rozjazd po semaforovom čakaní – 4. 10. 2026
+
+[PHASE7_SIGNAL_STOP_RESUME_20261004.md](PHASE7_SIGNAL_STOP_RESUME_20261004.md)
+opisuje dokončený offline tok uzamknutého semafora s producentovým časom,
+generáciou a životným cyklom. Dve nové relevantné zelené snímky umožnia
+riadené uvoľnenie súvislej brzdy a existujúci ohraničený rozjazd bez ďalšieho N.
+Parkovacia brzda sa neovláda. Výber je geometrická heuristika, nie dokázaná
+väzba na LaneId. Nejednoznačnosť, legacy zdroj a ďalší nevyjasnený dôvod
+zastavenia rozjazd blokujú. Pripravený DLL kandidát nie je nasadený; spotreba
+SDK vstupu, držanie na svahu a výsledok v ETS2 zostávajú neoverené.
+Pred prípadným nasadením je potrebná celá sada používateľa a osobitný súhlas.
+Nižšie uvedené BLOCKED závery opisujú starší kontrakt bez sidecaru.
+
+## Súvislá prevádzková brzda – 3. 10. 2026
+
+[PHASE7_CONTINUOUS_SERVICE_STOP_20261003.md](PHASE7_CONTINUOUS_SERVICE_STOP_20261003.md)
+nahrádza nižšie uvedený paušálny predpoklad o brzde pri státí. Súvislý doložený
+reťazec softvérových zápisov začatý pri doprednej jazde povoľuje plánované čakanie
+bez ručnej brzdy. Spotreba DLL/ETS2 a držanie na skutočnom svahu nie sú herne
+potvrdené. Automatický rozjazd po čakaní zostáva nepovolený: chýba pôvodný čas,
+generácia a úplné potvrdenie zániku všetkých dôvodov zastavenia. Neznáma zelená
+ani zmiznutie auta neznamenajú voľnú cestu. Existujúci rozjazd po N sa nemení.
+
+Cielené overenie producenta našlo verejný MIT zdroj pre 1.59, ale nie dekódovanú
+väzbu semaforu na smerovaný priechod. `traffic_item_rule_link_t` a polia
+`N00007A8F`/`N00007AA3` nemajú doložený význam potrebný na potvrdenie zelenej.
+Zdrojový timestamp/generácia samy nestačia. Presný dôkaz, hash nainštalovanej DLL
+a reprodukcia legacy zelenej až po backend sú v doplnení vyššie uvedeného reportu.
+Automatické pokračovanie zostáva BLOCKED; nová jazda sa nežiada.
+
+## Držanie pri zastavení a tichý log – 3. 10. 2026
+
+[PHASE7_SAFE_STOP_AND_LOGGING_20261003.md](PHASE7_SAFE_STOP_AND_LOGGING_20261003.md)
+opisuje explicitné odovzdanie brzdy vodičovi pri jednoduchom automate,
+uchovanie spotrebovanej brzdovej požiadavky a prvého dôvodu cez release/export
+a presun bežných diagnostických výpisov na DEBUG. Rozjazd a riadenie nemení.
+Automatické držanie na svahu a rozjazd po čakaní zostávajú nepodporované:
+Controller nemá overený stavový povel pre držaciu brzdu s potvrdením vykonania
+a vlastníctvom. Samotné tlačidlové pole `parkingbrake` ani SDK príznak
+`parkBrake` tieto schopnosti nedokazujú. Brzdu zatiahnutú vodičom neuvoľňujeme.
+Chýbajúci semafor alebo zmiznutý ACC kandidát neudeľujú autoritu na rozjazd.
+Vodič musí pri odovzdaní prevziať brzdu; nulové výstupy nezaručujú státie na svahu.
+Nové zmeny nie sú nasadené ani potvrdené v hre. Nová jazda sa nežiada.
+
 ## Zastavenie pred objazdom a prvý dôvod – 3. 10. 2026
 
 [PHASE7_ROUNDABOUT_INTERVENTION_20261003.md](PHASE7_ROUNDABOUT_INTERVENTION_20261003.md)
