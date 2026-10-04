@@ -35,15 +35,8 @@ def plugin_worker(plugin_class: Type[BasePlugin], plugin_name: str,
     # never reaches ultrapilot.log. Configure a file handler that appends to the
     # same log the engine uses, tagged with the plugin name.
     try:
-        from core.paths import app_dir
-        log_path = os.path.join(app_dir(), "ultrapilot.log")
-        logging.basicConfig(
-            level=logging.INFO,
-            format="%(asctime)s,%(msecs)03d %(levelname)-8s " + plugin_name + " %(message)s",
-            datefmt="%Y-%m-%d %H:%M:%S",
-            filename=log_path,
-            filemode="a",
-        )
+        from core.logger import setup
+        setup(plugin_name=plugin_name)
     except Exception:
         logging.basicConfig(level=logging.INFO)
 
@@ -96,12 +89,11 @@ def plugin_worker(plugin_class: Type[BasePlugin], plugin_name: str,
 
         plugin.on_stop()
     except Exception as e:
-        import traceback
         if stop_event.is_set() or _shutdown_transport_error(e):
             logging.info("[plugin:%s] stopped during application shutdown.",
                          plugin_name)
         else:
-            logging.error(f"[plugin:{plugin_name}] process crashed: {e}\n{traceback.format_exc()}")
+            logging.exception("[plugin:%s] process crashed: %s", plugin_name, e)
 
 
 def plugin_version(plugin_class):

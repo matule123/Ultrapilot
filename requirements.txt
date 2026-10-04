@@ -4,6 +4,7 @@ numpy>=1.24
 opencv-python>=4.8
 mss>=9.0
 psutil>=5.9
+rich>=13.7              # source-aligned console logs and code-frame tracebacks
 requests>=2.31
 
 # --- Control backends ---

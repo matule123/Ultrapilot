@@ -647,7 +647,7 @@ class UltraPilotHUD(QWidget):
         try:
             self._do_paint(event)
         except Exception as e:
-            logging.error("HUD paint error: %s", e)
+            logging.exception("HUD paint error: %s", e)
 
     def _do_paint(self, event):
         d = self._read()
@@ -686,6 +686,15 @@ class UltraPilotHUD(QWidget):
         # 6) Rear-view camera inset (bottom-right of the panel). Shows a glance
         #    behind whenever a turn signal is on or the rear_cam flag is set.
         self._draw_rear_cam(qp, d)
+
+        # Presentation only: existing map progress, no authority or new poller.
+        from core.map_load_log import hud_map_loading_text
+        message = hud_map_loading_text(self.shared_state.get("map_load_progress", {}))
+        if message:
+            qp.setPen(QColor("#d7af00"))
+            qp.setFont(QFont("Consolas", 10))
+            qp.drawText(QRectF(22, 88, self.W - 44, 44),
+                        Qt.AlignmentFlag.AlignCenter | Qt.TextFlag.TextWordWrap, message)
 
     # --- Top bar --------------------------------------------------------------
     def _draw_top_bar(self, qp, d):

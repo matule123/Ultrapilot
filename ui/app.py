@@ -68,6 +68,37 @@ def rounded_window_region(width, height, radius=15.0):
     return QRegion(path.toFillPolygon().toPolygon())
 
 
+class WindowSurface(QFrame):
+    """One antialiased outer contour; child clipping cannot cut its border."""
+    def __init__(self, window):
+        super().__init__(window)
+        self.window = window
+        self.setObjectName("WindowSurface")
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.setStyleSheet("QFrame#WindowSurface{background:transparent;border:none;}")
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p = self.window._pal
+        painter.setBrush(QColor(p["bg"]))
+        painter.setPen(QPen(QColor("#AEB5BE" if self.window._theme == "light"
+                                 else "#4A515C"), 1.0))
+        radius = 0 if self.window.isMaximized() else 15
+        painter.drawRoundedRect(QRectF(0.5, 0.5, self.width() - 1.0,
+                                       self.height() - 1.0), radius, radius)
+
+
+class WindowContent(QWidget):
+    """Clip opaque page children inside the painted contour, not the window."""
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if self.window().isMaximized():
+            self.clearMask()
+        else:
+            self.setMask(rounded_window_region(self.width(), self.height(), radius=14))
+
+
 class WindowControlDot(QPushButton):
     """Small, solid traffic-light control matching the ETS2LA chrome."""
 
@@ -946,13 +977,14 @@ class UltraPilotApp(QMainWindow):
             if app is not None:
                 app.setWindowIcon(icon)
 
-        central = QFrame()
-        central.setObjectName("WindowSurface")
+        central = WindowSurface(self)
         self.setCentralWidget(central)
         root_layout = QVBoxLayout(central)
-        root_layout.setContentsMargins(0, 0, 0, 0)
+        root_layout.setContentsMargins(1, 1, 1, 1)
         root_layout.setSpacing(0)
-        content = QWidget()
+        content = WindowContent()
+        content.setObjectName("WindowContent")
+        content.setStyleSheet("QWidget#WindowContent{background:transparent;}")
         main_layout = QHBoxLayout(content)
         main_layout.setContentsMargins(0, 0, 0, 0)
         main_layout.setSpacing(0)
@@ -1117,7 +1149,7 @@ class UltraPilotApp(QMainWindow):
                 scroll.setWidget(page)
                 self.pages.addWidget(scroll)
             except Exception as e:
-                logging.error("UI page '%s' failed: %s", name, e)
+                logging.exception("UI page '%s' failed: %s", name, e)
                 err = QLabel(f"{name} unavailable:\n{e}")
                 err.setWordWrap(True)
                 self.pages.addWidget(err)
@@ -1249,10 +1281,9 @@ class UltraPilotApp(QMainWindow):
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
-        if self.isMaximized():
-            self.clearMask()
-        else:
-            self.setMask(rounded_window_region(self.width(), self.height()))
+        # A binary native mask clipped the antialiased QSS border twice,
+        # producing transparent pinholes. The outer painter owns the contour.
+        self.clearMask()
         if hasattr(self, "drag_area"):
             self._position_drag_area()
             self.drag_area.raise_()
@@ -1279,8 +1310,7 @@ class UltraPilotApp(QMainWindow):
         """The main window is up — let the HUD process know it can appear now."""
         self._set_native_windows_icon()
         self._apply_native_rounded_corners()
-        if not self.isMaximized():
-            self.setMask(rounded_window_region(self.width(), self.height()))
+        self.clearMask()
         try:
             self.state.set("ui_ready", True)
         except Exception:
@@ -1293,7 +1323,7 @@ class UltraPilotApp(QMainWindow):
             return
         try:
             import ctypes
-            preference = ctypes.c_int(2)  # DWMWCP_ROUND
+            preference = ctypes.c_int(1)  # DWMWCP_DONOTROUND: Qt owns this contour
             ctypes.windll.dwmapi.DwmSetWindowAttribute(
                 int(self.winId()), 33, ctypes.byref(preference),
                 ctypes.sizeof(preference))
@@ -1379,6 +1409,7 @@ class UltraPilotApp(QMainWindow):
             self.setStyleSheet(stylesheet(new_theme))
             self.title_bar.set_palette(self._pal)
             self.content_surface.set_palette(self._pal)
+            self.centralWidget().update()
             self.brand_word.setStyleSheet(
                 "font-size:21px;font-weight:750;color:"
                 + self._pal["text"] + ";border:none;")

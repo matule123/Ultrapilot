@@ -210,6 +210,9 @@ class RoadNetwork:
         boundaries. Callback failures are observational and cannot alter the
         loader result.
         """
+        from core.map_load_log import MapLoadLog
+        load_log = MapLoadLog()
+
         def report(fraction, phase):
             if progress_cb is None:
                 return
@@ -225,9 +228,11 @@ class RoadNetwork:
         # dataset is updated or its version changes.
         report(0.02, "Načítavam cesty a prefaby z cache")
         if self._try_load_cache(data_dir, progress_cb=report):
+            load_log.loaded("nodes (cached road network)", len(self.nodes))
             report(0.90, self._loaded_counts_text())
             report(0.92, "Načítavam mestá, firmy a služby")
             self._load_map_features(data_dir)
+            load_log.loaded("display map features", self._map_feature_count)
             report(1.0, f"Mapa je pripravená  •  {self._loaded_counts_text()}")
             return True
 
@@ -261,6 +266,7 @@ class RoadNetwork:
                 self.node_backward_item[uid] = _uid(n.get("backwardItemUid"))
                 self._ngrid.setdefault(self._cell(x, y), []).append(uid)
             report(0.38, f"Uzly: {self._display_count(len(self.nodes))} načítaných")
+            load_log.loaded("nodes", len(self.nodes))
         except Exception as e:
             logging.exception("road_network: failed to load nodes: %s", e)
             return False
@@ -297,6 +303,7 @@ class RoadNetwork:
                         self._road_look_token[su] = tok
                         self._road_look_token[eu] = tok
             report(0.64, f"Cesty: {self._display_count(len(self.segments))} načítaných")
+            load_log.loaded("roads", len(self.segments))
         except Exception as e:
             logging.exception("road_network: failed to load roads: %s", e)
             return False
@@ -307,6 +314,7 @@ class RoadNetwork:
         # complete than the roads-only adjacency. Falls back silently to `adj`.
         report(0.69, "Načítavam GPS konektivitu")
         self._load_nav_graph(data_dir)
+        load_log.loaded("forward navigation entries", len(self.fwd))
         report(0.77, "Načítavam prefaby a križovatky")
         self._load_prefabs(data_dir)
         report(0.84, ("Prefaby: "
@@ -317,8 +325,10 @@ class RoadNetwork:
         # narrow/local roads and cap speed in city sectors.
         report(0.88, "Načítavam typy ciest a pruhy")
         self._load_road_looks(data_dir)
+        load_log.loaded("road looks", len(self.road_looks))
         report(0.92, "Načítavam mestá, firmy a služby")
         self._load_map_features(data_dir)
+        load_log.loaded("display map features", self._map_feature_count)
         logging.info("road_network: loaded %d nodes, %d segments, nav-graph nodes=%d",
                      len(self.nodes), len(self.segments),
                      len(self.fwd) if self.fwd else len(self.adj))

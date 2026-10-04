@@ -35,9 +35,11 @@ def test_startup_ram_is_pale_blue_in_console_plain_in_log(monkeypatch, capsys):
     monkeypatch.setattr(logger, "ensure_windows_console", lambda: None)
     logger.log_plugin_ready("map", 45.25)
     text = info.call_args.args[0]
-    assert text == "Plugin pripravený: map · RAM: 45.2 MB (RSS)"
+    assert text == "Plugin Map started successfully. · RAM: 45.2 MB (RSS)"
     assert "\033" not in text
-    assert "\033[38;2;186;230;253m · RAM: 45.2 MB (RSS)" in capsys.readouterr().out
+    record = logger.logging.LogRecord("map", 20, "main.py", 4, text, (), None)
+    record.plugin_startup_memory = True
+    assert "\033[38;2;186;230;253m · RAM: 45.2 MB (RSS)" in logger._ETS2LAFormatter().format(record)
 
 
 def test_worker_reports_ram_after_start_once_outside_tick(monkeypatch):
@@ -52,6 +54,7 @@ def test_worker_reports_ram_after_start_once_outside_tick(monkeypatch):
             events.append("stop")
     monkeypatch.setattr(manager, "PluginSDK", lambda *_: None)
     monkeypatch.setattr(manager.logging, "basicConfig", lambda **_: None)
+    monkeypatch.setattr(logger, "setup", lambda **_: None)
     monkeypatch.setattr(memory, "resident_mb", lambda: 55)
     monkeypatch.setattr(logger, "log_plugin_ready",
                         lambda name, value: events.append((name, value)))

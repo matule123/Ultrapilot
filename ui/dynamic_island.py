@@ -36,10 +36,12 @@ _TECHNICAL_LOG_MARKERS = (
     "route-build result", "route-build phase-result",
 )
 _PROCESS_STARTED_RE = re.compile(r"^Process \w+ started \(PID: \d+\)$", re.I)
+_SOURCE_METADATA_RE = re.compile(r"^\[source:[^\]\r\n]+\]\s*")
 
 
 def _friendly_activity_message(message):
     """Return concise user-facing activity text, or ``None`` for diagnostics."""
+    message = _SOURCE_METADATA_RE.sub("", message, count=1)
     low = message.lower()
     if low.startswith("hotkey n -> vyberám d"):
         return message.split(" -> ", 1)[1]
@@ -272,7 +274,7 @@ class DynamicIsland(QWidget):
             if not match:
                 continue
             item = match.groupdict()
-            message = item["msg"]
+            message = _SOURCE_METADATA_RE.sub("", item["msg"], count=1)
             low = message.lower()
             if (message.startswith("Logging to ") or "OpenGL_accelerate" in message
                     or not any(word in low for word in _ACTIVITY)):

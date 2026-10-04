@@ -224,6 +224,13 @@ Commit: `3ef65c7`.
 
 ## HUD
 
+### 1.0.2 — 2026-10-04
+
+**Changed**
+
+- Report actual HUD element initialization and the discovered element count in the reference console style. Do not label normal element discovery as a warning.
+- Driving controls, HUD element behavior and navigation authority are unchanged.
+
 ### 1.0.1 — 2026-10-04
 
 **Fixed**

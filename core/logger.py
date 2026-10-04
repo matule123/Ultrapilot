@@ -8,6 +8,82 @@ import logging
 import os
 import re
 import sys
+import shutil
+from datetime import datetime
+
+# Shared console/UI palette sampled from the supplied reference screenshots.
+LOG_COLOURS = {logging.DEBUG: "#55ddee", logging.INFO: "#00af00",
+               logging.WARNING: "#d7af00", logging.ERROR: "#ff0033",
+               logging.CRITICAL: "#ff0033"}
+PLUGIN_LABELS = {"acc": "Adaptive Cruise Control", "autopilot": "Autopilot",
+                 "collision": "Collision Avoidance", "discord": "Discord Rich Presence",
+                 "drivepolicy": "Drive Policy", "ecodrive": "EcoDrive",
+                 "hud": "HUD", "lanecontrol": "Lane Control", "map": "Map",
+                 "toll": "Toll Booth Assistant", "tts": "TTS",
+                 "turnsignals": "Automatic Blinkers"}
+
+
+def console_message(record):
+    """Colour real messages; never parse them as trusted Rich markup."""
+    from rich.text import Text
+    text = Text(record.getMessage(), style="#cccccc")
+    for match in re.finditer(r"https?://[^\s]+", text.plain):
+        text.stylize("#1675ff underline", match.start(), match.end())
+    for match in re.finditer(r"(?<![\w.])\d+(?:\.\d+)?(?![\w.])", text.plain):
+        text.stylize("#55ddee", match.start(), match.end())
+    if getattr(record, "plugin_startup_memory", False):
+        prefix, marker, suffix = text.plain.partition(" · RAM: ")
+        if marker:
+            text.stylize("#bae6fd", len(prefix), len(text.plain))
+        plugin = getattr(record, "plugin_display_name", "")
+        if plugin and plugin in prefix:
+            start = prefix.index(plugin)
+            text.stylize("#d7af00", start, start + len(plugin))
+    return text
+
+
+class ReferenceConsoleHandler(logging.Handler):
+    """Right-aligned source links and syntax-highlighted exception frames."""
+    def __init__(self, console):
+        super().__init__()
+        self.console = console
+
+    def emit(self, record):
+        try:
+            from rich.table import Table
+            from rich.text import Text
+            from rich.traceback import Traceback
+            if getattr(record, "map_load_receipt", False):
+                text = Text(f"{record.load_elapsed_cs}cs  | Loaded ", style="#606060")
+                text.append(str(record.load_count), style="#55ddee")
+                text.append(f" {record.load_kind}", style="#cccccc")
+                ram = record.load_ram_mb
+                text.append("  used " + (f"{ram:.0f}Mb" if ram is not None else "unknown RAM")
+                            + (" of RAM" if ram is not None else ""), style="#606060")
+                self.console.print(text)
+            elif getattr(record, "map_load_wait", False):
+                self.console.print(Text(record.getMessage(), style="#d7af00"))
+            elif getattr(record, "hud_element_load", False):
+                self.console.print(Text(record.getMessage(), style="#cccccc"))
+            else:
+                table = Table.grid(padding=(0, 1), expand=True)
+                table.add_column(width=5, no_wrap=True)
+                table.add_column(width=8, no_wrap=True)
+                table.add_column(ratio=1, overflow="fold")
+                table.add_column(justify="right", no_wrap=True)
+                timestamp = datetime.fromtimestamp(record.created).strftime("%H:%M:%S")
+                source = Text(f"{record.filename}:{record.lineno}", style="#606060 underline")
+                table.add_row(Text("[" + _ETS2LAFormatter.TAGS.get(record.levelno, "LOG") + "]",
+                                   style=LOG_COLOURS.get(record.levelno, "#cccccc")),
+                              Text(timestamp, style="#606060"), console_message(record), source)
+                self.console.print(table)
+            if record.exc_info and record.exc_info[0] is not None:
+                self.console.print(Traceback.from_exception(
+                    *record.exc_info, width=max(40, self.console.width - 14),
+                    show_locals=False, extra_lines=3, theme="monokai",
+                    max_frames=12, word_wrap=True))
+        except Exception:
+            self.handleError(record)
 
 # Enable ANSI colours on Windows terminals (best effort).
 try:
@@ -147,21 +223,17 @@ def print_startup_banner(version="", commit=""):
         label += "  v" + str(version).lstrip("v")
     if commit:
         label += "  ·  " + str(commit)[:7]
-    print("\n\033[94m╭──────────────────────────────────────────────────────────╮\033[0m")
-    print("\033[94m│\033[0m  " + label.ljust(56) + "\033[94m│\033[0m")
-    print("\033[94m│\033[0m  Pripravujem bezpečné jazdné systémy a pluginy…".ljust(58)
-          + "\033[94m│\033[0m")
-    print("\033[94m╰──────────────────────────────────────────────────────────╯\033[0m\n")
+    print("\033[90m" + label + "\033[0m")
 
 
 class _ETS2LAFormatter(logging.Formatter):
     RESET = "\033[0m"
-    GREY = "\033[90m"
-    WHITE = "\033[97m"
+    GREY = "\033[38;2;96;96;96m"
+    WHITE = "\033[38;2;204;204;204m"
     COLORS = {
-        logging.DEBUG: "\033[96m", logging.INFO: "\033[92m",
-        logging.WARNING: "\033[93m", logging.ERROR: "\033[91m",
-        logging.CRITICAL: "\033[97;41m",
+        logging.DEBUG: "\033[38;2;85;221;238m", logging.INFO: "\033[38;2;0;175;0m",
+        logging.WARNING: "\033[38;2;215;175;0m", logging.ERROR: "\033[38;2;255;0;51m",
+        logging.CRITICAL: "\033[38;2;255;0;51m",
     }
     TAGS = {
         logging.DEBUG: "DBG", logging.INFO: "INF", logging.WARNING: "WRN",
@@ -178,10 +250,13 @@ class _ETS2LAFormatter(logging.Formatter):
             if marker:
                 msg = prefix + "\033[38;2;186;230;253m" + marker + suffix
         # ETS2LA keeps a clear two-space gutter between timestamp and message.
-        # Source/line details remain in ultrapilot.log instead of crowding the
-        # live console.
+        # Fallback when Rich isn't available. Keep the actual source location.
         line = (f"{color}[{tag}]{self.RESET} {self.GREY}{ts}{self.RESET}  "
                 f"{self.WHITE}{msg}{self.RESET}")
+        source = f"{record.filename}:{record.lineno}"
+        visible = 17 + len(record.getMessage()) + len(source)
+        gap = max(2, shutil.get_terminal_size((120, 30)).columns - visible)
+        line += " " * gap + self.GREY + "\033[4m" + source + self.RESET
         if record.exc_info:
             line += "\n" + self.formatException(record.exc_info)
         return line
@@ -190,26 +265,28 @@ class _ETS2LAFormatter(logging.Formatter):
 def log_plugin_ready(name, ram_mb):
     """One startup receipt: plain file text and a pale-blue console RAM value."""
     memory = f"{ram_mb:.1f} MB (RSS)" if ram_mb is not None else "nedostupná"
-    message = f"Plugin pripravený: {name} · RAM: {memory}"
-    logging.info(message, extra={"plugin_startup_memory": True})
-    # Plugin workers intentionally log recurring messages only to the file.
-    # Mirror just this startup receipt into the inherited Windows console.
-    ensure_windows_console()
-    if sys.stdout is not None:
-        record = logging.LogRecord(name, logging.INFO, "", 0, message, (), None)
-        record.plugin_startup_memory = True
-        try:
-            print(_ETS2LAFormatter().format(record), file=sys.stdout, flush=True)
-        except (OSError, ValueError):
-            pass
+    label = PLUGIN_LABELS.get(name, str(name))
+    message = f"Plugin {label} started successfully. · RAM: {memory}"
+    logging.info(message, extra={"plugin_startup_memory": True,
+                                 "plugin_display_name": label}, stacklevel=2)
 
 
 def _make_console_handler():
     # A deterministic formatter matches ETS2LA's [INF] / [WRN] / [ERR]
     # alignment exactly. Rich's default columns differ by terminal/version.
-    handler = logging.StreamHandler(sys.stdout)
-    handler.setFormatter(_ETS2LAFormatter())
-    return handler
+    try:
+        from rich.console import Console
+        from rich.theme import Theme
+        return ReferenceConsoleHandler(Console(file=sys.stdout, highlight=False,
+                                               markup=False, emoji=False,
+                                               no_color=False, legacy_windows=False,
+                                               color_system="truecolor",
+                                               theme=Theme({"traceback.border": "#ff0033",
+                                                            "traceback.title": "#ff0033"})))
+    except ImportError:
+        handler = logging.StreamHandler(sys.stdout)
+        handler.setFormatter(_ETS2LAFormatter())
+        return handler
 
 
 def session_log_offset():
@@ -343,13 +420,22 @@ def finish_session_log(offset=0, input_fn=None, colour=True):
     return issues
 
 
-def setup(level=logging.INFO):
+def _plain_formatter(plugin_name=None):
+    # Keep the original message tail intact: diagnostic readers literal-eval
+    # the dictionary following "Drive boundary: " and similar markers.
+    source = plugin_name or "%(processName)s"
+    return logging.Formatter("%(asctime)s %(levelname)-8s " + source
+                             + " [source:%(filename)s:%(lineno)d] %(message)s")
+
+
+def setup(level=logging.INFO, plugin_name=None):
     """Install the ETS2LA console handler and shared plain log file."""
     ensure_windows_console()
     root = logging.getLogger()
     root.setLevel(level)
     for h in list(root.handlers):
         root.removeHandler(h)
+        h.close()
 
     # Deterministic colourised console output.
     root.addHandler(_make_console_handler())
@@ -359,9 +445,9 @@ def setup(level=logging.INFO):
         from core.paths import app_dir
         path = os.path.join(app_dir(), "ultrapilot.log")
         fh = logging.FileHandler(path, mode="a", encoding="utf-8")
-        fh.setFormatter(logging.Formatter(
-            "%(asctime)s %(levelname)-8s %(processName)s %(message)s"))
+        fh.setFormatter(_plain_formatter(plugin_name))
         root.addHandler(fh)
-        root.info("Logging to %s", path)
+        if plugin_name is None:
+            root.info("Logging initialized.")
     except Exception:
         pass

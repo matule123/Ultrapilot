@@ -31,7 +31,8 @@ def test_map_period_includes_work_without_catchup_or_added_sleep(work_s, plugin_
         clock[0] += seconds
 
     with patch('core.plugin_manager.PluginSDK'), \
-         patch('core.plugin_manager.logging.basicConfig'), \
+         patch('core.logger.setup'), \
+         patch('core.logger.log_plugin_ready'), \
          patch('core.plugin_manager.time.monotonic', side_effect=lambda: clock[0]), \
          patch('core.plugin_manager.time.sleep', side_effect=sleep):
         plugin_worker(Worker, plugin_name, {}, Event())

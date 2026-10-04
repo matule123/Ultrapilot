@@ -30,28 +30,49 @@ from ui.app import Page
 
 # Pre-formatted HTML colours per level.
 _LEVEL_COLOR = {
-    logging.DEBUG:    "#5B6573",
-    logging.INFO:     "#9AA4B2",
-    logging.WARNING:  "#F59E0B",
-    logging.ERROR:    "#EF4444",
-    logging.CRITICAL: "#EF4444",
+    logging.DEBUG:    "#55DDEE",
+    logging.INFO:     "#00AF00",
+    logging.WARNING:  "#D7AF00",
+    logging.ERROR:    "#FF0033",
+    logging.CRITICAL: "#FF0033",
 }
 _LEVEL_TAG = {
-    logging.DEBUG:    "DEBUG",
-    logging.INFO:     "INFO ",
-    logging.WARNING:  "WARN ",
-    logging.ERROR:    "ERROR",
-    logging.CRITICAL: "CRIT ",
+    logging.DEBUG:    "[DBG]",
+    logging.INFO:     "[INF]",
+    logging.WARNING:  "[WRN]",
+    logging.ERROR:    "[ERR]",
+    logging.CRITICAL: "[CRT]",
 }
 
 
 def _message_html(message):
     """Keep all log text escaped, highlighting only a startup RAM receipt."""
     prefix, marker, suffix = message.partition(" · RAM: ")
-    if message.startswith("Plugin pripravený: ") and marker:
+    if ((message.startswith("Plugin pripravený: ") or message.startswith("Plugin "))
+            and marker):
         return (html.escape(prefix) + '<span style="color:#BAE6FD;">'
                 + html.escape(marker + suffix) + '</span>')
     return html.escape(message)
+
+
+def _traceback_html(lines):
+    # Plain-file history has no exception object. Preserve its recorded frames;
+    # do not invent local variables or read different current source revisions.
+    text = "\n".join(lines[1:])
+    return ('<table width="100%" border="1" bordercolor="#FF0033" cellpadding="8">'
+            '<tr><td><span style="color:#FF0033;">Traceback (most recent call last)</span>'
+            '<pre style="color:#CCCCCC;">' + html.escape(text) + '</pre></td></tr></table>')
+
+
+def _log_line_html(timestamp, level, message, source=""):
+    number = getattr(logging, level, logging.INFO)
+    return (
+        '<table width="100%" cellspacing="0" cellpadding="0"><tr>'
+        f'<td width="50" style="color:{_LEVEL_COLOR[number]};">{_LEVEL_TAG[number]}</td>'
+        f'<td width="76" style="color:#606060;">{html.escape(timestamp)}</td>'
+        f'<td style="color:#CCCCCC;">{_message_html(message)}</td>'
+        f'<td align="right" style="color:#606060;text-decoration:underline;">'
+        f'{html.escape(source)}</td></tr></table>')
 
 
 class _BufferHandler(logging.Handler):
@@ -67,19 +88,9 @@ class _BufferHandler(logging.Handler):
 
     def emit(self, record):
         try:
-            from core.theme import palette
-            pal = palette("dark")  # the log panel is always dark for contrast
             ts = datetime.fromtimestamp(record.created).strftime("%H:%M:%S")
-            lvl = record.levelno
-            col = _LEVEL_COLOR.get(lvl, "#9AA4B2")
-            tag = _LEVEL_TAG.get(lvl, "LOG  ")
-            # Escape the message so log text can't inject HTML.
-            msg = _message_html(record.getMessage() or "")
-            line = (
-                f'<span style="color:#5B6573;">[{ts}]</span> '
-                f'<span style="color:{col};font-weight:700;">{tag}</span> '
-                f'<span style="color:{pal["text"]};">{msg}</span>'
-            )
+            line = _log_line_html(ts, record.levelname, record.getMessage(),
+                                  f"{record.filename}:{record.lineno}")
             cursor = self._target.textCursor()
             cursor.movePosition(QTextCursor.MoveOperation.End)
             cursor.insertHtml(line + "<br>")
@@ -136,14 +147,15 @@ class LogPage(Page):
         # The console itself — always dark for readability regardless of theme.
         self.view = QTextEdit()
         self.view.setReadOnly(True)
-        self.view.setFont(QFont("Consolas", 9))
+        self.view.setFont(QFont("Consolas", 10))
         self.view.document().setMaximumBlockCount(2000)
         self.view.setStyleSheet(
-            "QTextEdit{background:#0F1419; color:#E6E8EB; border:1px solid #30363D;"
+            "QTextEdit{background:#0C0C0C; color:#CCCCCC; border:1px solid #30363D;"
             " border-radius:10px; padding:8px;}")
         self.layout.addWidget(self.view, stretch=1)
 
         self._auto_scroll = True
+        self._traceback_lines = []
         # All plugins run in separate processes. A logging.Handler attached to
         # this UI process cannot see their records, so tail the shared file that
         # every process writes instead.
@@ -184,20 +196,32 @@ class LogPage(Page):
             r"(?P<level>DEBUG|INFO|WARNING|ERROR|CRITICAL)\s+(?P<src>\S+)\s+(?P<msg>.*)$")
         cursor = self.view.textCursor()
         cursor.movePosition(QTextCursor.MoveOperation.End)
-        colors = {"DEBUG": "#5B6573", "INFO": "#9AA4B2",
-                  "WARNING": "#F59E0B", "ERROR": "#EF4444",
-                  "CRITICAL": "#EF4444"}
+        metadata = re.compile(r"^\[source:(?P<source>[^\]\r\n]+)\]\s*")
         for raw in lines:
             line = raw.rstrip("\r\n")
             match = pattern.match(line)
+            if match and self._traceback_lines:
+                cursor.insertHtml(_traceback_html(self._traceback_lines))
+                self._traceback_lines.clear()
+            if line.startswith("Traceback (most recent call last)"):
+                self._traceback_lines = [line]
+                continue
+            if self._traceback_lines:
+                self._traceback_lines.append(line)
+                if ((line and not line.startswith(" ") and not line.startswith("During "))
+                        or len(self._traceback_lines) >= 200):
+                    cursor.insertHtml(_traceback_html(self._traceback_lines))
+                    self._traceback_lines.clear()
+                continue
             if match:
                 item = match.groupdict()
-                color = colors.get(item["level"], "#9AA4B2")
-                rendered = (
-                    f'<span style="color:#5B6573;">[{item["time"]}]</span> '
-                    f'<span style="color:{color};font-weight:700;">{item["level"]:5}</span> '
-                    f'<span style="color:#7DD3FC;">{html.escape(item["src"])}</span> '
-                    f'<span style="color:#E6E8EB;">{_message_html(item["msg"])}</span><br>')
+                location = metadata.search(item["msg"])
+                message = item["msg"][location.end():] if location else item["msg"]
+                source = location.group("source") if location else ""
+                if message.startswith("Please wait for map to load"):
+                    rendered = '<span style="color:#D7AF00;">' + html.escape(message) + '</span><br>'
+                else:
+                    rendered = _log_line_html(item["time"], item["level"], message, source)
             else:
                 rendered = f'<span style="color:#7B8491;">{html.escape(line)}</span><br>'
             cursor.insertHtml(rendered)

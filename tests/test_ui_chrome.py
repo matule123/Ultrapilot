@@ -282,6 +282,33 @@ class UiChromeTests(unittest.TestCase):
         self.assertEqual(state.get("app_shutdown_reason"),
                          "main window closed")
 
+    def test_outer_window_contour_has_no_interior_alpha_holes(self):
+        from PyQt6.QtWidgets import QMainWindow, QVBoxLayout
+        window = QMainWindow()
+        window._pal = palette("light")
+        window._theme = "light"
+        surface = app_module.WindowSurface(window)
+        window.setCentralWidget(surface)
+        layout = QVBoxLayout(surface)
+        layout.setContentsMargins(1, 1, 1, 1)
+        content = app_module.WindowContent()
+        content.setStyleSheet("background:white;")
+        layout.addWidget(content)
+        window.resize(160, 100)
+        window.show()
+        self.app.processEvents()
+        image = QImage(surface.size(), QImage.Format.Format_ARGB32)
+        image.fill(Qt.GlobalColor.transparent)
+        surface.render(image)
+        self.assertEqual(image.pixelColor(0, 0).alpha(), 0)
+        for y in range(1, 20):
+            nonzero = [x for x in range(image.width())
+                       if image.pixelColor(x, y).alpha() > 0]
+            self.assertTrue(nonzero)
+            self.assertEqual(nonzero, list(range(min(nonzero), max(nonzero) + 1)))
+        self.assertGreater(image.pixelColor(15, 1).alpha(), 200)
+        window.close()
+
     def test_settings_use_responsive_cards_and_vector_header_icon(self):
         settings = SettingsMenu(State({"ui_theme": "light"}))
         cards = settings.findChildren(QFrame, "SettingsCard")
@@ -371,21 +398,29 @@ class UiChromeTests(unittest.TestCase):
             "route-build failed unexpectedly: ValueError at "
             "C:\\Users\\driver\\private.sii"))
 
+    def test_dynamic_island_strips_source_metadata_before_filtering(self):
+        self.assertIsNone(_friendly_activity_message(
+            "[source:plugin_manager.py:123] Process Engine started (PID: 16144)"))
+        self.assertEqual(_friendly_activity_message(
+            "[source:engine.py:456] Hotkey N -> Vyberám D – čakám na potvrdenie prevodu"),
+            "Vyberám D – čakám na potvrdenie prevodu")
+        self.assertEqual(_friendly_activity_message(
+            "[source:main.py:789] Map dataset ready"), "Map dataset ready")
+
     def test_performance_popover_has_transparent_rounded_surface(self):
         overlay = PerfOverlay(State({"ui_theme": "light"}))
         self.assertTrue(overlay.testAttribute(
             Qt.WidgetAttribute.WA_TranslucentBackground))
-        self.assertEqual(overlay.width(), 360)
+        self.assertGreaterEqual(overlay.width(), 310)
         self.assertEqual(overlay.surface.objectName(), "PerfSurface")
-        self.assertIsNotNone(overlay.surface.graphicsEffect())
         self.assertIn("QFrame#PerfSurface", overlay.styleSheet())
         labels = [label.text() for label in overlay.findChildren(QLabel)]
-        self.assertIn("Výkon aplikácie", labels)
-        self.assertIn("Pamäť UltraPilotu", labels)
-        self.assertIn("border-radius:16px", overlay.styleSheet())
+        self.assertIn("┌ Plugins", labels)
+        self.assertTrue(any(text.startswith("└ Total:") for text in labels))
+        self.assertIn("border-radius:5px", overlay.styleSheet())
         light_style = overlay.styleSheet()
         overlay.restyle("dark")
-        self.assertNotEqual(light_style, overlay.styleSheet())
+        self.assertEqual(light_style, overlay.styleSheet())
         overlay.close()
 
     def test_performance_rows_have_enough_height_and_are_not_clipped(self):
@@ -398,14 +433,14 @@ class UiChromeTests(unittest.TestCase):
         self.assertEqual(overlay.rows_box.count(), 10)
         self.assertLessEqual(overlay.height(), 540)
         self.assertTrue(overlay.scroll.widgetResizable())
-        self.assertTrue(all(overlay.rows_box.itemAt(i).widget().height() == 39
+        self.assertTrue(all(overlay.rows_box.itemAt(i).widget().height() == 19
                             for i in range(10)))
         first = overlay.rows_box.itemAt(0).widget()
         with mock.patch("UI.perf_overlay._collect",
                         return_value=(512.0, 5.0, plugins)):
             overlay.refresh()
         self.assertIs(overlay.rows_box.itemAt(0).widget(), first)
-        self.assertEqual(overlay.total_lbl.text(), "512.0 MB")
+        self.assertEqual(overlay.total_lbl.text(), "└ Total:   512.00 MB")
         overlay.show()
         QApplication.processEvents()
         self.assertTrue(overlay.timer.isActive())

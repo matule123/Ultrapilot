@@ -21,7 +21,7 @@ class HUDManager(BasePlugin):
     Professional HUD Manager.
     Discovers HUD elements and aggregates their data for the AR rendering engine.
     """
-    VERSION = "1.0.1"
+    VERSION = "1.0.2"
 
     def __init__(self, sdk_proxy):
         super().__init__(sdk_proxy)
@@ -47,14 +47,16 @@ class HUDManager(BasePlugin):
             if filename.endswith(".py") and filename != "__init__.py":
                 module_name = f"plugins.hud.elements.{filename[:-3]}"
                 try:
+                    logging.info("Loading HUD element: %s", module_name,
+                                 extra={"hud_element_load": True})
                     module = importlib.import_module(module_name)
                     # Look for a class named 'Widget' in the module
                     if hasattr(module, "Widget"):
                         element_class = getattr(module, "Widget")
                         self.elements.append(element_class(self))
-                        logging.info(f"HUD: Loaded element {module_name}")
                 except Exception as e:
-                    logging.error(f"HUD: Failed to load element {module_name}: {e}")
+                    logging.exception("HUD: Failed to load element %s: %s", module_name, e)
+        logging.info("HUD: Found %d elements in plugins/hud/elements.", len(self.elements))
 
     def calculate_layout(self):
         """Calculates the positions and sizes of all active widgets."""
