@@ -21,6 +21,7 @@ CURVE_LATERAL_ACCEL_MS2 = 1.8
 CURVE_APPROACH_DECEL_MS2 = 1.0
 CURVE_BRAKE_RESPONSE_S = 1.0
 CURVE_STEERING_SETUP_M = 20.0
+ROUNDABOUT_ENTRY_SPEED_KMH = 35.0
 
 
 def curve_speed_envelope(radius_m, distance_m, speed_ms):
@@ -51,6 +52,24 @@ def curve_preview_horizon_m(speed_ms, requested_speed_kmh=None):
     return min(400., max(60., speed * speed / (2. * CURVE_APPROACH_DECEL_MS2)
                         + speed * CURVE_BRAKE_RESPONSE_S
                         + CURVE_STEERING_SETUP_M + 4.))
+
+
+def curve_constraint_speed(curve, speed_ms):
+    """Existing curvature envelope plus a semantic roundabout upper ceiling.
+
+    Distance is directed LanePath progress, not distance to an island. Keep
+    the existing response/setup allowance and deceleration planning assumption.
+    Tighter curvature, traffic and posted constraints still win separately.
+    """
+    limit, _ = curve_speed_envelope(curve['radius_m'], curve['distance_m'], speed_ms)
+    if 'roundabout_entry_distance_m' in curve:
+        distance = number(curve['roundabout_entry_distance_m'], 0., 1e12)
+        speed = number(abs(float(speed_ms)), 0., 100.)
+        usable = max(0., distance - CURVE_STEERING_SETUP_M
+                     - speed * CURVE_BRAKE_RESPONSE_S)
+        entry = ROUNDABOUT_ENTRY_SPEED_KMH / 3.6
+        limit = min(limit, math.sqrt(entry * entry + 2. * CURVE_APPROACH_DECEL_MS2 * usable))
+    return limit
 
 
 def context(state):
@@ -434,13 +453,19 @@ def curve_input(state, *, binding=None):
         return None
     if radius <= 0 or rejection(candidate, context(state), time.monotonic()):
         return None
-    return dict(radius_m=radius, distance_m=distance, expires_at=candidate["expires_at"])
+    result = dict(radius_m=radius, distance_m=distance, expires_at=candidate["expires_at"])
+    if 'roundabout_entry_distance_m' in profile:
+        try:
+            result['roundabout_entry_distance_m'] = number(profile['roundabout_entry_distance_m'], 0., 1e12)
+        except (TypeError, ValueError, OverflowError):
+            return None
+    return result
 
 
 def speed_ceiling(state, *, binding=None, diagnostic=None):
     if diagnostic is not None:
         from core.navigation.longitudinal_diagnostics import bounded_input
-    limits, expiries = [], []
+    limits = []
     for source, key, factor in (("road", "speed_cap_kmh", 1. / 3.6),
                                 ("policy", "planned_speed_ms", 1.)):
         value, _ = read(state, source, binding=binding, diagnostic=diagnostic)
@@ -453,12 +478,15 @@ def speed_ceiling(state, *, binding=None, diagnostic=None):
                     'observation_timestamp', 'computed_at', 'expires_at', 'valid', key)}
                 if value is not None else None)
         if value is not None:
-            limits.append(float(value[key]) * factor)
-            expiries.append(value["expires_at"])
+            limits.append((float(value[key]) * factor, value["expires_at"]))
+    ceiling = min((limit for limit, _ in limits), default=None)
+    # Retain every tied winning constraint. A higher static cap neither
+    # authorizes nor limits this decision and must not shrink its input lease.
+    expiry = min((expires for limit, expires in limits if limit == ceiling),
+                 default=float("inf"))
     if diagnostic is not None:
-        diagnostic['speed_ceiling_mps'] = min(limits) if limits else None
-    return (min(limits) if limits else None,
-            min(expiries) if expiries else float("inf"))
+        diagnostic['speed_ceiling_mps'] = ceiling
+    return ceiling, expiry
 
 
 def launch_rejection(state):

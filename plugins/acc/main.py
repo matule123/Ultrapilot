@@ -18,7 +18,7 @@ class Plugin(BasePlugin):
     """
 
     NAME = "acc"
-    VERSION = "1.1.1"
+    VERSION = "1.1.2"
 
     def on_start(self):
         logging.info("ACC Plugin started with bounded speed PID control.")
@@ -145,8 +145,8 @@ class Plugin(BasePlugin):
         # envelope each time the separate curve-brake demand releases.
         curve = curve_input(self.sdk.shared_state, binding=binding) if strict else None
         if curve is not None:
-            curve_limit, _ = curve_speed_envelope(
-                curve["radius_m"], curve["distance_m"], speed)
+            from core.longitudinal import curve_constraint_speed
+            curve_limit = curve_constraint_speed(curve, speed)
             effective_target_speed = min(effective_target_speed, curve_limit * 3.6)
             hard_limits.append(curve_limit * 3.6)
         obey_limit = self.sdk.shared_state.get("acc_obey_limit", None)
@@ -303,7 +303,9 @@ class Plugin(BasePlugin):
                 following_target_id=following.get('target_id') if isinstance(following, dict) else None,
                 following_confirmed=False,
                 following_required=self._followed_target,
-                expires_at=min((v["expires_at"] for v in (traffic, road_packet, policy, curve)
+                expires_at=min((v["expires_at"] for v in (traffic,
+                                road_packet if road_cap is not None and float(road_cap) <= effective_target_speed else None,
+                                policy, curve)
                                 if v is not None), default=float("inf")))
 
         # Update UI tags

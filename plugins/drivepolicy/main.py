@@ -2,7 +2,8 @@ import logging
 import math
 from sdk.base_plugin import BasePlugin
 from core.navigation.route import curve_speed_limit_ms, iter_path_xz
-from core.longitudinal import context, read, publish, curve_input, curve_speed_envelope
+from core.longitudinal import (context, read, publish, curve_input,
+                               curve_speed_envelope, curve_constraint_speed, number)
 
 
 # === Tuning =================================================================
@@ -75,7 +76,7 @@ class Plugin(BasePlugin):
     a pile of independent, sometimes-contradictory requests."""
 
     NAME = "drivepolicy"
-    VERSION = "1.0.3"
+    VERSION = "1.0.4"
 
     def on_start(self):
         logging.info("DrivePolicy plugin started.")
@@ -100,6 +101,14 @@ class Plugin(BasePlugin):
         if truck is None:
             truck = self.sdk.telemetry.get("truck", {}) or {}
         limits = []
+        spatial_limits = []
+        # A preference above the requested cruise speed is not a dependency
+        # of the decision. Keep dynamic traffic evidence leased independently.
+        requested = self.sdk.get("acc_target_speed")
+        try:
+            limits.append(number(requested, 0., 160.) / 3.6)
+        except (TypeError, ValueError, OverflowError):
+            pass
 
         # 1. Road-class cap (km/h → m/s), published by the map plugin.
         strict = self.sdk.get("longitudinal_control_schema") == 1
@@ -108,6 +117,8 @@ class Plugin(BasePlugin):
         if road_cap:
             try:
                 limits.append(float(road_cap) / 3.6)
+                if road:
+                    spatial_limits.append((float(road_cap) / 3.6, road))
             except (TypeError, ValueError):
                 pass
 
@@ -124,10 +135,12 @@ class Plugin(BasePlugin):
                 R = float(radius)
                 distance = (curve["distance_m"] if strict else float(self.sdk.get(
                     "path_curve_distance_m", 0.0) or 0.0))
-                curve_limit, _ = curve_speed_envelope(
-                    R, distance, float(truck["speed"]))
+                curve_limit = (curve_constraint_speed(curve, float(truck['speed'])) if curve
+                    else curve_speed_envelope(R, distance, float(truck['speed']))[0])
                 if math.isfinite(curve_limit):
                     limits.append(curve_limit)
+                    if curve:
+                        spatial_limits.append((curve_limit, curve))
             except (TypeError, ValueError, OverflowError):
                 pass
 
@@ -155,8 +168,10 @@ class Plugin(BasePlugin):
 
         plan = min(limits) if limits else 25.0
         plan = max(0.0, min(plan, 40.0))   # clamp 0..144 km/h
-        self._longitudinal_policy_expiry = min((v["expires_at"] for v in (road, traffic, curve)
-                                               if v is not None), default=float("inf"))
+        dependencies = ([traffic] if traffic is not None else [])
+        dependencies.extend(value for limit, value in spatial_limits if limit <= plan)
+        self._longitudinal_policy_expiry = min((v["expires_at"] for v in dependencies),
+                                               default=float("inf"))
 
         # Asymmetric lag: drop fast (safe), rise slow (don't lunge into trouble).
         if self._planned is None:

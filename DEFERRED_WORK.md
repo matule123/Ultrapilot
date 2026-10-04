@@ -1,5 +1,18 @@
 # Odložená a nedokončená práca
 
+## Lease a nájazd na objazd 35 km/h – 4. 10. 2026
+
+[PHASE7_LEASE_AND_ROUNDABOUT_20261004.md](PHASE7_LEASE_AND_ROUNDABOUT_20261004.md)
+dokladá opravu zbytočnej závislosti čerstvého povelu od vyššieho neúčinného
+mapového limitu a anticipačný horný cieľ 35 km/h na identifikovanom objazde.
+Nižšie limity a dynamické dôkazy zachovávajú pôvodné lease. Modelové nájazdy
+a dlhé cykly prešli offline; herný účinok nie je overený. Incident 19:51:22
+neobsahuje pôvodný zoznam spotrebovaných lease, takže konkrétny historický vstup
+nemožno jednoznačne určiť. Inštalovaný Engine a Map zodpovedajú staršiemu
+cf25a975, nie vstupnému HEAD e0be9ea. Nič sa nenasadilo. Pred spoločným overením
+treba celú sadu používateľa a osobitné schválenie konzistentného nasadenia.
+Blokátor samostatného držania zo státia ostáva.
+
 ## Spoločná spoľahlivosť a zapnutie pred červenou – 4. 10. 2026
 
 [PHASE7_JOINT_LIFECYCLE_RELIABILITY_20261004.md](PHASE7_JOINT_LIFECYCLE_RELIABILITY_20261004.md)

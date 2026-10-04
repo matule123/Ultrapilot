@@ -37,22 +37,33 @@ def module_at(ref, path):
     return module
 
 
-def run(*, baseline=False, direction=1, load=1.4, jitter=False):
-    baseline_ref = 'b9fb484'
+def run(*, baseline=False, direction=1, load=1.4, jitter=False,
+        baseline_ref='b9fb484', radius=19., roundabout=False):
     if baseline:
         Policy = module_at(baseline_ref, 'plugins/drivepolicy/main.py').Plugin
         ACC = module_at(baseline_ref, 'plugins/acc/main.py').Plugin
         AP = module_at(baseline_ref, 'plugins/autopilot/main.py').Plugin
         Engine = module_at(baseline_ref, 'core/engine.py').UltraPilotEngine
+        Map = module_at(baseline_ref, 'plugins/map/main.py').Plugin
+        # Bind the old producer functions to their actual old longitudinal
+        # implementation, rather than inadvertently importing the candidate.
+        old_core = module_at(baseline_ref, 'core/longitudinal.py')
+        for cls in (Policy, ACC, AP):
+            namespace = sys.modules[cls.__module__].__dict__
+            for name in tuple(namespace):
+                if callable(namespace[name]) and getattr(namespace[name], '__module__', '') == 'core.longitudinal':
+                    if hasattr(old_core, name):
+                        namespace[name] = getattr(old_core, name)
     else:
         from plugins.drivepolicy.main import Plugin as Policy
         from plugins.acc.main import Plugin as ACC
         from plugins.autopilot.main import Plugin as AP
+        from plugins.map.main import Plugin as Map
         Engine = UltraPilotEngine
     points = [(0., float(z)) for z in range(201)]
-    points += [(direction*19.*(1.-math.cos(i*math.pi/240.)),
-                200.+19.*math.sin(i*math.pi/240.)) for i in range(1, 121)]
-    points += [(direction*(19.+i), 219.) for i in range(1, 91)]
+    points += [(direction*radius*(1.-math.cos(i*math.pi/240.)),
+                200.+radius*math.sin(i*math.pi/240.)) for i in range(1, 121)]
+    points += [(direction*(radius+i), 200.+radius) for i in range(1, 91)]
     route = Route(points)
     generator = flow.__wrapped__()
     harness = next(generator)
@@ -93,10 +104,16 @@ def run(*, baseline=False, direction=1, load=1.4, jitter=False):
             position = route._point_at_progress(s)
             ahead = route._point_at_progress(s+.1)
             heading = math.atan2(-(ahead[0]-position[0]), -(ahead[1]-position[1]))
-            horizon = 60. if baseline else curve_preview_horizon_m(v, 50.)
+            horizon = 60. if baseline and baseline_ref == 'b9fb484' else curve_preview_horizon_m(v, 50.)
             curve = route.curve_profile_ahead(position, heading, horizon)
             packet = state.get('nav_steering_debug')
             lane = state.get('lane_trajectory')
+            if roundabout:
+                lane['turn_events'] = [dict(kind='roundabout', start_s_m=200.,
+                                          end_s_m=200.+radius*math.pi/2.)]
+                operation = getattr(Map, '_roundabout_speed_profile', None)
+                if operation:
+                    curve = operation(lane, curve, route.tracking_progress(position, heading))
             packet.update(trajectory_identity={k: lane[k] for k in (
                 'navigation_intent_id', 'revision', 'route_build_id',
                 'source_game_session_id', 'source_map_key', 'source_dataset_fingerprint')},
@@ -121,7 +138,8 @@ def run(*, baseline=False, direction=1, load=1.4, jitter=False):
     return dict(samples=len(records), duration_s=t, direction=direction, load=load, jitter=jitter,
         brake_start_distance_to_entry_m=200.-braking['s'] if braking else None,
         entry_speed_kmh=entry['speed_kmh'] if entry else None,
-        entry_overspeed_kmh=max(0.,entry['speed_kmh']-math.sqrt(1.8*19.)*3.6) if entry else None,
+        entry_overspeed_kmh=max(0.,entry['speed_kmh']-min(35. if roundabout else float('inf'), math.sqrt(1.8*radius)*3.6)) if entry else None,
+        first_35_distance_to_entry_m=next((200.-r['s'] for r in records if r['speed_kmh'] <= 35.), None),
         maximum_deceleration_mps2=max(-r['acceleration_mps2'] for r in records),
         maximum_abs_model_jerk_mps3=max(map(abs, jerks)),
         simultaneous_positive_pedals=sum(r['throttle']>0 and r['brake']>0 for r in records))
@@ -130,9 +148,13 @@ def run(*, baseline=False, direction=1, load=1.4, jitter=False):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--output', type=Path, required=True)
+    parser.add_argument('--ref', default='b9fb484')
+    parser.add_argument('--roundabout', action='store_true')
     args = parser.parse_args()
     cases = [(d,l,j) for d in (-1,1) for l in (1.,1.4) for j in (False,True)]
-    result = {str(case): {name: run(baseline=old, direction=case[0], load=case[1], jitter=case[2])
+    result = {str(case): {name: run(baseline=old, direction=case[0], load=case[1], jitter=case[2],
+                                  baseline_ref=args.ref, radius=80. if args.roundabout else 19.,
+                                  roundabout=args.roundabout)
                          for name,old in [('baseline',True),('candidate',False)]} for case in cases}
     args.output.write_text(json.dumps(result,indent=2)+'\n',encoding='utf-8')
     print(json.dumps(result,indent=2))

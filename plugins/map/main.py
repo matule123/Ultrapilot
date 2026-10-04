@@ -69,7 +69,7 @@ class Plugin(BasePlugin):
     """
 
     NAME = "map"
-    VERSION = "1.0.5"
+    VERSION = "1.0.6"
 
     def on_start(self):
         logging.info("Map (navigation) plugin started.")
@@ -389,6 +389,32 @@ class Plugin(BasePlugin):
                 "end_uid": int(segment.end_uid),
                 "lane_change": lane_change_payload(segment.lane_change),
             })
+        return result
+
+    @staticmethod
+    def _roundabout_speed_profile(snapshot, profile, progress):
+        """Only topology-identified roundabouts in this immutable LanePath.
+
+        The extra longitudinal ceiling never changes the curvature geometry.
+        Ordinary prefabs are not inferred to be roundabouts from their shape.
+        """
+        result = dict(profile)
+        result.pop('roundabout_entry_distance_m', None)
+        distances = []
+        for event in snapshot.get('turn_events', ()):
+            if event.get('kind') != 'roundabout':
+                continue
+            try:
+                start, end = float(event['start_s_m']), float(event['end_s_m'])
+                if not all(math.isfinite(v) for v in (start, end, progress)):
+                    continue
+                distance = max(0., start - progress)
+                if 0 <= start <= end and progress <= end and distance <= profile['horizon_m']:
+                    distances.append(distance)
+            except (KeyError, TypeError, ValueError):
+                continue
+        if distances:
+            result['roundabout_entry_distance_m'] = min(distances)
         return result
 
     def _turn_events_payload(self, lane_path):
@@ -3009,6 +3035,9 @@ class Plugin(BasePlugin):
                         actuator_calibration.failure_reason))
                 curve_profile = route.curve_profile_ahead(pos, heading,
                     curve_preview_horizon_m(speed, self.sdk.get("acc_target_speed")))
+                curve_profile = self._roundabout_speed_profile(
+                    snapshot, curve_profile, (getattr(route, 'last_steering_debug', {})
+                                             or {}).get('tracking_progress_m'))
                 # Safety: if the truck is far from the snapped path (wrong map
                 # dataset, or we're off-road on a ferry / car park), the CTE is
                 # huge and Stanley saturates to full-lock. Detect that and

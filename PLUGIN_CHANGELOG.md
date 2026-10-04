@@ -15,6 +15,11 @@ Release history for individual plugins. See [PLUGIN_VERSIONS.md](PLUGIN_VERSIONS
 
 ## Map
 
+### 1.0.6 — 2026-10-04
+
+- Add directed roundabout entry distance to the immutable longitudinal profile using existing LanePath turn events and calculation progress. Preserve curvature, geometry and original SDK times; ordinary prefabs receive no roundabout cap.
+- Offline evidence and live limitations: [PHASE7_LEASE_AND_ROUNDABOUT_20261004.md](PHASE7_LEASE_AND_ROUNDABOUT_20261004.md).
+
 ### 1.0.5 — 2026-10-04
 
 **Fixed**
@@ -149,6 +154,11 @@ Commit: `3ef65c7`.
 
 ## ACC
 
+### 1.1.2 — 2026-10-04
+
+- Apply the existing distance/deceleration envelope to a 35 km/h roundabout upper ceiling. Tighter curves and traffic retain precedence; lateral gains, pedal ramps and emergency limits remain unchanged.
+- Retain leases of effective speed constraints without letting a higher nonbinding static map cap expire a fresh lower-speed decision. Preserve dynamic evidence leases and final Engine checks.
+
 ### 1.1.1 — 2026-10-03
 
 **Fixed**
@@ -197,6 +207,11 @@ Commit: `3ef65c7`.
 - Consume current bound traffic and speed constraints without changing PID gains.
 
 ## DrivePolicy
+
+### 1.0.4 — 2026-10-04
+
+- Include the valid requested cruise ceiling in minimum-speed composition so a higher nonbinding static map cap does not shorten the lower-speed decision's lease. Effective lower limits and dynamic evidence retain their original leases.
+- Apply the existing anticipatory deceleration envelope to the 35 km/h roundabout upper ceiling, preserving tighter curve and traffic constraints.
 
 ### 1.0.3 — 2026-10-03
 
