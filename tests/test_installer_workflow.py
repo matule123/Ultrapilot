@@ -34,14 +34,16 @@ def test_launcher_keeps_runtime_console_attached_and_visible(tmp_path, monkeypat
     assert "runas" not in powershell.lower()
 
 
-def test_release_version_is_042_everywhere():
+def test_release_version_is_050_everywhere():
     from core import update_check
-    assert installer.APP_VERSION == "0.4.2"
+    assert installer.APP_VERSION == "0.5.0"
     assert update_check.VERSION == installer.APP_VERSION
     freeze_source = (os.path.join(os.path.dirname(installer.__file__),
                                   "freeze_app.py"))
     with open(freeze_source, encoding="utf-8") as stream:
-        assert 'VERSION = "0.4.2"' in stream.read()
+        source = stream.read()
+        assert 'VERSION = "0.5.0"' in source
+        assert '("PLUGIN_CHANGELOG.md", "PLUGIN_CHANGELOG.md")' in source
 
 
 def test_pip_install_fails_closed_and_reports_exact_required_package(

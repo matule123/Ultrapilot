@@ -1,4 +1,57 @@
 {
   "schema_version": 1,
-  "releases": {}
+  "releases": {
+    "0.4.2": {
+      "source_commit": "0755c0d375e65ad8918bb6a8e4ef0548d71416f2",
+      "source_commit_at": "2026-08-01T13:30:04+02:00",
+      "push_timestamp_verified": false,
+      "plugin_versions": {}
+    },
+    "0.5.0": {
+      "previous_version": "0.4.2",
+      "intro": "Veľký krok vpred pre UltraPilot. Od verzie 0.4.2 sme prepracovali riadenie, zrýchlili navigačný tok, zjednotili plyn a brzdu a pridali nové možnosti čakania na semaforoch. Toto vydanie spája zmeny od 1. augusta 2026 do jedného prehľadného celku.",
+      "changes": [
+        "Riadenie volantu — prepracovaný priečny regulátor, stabilnejšia projekcia do pruhu, správny referenčný bod kabíny a predikcia odchýlky. Doplnené fyzikálne obmedzenia, kalibrácia odozvy a oddelené vykonávanie povelov približne pri 60 Hz.",
+        "Plynulejšia navigácia — odstránená zbytočná opakovaná validácia celej trasy, ohraničené cache prefabovej geometrie a LanePath, menej medziprocesových prenosov a diagnostický export mimo riadiacej cesty.",
+        "Aktuálne riadiace údaje — výpočet z novej SDK snímky po príprave a opätovné overenie po lokalizácii. Spoločne prenášaná rýchlosť, prevod, platnosť a pôvodný čas; opravené časové preteky pri aktivácii a heartbeat kontrolách. Limit čerstvosti 500 ms zostáva.",
+        "Výpočet GPS trasy — spevnená smerovaná topológia, spoje ciest a prefabov, kontinuita LaneId a geometrie. Opravený pokles confidence na potvrdených prefaboch a lokalizácia začiatku trasy pri vjazde do prefabu.",
+        "Pokračovanie GPS navigácie — rozpoznávanie posunu GPS okna bez zbytočnej straty autority, zhodná revision a identita packetov a bezpečné odmietnutie skutočnej zmeny trasy.",
+        "Zapnutie autopilota — opravené odovzdanie rozjazdu, aktivačné tokeny a čakanie na aktuálny packet. Bezpečné zrušenie odstraňuje staré povely; krátky prechod cez gear 0 počas doprednej jazdy sa už neposudzuje ako okamžitá strata prevodu.",
+        "Režim prevodovky — automatické zisťovanie režimu z aktuálneho profilu a herného logu, zobrazenie zdroja v nastaveniach a možnosť manuálnej voľby. Jednoduchá automatika používa ohraničený rozjazd plynom; reálna automatika požiadavku D s potvrdením prevodu.",
+        "Plyn a brzda — jedna spoločná arbitráž a spárovaný povel s identitou, zdrojom a expiráciou. ACC brzdenie sa zohľadňuje; kladný plyn sa neodosiela súčasne s brzdou a EcoDrive ho počas brzdenia neobnovuje.",
+        "Regulácia rýchlosti — upravený PID, pamäť integrátora, hysterézia brzdy a časovo riadený návrat plynu. Doplnená kompenzácia klesania v modeli; núdzové požiadavky sa nevyhladzujú komfortným rampovaním.",
+        "Predvídanie zákrut — zjednotený rýchlostný profil pre ACC, Autopilot a DrivePolicy. Brzdný horizont sa odvodzuje od potrebnej vzdialenosti a dostupnej geometrie namiesto krátkeho pevného okna.",
+        "ACC a premávka — kandidáti premietnutí na trasu, stabilnejšie priradenie cieľa a obmedzenia podľa časového odstupu. Strata, expirácia alebo nejednoznačnosť cieľa neznamená voľnú cestu; obmedzenia zdroja a potreba prevzatia sú explicitné.",
+        "Čakanie na semafore — podporované súvislé brzdenie začaté počas jazdy zachová aktívny autopilot pri zastavení. Dve nové relevantné zelené snímky uzamknutého semafora umožnia riadený rozjazd v rámci tej istej aktivácie. Parkovacia brzda sa neovláda.",
+        "Nový semaforový zdroj — pribalená ETS2LA DLL pre 1.59 s časom získania, generáciou a životným cyklom semaforovej snímky. Legacy, stará alebo nejednoznačná zelená rozjazd nepovolí.",
+        "HUD, AR a živá mapa — úpravy renderovania AR trasy, projekcie kamery a stability HUD polohy; opravy zobrazenia navigácie a výkonu mapovej stránky. Upravené automatické smerovky a kontroly ich stavu.",
+        "Rozhranie aplikácie — prehľadnejšie nastavenia a SDK karta, úpravy tém a rozloženia, nové zvuky aktivácie a upozornení a presnejšie navigačné správy v Dynamic Islande.",
+        "Diagnostika bez zahltenia — konkrétny prvý dôvod zásahu, presné chyby route buildu a pokojnejší INFO log. Replay a combined zber uchovávajú časovanie, zdroj povelu, fyzické zápisy plynu/brzdy a ACC rozhodnutia.",
+        "Spoľahlivejší zber — delené exporty s kontrolou integrity, uloženie čiastočného odmietnutého zberu, preskakovanie čerstvých duplicít a pauzy hry a identita session nezávislá od platnosti GPS cieľa.",
+        "Profily súpravy a budúce manévre — nové overovanie vozidlových assetov, kompilácia profilov, 3D prejazdný priestor, swept-envelope model a validačné nástroje. Experimentálne nadchádzanie a trailer guidance tým nie sú všeobecne aktivované.",
+        "Lepší updater — inštaluje iba runtime súbory a chráni používateľské nastavenia, mapové cache a trasy. Vývojové priečinky, testy a phase reporty sa do aplikácie nekopírujú.",
+        "Verzie a história — všetkých 12 pluginov má samostatnú verziu, zobrazenie v aplikácii a changelog. Nové oznámenie vydania oddeľuje verziu UltraPilotu od commitu a ukazuje každé medzivydanie pluginov.",
+        "Overovanie — rozsiahle regresné testy, uzavreté simulácie a reporty Fáz 6 a 7 s metrikami CTE, intervalmi packetov a jasným rozlíšením offline výsledkov od herných meraní."
+      ],
+      "limitations": [
+        "Automatické čakanie a rozjazd vyžadujú kompatibilnú novú DLL, aktuálnu trasu a jednoznačne vybraný semafor. Geometrický výber nie je dôkazom správnosti na každej križovatke; držanie na svahu a živý účinok nového toku nie sú univerzálne overené.",
+        "Prediktívne dávanie prednosti na kruhovom objazde, spoľahlivé pokrytie všetkej premávky a všeobecné ACC stop-and-go zostávajú otvorené. Pri strate dôkazov alebo autority systém môže vyžiadať prevzatie vodičom.",
+        "Prirodzenosť volantu vo všetkých situáciách, zvyšné dlhé pauzy a experimentálne manévre zostávajú predmetom ďalšieho overovania. Vydanie nie je prísľubom bezchybnosti ani plnej autonómie."
+      ],
+      "plugin_versions": {
+        "acc": "1.1.1",
+        "autopilot": "1.2.0",
+        "collision": "1.0.1",
+        "discord": "1.0.0",
+        "drivepolicy": "1.0.3",
+        "ecodrive": "1.0.1",
+        "hud": "1.0.0",
+        "lanecontrol": "1.0.0",
+        "map": "1.0.3",
+        "toll": "1.0.0",
+        "tts": "1.0.0",
+        "turnsignals": "1.0.0"
+      }
+    }
+  }
 }

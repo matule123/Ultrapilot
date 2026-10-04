@@ -17,7 +17,7 @@ from cx_Freeze import setup, Executable
 # (numpy/cv2/PyQt6) — lift the limit so analysis doesn't hit RecursionError.
 sys.setrecursionlimit(10000)
 
-VERSION = "0.4.2"
+VERSION = "0.5.0"
 
 # Preserve the source revision in frozen installations where .git is absent.
 _meta_dir = os.path.join(os.path.dirname(__file__), "build", "metadata")
@@ -52,6 +52,7 @@ build_exe_options = {
         ("assets/", "assets/"),
         ("plugins/", "plugins/"),
         ("README.md", "README.md"),
+        ("PLUGIN_CHANGELOG.md", "PLUGIN_CHANGELOG.md"),
         (_commit_file, "commit.txt"),
     ],
     # The optional AI/ML stack (~1.2 GB) is excluded — the lane model degrades to

@@ -37,7 +37,7 @@ from PyQt6.QtGui import QPixmap, QIcon, QColor, QPainter, QFont, QPen
 from PyQt6.QtWidgets import QGraphicsOpacityEffect
 
 APP_NAME = "UltraPilot"
-APP_VERSION = "0.4.2"
+APP_VERSION = "0.5.0"
 INSTALLER_VERSION = "1.3"
 
 # On Windows, hide the black CMD consoles that subprocess.run would otherwise

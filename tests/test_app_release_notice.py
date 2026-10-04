@@ -74,6 +74,7 @@ def test_published_baseline_and_skipped_app_versions(tmp_path):
 def test_dialog_sections_plain_text_and_versions(theme):
     app = QApplication.instance() or QApplication([])
     notice = {"version": "0.5.0", "previous_version": "0.4.2", "commit": "abc123",
+              "intro": "Welcome to UltraPilot", "limitations": ["Requires compatible DLL"],
               "changes": ["Better settings"], "plugins": [{"name": "map",
               "previous_version": "1.0.0", "version": "1.0.2", "releases": [
                   {"version": "1.0.1", "changes": ["First fix"]},
@@ -81,14 +82,49 @@ def test_dialog_sections_plain_text_and_versions(theme):
     dialog = AppReleaseDialog(notice, {"ui_theme": theme})
     texts = [label.text() for label in dialog.findChildren(QLabel)]
     for text in ("v0.5.0 je tu!", "Aktualizácie UltraPilotu", "Zmeny pluginov",
-                 "v1.0.1", "v1.0.2", "•  First fix", "•  Second fix"):
+                 "v1.0.1", "v1.0.2", "•  First fix", "•  Second fix",
+                 "Welcome to UltraPilot", "Dôležité vedieť", "•  Requires compatible DLL"):
         assert text in texts
     assert not dialog.isModal()
     dialog.close()
     app.processEvents()
 
 
-def test_release_assets_are_runtime_files_and_version_unchanged():
-    assert update_check.VERSION == "0.4.2"
+def test_release_assets_are_runtime_files_and_version_is_current():
+    assert update_check.VERSION == "0.5.0"
     # Assets are already shipped by the filtered updater.
     assert "assets" in update_check._RUNTIME_DIRS
+
+
+def test_first_launch_with_published_predecessor_shows_welcome_once(tmp_path):
+    root, cache = prepare(tmp_path)
+    metadata = {"releases": {
+        "0.4.2": {"plugin_versions": {}},
+        "0.5.0": {"previous_version": "0.4.2", "intro": "Welcome",
+                  "changes": ["Changed"], "limitations": ["Scope"]}}}
+    (root / "assets" / "app_release_notes.json").write_text(json.dumps(metadata))
+    notice = release_notice(root, cache, "0.5.0", "c")
+    assert notice["previous_version"] == "0.4.2"
+    assert notice["intro"] == "Welcome"
+    assert notice["limitations"] == ["Scope"]
+    acknowledge_release(notice)
+    assert release_notice(root, cache, "0.5.0", "c") is None
+
+
+def test_unversioned_baseline_includes_shared_plugin_table():
+    text = '## Other plugins — 1.0.0 baseline\n| acc | 1.0.0 | Existing ACC. |\n'
+    result = plugin_history(text, {}, {"acc": "1.0.0"})
+    assert result[0]["releases"] == [{"version": "1.0.0", "changes": ["Existing ACC."]}]
+
+
+def test_shipped_release_snapshot_matches_all_plugins():
+    from pathlib import Path
+    from core.app_release import plugin_versions
+    root = Path(__file__).resolve().parents[1]
+    metadata = json.loads((root / "assets" / "app_release_notes.json").read_text(encoding="utf-8"))
+    assert metadata["releases"]["0.5.0"]["plugin_versions"] == plugin_versions(root)
+    history = plugin_history((root / "PLUGIN_CHANGELOG.md").read_text(encoding="utf-8"),
+                             {}, plugin_versions(root))
+    assert len(history) == 12
+    assert all(plugin["releases"] for plugin in history)
+    assert [entry["version"] for entry in next(p for p in history if p["name"] == "map")["releases"]] == ["1.0.0", "1.0.1", "1.0.2", "1.0.3"]

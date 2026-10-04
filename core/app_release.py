@@ -34,6 +34,10 @@ def plugin_history(text, previous, current):
     history = {}
     plugin = release = None
     for line in text.splitlines():
+        # Older plugins share the explicit 1.0.0 baseline table.
+        row = re.match(r"\|\s*([a-z]+)\s*\|\s*(\d+\.\d+\.\d+)\s*\|\s*(.+?)\s*\|\s*$", line)
+        if row:
+            history.setdefault(row[1], {}).setdefault(row[2], [row[3]])
         if line.startswith("## "):
             plugin = line[3:].strip().casefold()
             release = None
@@ -79,18 +83,23 @@ def release_notice(root, cache_dir, version, commit):
     path = Path(cache_dir) / ("app-release-" + key + ".json")
     try:
         current = plugin_versions(root)
+        metadata_path = root / "assets" / "app_release_notes.json"
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        entries = metadata.get("releases", {})
         state = json.loads(path.read_text(encoding="utf-8")) if path.exists() else None
         if state is None:
-            _write(path, {"version": version, "plugins": current, "pending": None})
-            return None
+            predecessor = entries.get(version, {}).get("previous_version")
+            if predecessor and predecessor in entries:
+                state = {"version": predecessor,
+                         "plugins": entries[predecessor].get("plugin_versions", {})}
+            else:
+                _write(path, {"version": version, "plugins": current, "pending": None})
+                return None
         _version(state["version"])
         if state["version"] == version:
             return state.get("pending")
         if _version(version) < _version(state["version"]):
             return None  # Downgrades are not new releases; retain the baseline.
-        metadata_path = root / "assets" / "app_release_notes.json"
-        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
-        entries = metadata.get("releases", {})
         changes = []
         for number, entry in sorted(entries.items(), key=lambda item: _version(item[0])):
             if _version(state["version"]) < _version(number) <= _version(version):
@@ -99,6 +108,8 @@ def release_notice(root, cache_dir, version, commit):
         baseline = entries.get(state["version"], {}).get("plugin_versions", state["plugins"])
         history = (root / "PLUGIN_CHANGELOG.md").read_text(encoding="utf-8")
         notice = {"version": version, "previous_version": state["version"],
+                  "intro": entries.get(version, {}).get("intro", ""),
+                  "limitations": entries.get(version, {}).get("limitations", []),
                   "commit": commit, "changes": changes,
                   "plugins": plugin_history(history, baseline, current),
                   "ack_path": str(path)}

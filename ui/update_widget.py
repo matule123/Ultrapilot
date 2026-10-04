@@ -504,6 +504,8 @@ class AppReleaseDialog(QDialog):
         body = QVBoxLayout(content)
         body.setContentsMargins(0, 8, 8, 8)
         body.setSpacing(14)
+        if notice.get("intro"):
+            label(notice["intro"], body, f"color:{p['muted']};font-size:13px;")
 
         def card(title):
             frame = QFrame()
@@ -521,11 +523,15 @@ class AppReleaseDialog(QDialog):
         if not notice.get("changes"):
             label("Pre túto verziu zatiaľ neboli publikované poznámky k vydaniu.",
                   app, f"color:{p['muted']};")
+        if notice.get("limitations"):
+            limits = card("Dôležité vedieť")
+            for limitation in notice["limitations"]:
+                label("•  " + limitation, limits, f"color:{p['muted']};")
         label("Zmeny pluginov", body, "font-size:19px;font-weight:600;")
         label("Jednotlivé vydania od predchádzajúcej verzie UltraPilotu.",
               body, f"color:{p['muted']};font-size:12px;")
         for plugin in notice.get("plugins", []):
-            before = "v" + plugin['previous_version'] if plugin.get('previous_version') else "nový plugin"
+            before = "v" + plugin['previous_version'] if plugin.get('previous_version') else "bez evidovanej verzie"
             section = card(f"{plugin['name']}  ·  {before} → v{plugin['version']}")
             for release in plugin.get("releases", []):
                 label("v" + release['version'], section,

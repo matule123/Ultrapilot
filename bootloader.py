@@ -235,10 +235,10 @@ def main():
     shared_dict = manager.dict()
     # Resolve release metadata before launching UI processes (no startup race).
     try:
-        from pathlib import Path
+        from core.paths import app_dir
         from core.app_release import release_notice
         from core.update_check import VERSION, git_commit, _update_cache_dir
-        notice = release_notice(Path(__file__).resolve().parent, _update_cache_dir(),
+        notice = release_notice(app_dir(), _update_cache_dir(),
                                 VERSION, git_commit())
         if notice:
             shared_dict["app_release_notice"] = notice
