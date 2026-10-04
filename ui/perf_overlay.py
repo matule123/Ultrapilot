@@ -63,6 +63,9 @@ class PerfOverlay(QWidget):
     def _apply_window_style(self):
         # This reference console stays dark even in the application's light theme.
         self.setStyleSheet(
+            # Override the inherited application-wide QWidget background for
+            # row wrappers and the scroll viewport as well as their labels.
+            "QWidget{background:transparent;border:none;}"
             "PerfOverlay{background:transparent;}"
             "QFrame#PerfSurface{background:#202020;border:1px solid #d6d6d8;border-radius:5px;}"
             "QWidget#PerfRows,QScrollArea{background:transparent;border:none;}"

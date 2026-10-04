@@ -448,6 +448,26 @@ class UiChromeTests(unittest.TestCase):
         self.assertFalse(overlay.timer.isActive())
         overlay.close()
 
+    def test_performance_rows_remain_dark_under_application_theme(self):
+        parent = QWidget()
+        plugins = [("map", 1800.0, 0.0), ("autopilot", 48.0, 0.0)]
+        with mock.patch("UI.perf_overlay._collect",
+                        return_value=(1900.0, 0.0, plugins)):
+            overlay = PerfOverlay(State({"ui_theme": "light"}), parent)
+            try:
+                for theme in ("light", "dark", "light"):
+                    parent.setStyleSheet(stylesheet(theme))
+                    overlay.restyle(theme)
+                    overlay.show()
+                    QApplication.processEvents()
+                    image = overlay.grab().toImage()
+                    for row in overlay._rows.values():
+                        point = row[0].mapTo(overlay, QPoint(2, 9))
+                        self.assertEqual(image.pixelColor(point).name(), "#202020")
+            finally:
+                overlay.close()
+                parent.close()
+
     def test_startup_ram_is_highlighted_without_unescaping_log_text(self):
         from UI.log_panel import _message_html
         rendered = _message_html("Plugin pripravený: <map> · RAM: 45.2 MB (RSS)")
