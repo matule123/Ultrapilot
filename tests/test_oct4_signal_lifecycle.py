@@ -21,7 +21,7 @@ from tests.test_continuous_service_stop import UserObservedGearbox
 from tests.test_rolling_longitudinal_authority import rolling  # noqa: F401
 
 
-def lifecycle(flow, mode=0, *, full_identity=False):
+def lifecycle(flow, mode=0, *, full_identity=False, start=True, initial_color=8):
     state, truck, engine, ap, update, n, clock, acc = strict_flow(flow, mode=mode)
     if full_identity:
         names = {'test-session': '12345678901234567890', 'test-map': 'promods-1.59',
@@ -90,7 +90,9 @@ def lifecycle(flow, mode=0, *, full_identity=False):
             engine._flush_controls()
         return signal
 
-    tick(0, 0.)
+    tick(0, 0., color=initial_color)
+    if not start:
+        return state, truck, engine, ap, tick, n, clock, writes, collected
     n()  # one actual production hotkey, no manual throttle
     tick(0, 0.)
     assert pedal(engine, 'aforward') == pytest.approx(.12 if mode == 0 else 0.)

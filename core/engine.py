@@ -807,7 +807,8 @@ class UltraPilotEngine:
                 return dict(snapshot, valid=False, candidate=None, reason='signal route publication changed during read')
             self._signal_route_token = token
         hold = getattr(self, '_service_brake_hold', None)
-        self._signal_selector.lock = (hold or {}).get('signal_lock')
+        pending_wait = (getattr(self, '_drive_engagement', None) or {}).get('activation_wait')
+        self._signal_selector.lock = (hold or pending_wait or {}).get('signal_lock')
         packet = self.shared_state.get('nav_steering_debug', {}) or {}
         match = self.shared_state.get('lane_match', {}) or {}
         expected = (binding[4], binding[5], binding[6], binding[1], binding[2], binding[3])
@@ -1130,7 +1131,7 @@ class UltraPilotEngine:
                 if not rejection_reason:
                     truck = ((self.shared_state.get("telemetry", {}) or {})
                              .get("truck", {}) or {})
-                    if truck.get("gear") == 0:
+                    if truck.get("gear") == 0 or self._stationary_activation_blocked(truck):
                         request_id = time.monotonic_ns()
                         rejection_reason = self._begin_auto_drive_engagement(
                             request_id)
@@ -1319,14 +1320,14 @@ class UltraPilotEngine:
         try:
             speed = float(truck["speed"])
             stationary = math.isfinite(speed) and abs(speed) < 0.05
-            neutral = int(truck["gear"]) == 0
+            gear = int(truck["gear"])
             frame = int(truck["sdkFrameTimeUs"])
         except (KeyError, TypeError, ValueError, OverflowError):
             return "vehicle speed, gear or SDK frame is unavailable"
         if not stationary:
             return "Pre automatické D musí vozidlo stáť"
-        if not neutral or frame <= 0:
-            return "Pre automatické D chýba čerstvý neutrál alebo SDK frame"
+        if gear < 0 or frame <= 0:
+            return "Pre automatický rozjazd chýba čerstvý dopredný/neutrálny stav alebo SDK frame"
         evidence = self.shared_state.get("ets2_transmission_mode", {}) or {}
         preference = self.shared_state.get("transmission_mode_preference", "auto")
         mode = selected_mode(evidence, preference)
@@ -1356,6 +1357,7 @@ class UltraPilotEngine:
             "transmission_generation": evidence.get("generation"),
             "transmission_preference": preference,
             "identity": identity,
+            "already_forward": gear > 0,
         }
         self.shared_state.update_batch({
             "auto_drive_pending": True,
@@ -1366,6 +1368,21 @@ class UltraPilotEngine:
             "autopilot_disable_reason": "",
         })
         return ""
+
+    def _stationary_activation_blocked(self, truck):
+        """Use the same launch gates for stationary N with an engaged ratio."""
+        try:
+            if abs(float(truck['speed'])) >= .05:
+                return False
+        except (KeyError, TypeError, ValueError):
+            return False  # The normal observation gate rejects invalid speed.
+        from core.longitudinal import launch_rejection, context
+        if launch_rejection(self.shared_state).endswith('braking forbids launch'):
+            return True
+        if hasattr(self, '_signal_reader') or getattr(self, 'ets2la', None):
+            signal = self._signal_observation(truck, context(self.shared_state))
+            return bool(signal.get('valid') and (signal.get('candidate') or {}).get('color') == 'red')
+        return False
 
     def _pin_confirmed_transmission_mode(self, truck=None):
         """Bind an already-moving engagement to any confirmed gearbox mode."""
@@ -1543,6 +1560,70 @@ class UltraPilotEngine:
         logging.info('Signal wait released: locked ID %s, producer generation %s; bounded restart',
                      witness['candidate']['id'], witness['generation'])
 
+    def _wait_stationary_activation(self, pending, truck, signal, brake_reason):
+        """Retain N without propulsion or a new stationary service-brake edge.
+
+        This is a driver-held pending activation, NOT an established software
+        brake hold. Only the existing producer-confirmed clearance contract can
+        advance it. Waiting does not start/renew the bounded launch deadline.
+        """
+        from core.longitudinal import context
+        from core.service_brake_hold import clearance
+        record = pending.get('activation_wait')
+        if record is None:
+            binding = context(self.shared_state)
+            valid_red = (signal and signal.get('valid')
+                and tuple(signal.get('authority', ())) == binding
+                and (signal.get('candidate') or {}).get('color') == 'red')
+            record = dict(command_context=binding, other_stop_unverified=False)
+            if valid_red:
+                record['signal_lock'] = {k: signal[k] for k in (
+                    'authority', 'lifecycle', 'generation', 'frame_us', 'observed_at', 'candidate')}
+            else:
+                record['other_stop_unverified'] = True
+            pending.update(phase='activation_wait', activation_wait=record)
+            logging.info('Autopilot activation waiting: %s; driver holds vehicle, no SDK brake edge',
+                         brake_reason or 'red signal')
+        if tuple(record['command_context']) != context(self.shared_state):
+            self._cancel_auto_drive_engagement_unlocked('identita čakania na aktiváciu sa zmenila')
+            return True
+        if abs(float(truck['speed'])) >= .05 or truck['gear'] < 0:
+            self._cancel_auto_drive_engagement_unlocked('vozidlo sa pohlo počas čakania; prevezmite ovládanie')
+            return True
+        # An obstacle cannot be cleared merely by disappearance. A green may
+        # clear only the signal; independently latched stops remain blocking.
+        traffic = self.shared_state.get('longitudinal_traffic') or {}
+        acc = self.shared_state.get('longitudinal_acc') or {}
+        policy = self.shared_state.get('longitudinal_policy') or {}
+        record['other_stop_unverified'] |= bool(traffic.get('traffic_brake', 0) > 0
+            or acc.get('following_required') or policy.get('reason') == 'toll stop/payment')
+        # A slower traffic publication cannot overrule a newer red/unknown
+        # direct producer acquisition. Never replace its original timestamps.
+        current_green = bool(signal and signal.get('valid')
+            and (signal.get('candidate') or {}).get('color') == 'green')
+        witness = clearance(record, self.shared_state) if current_green else None
+        if not current_green:
+            record.pop('green_candidate', None)
+            record['restart_blocker'] = (signal or {}).get('reason') or 'locked signal is not green'
+        if witness is not None and truck.get('parkBrake') is False:
+            now = time.monotonic()
+            pending.pop('activation_wait')
+            pending.update(phase='launch', started_at=now, deadline_at=now+2.5,
+                start_frame=truck['sdkFrameTimeUs'], last_frame=truck['sdkFrameTimeUs'],
+                last_new_frame_at=now, signal_resume=witness)
+            self.shared_state.update_batch({'autopilot_control_state': 'resuming',
+                'navigation_status': 'Zelená potvrdená – začínam ohraničený rozjazd'})
+            return True  # New SDK frame and final gates precede the first drive.
+        self._bind_longitudinal_output('activation_wait', 0., 0.,
+                                      record.get('restart_blocker', brake_reason))
+        self.controller.release_all()
+        self.shared_state.update_batch({'auto_drive_pending': True,
+            'autopilot_control_state': 'activation_wait',
+            'navigation_status': 'Čakám pred semaforom – vodič musí držať vozidlo brzdou. '
+                + (record.get('restart_blocker') or 'Čakám na potvrdenú zelenú'),
+            CTL_STEERING: 0., CTL_THROTTLE: 0., CTL_BRAKE: 0., CTL_SELECT_DRIVE: None})
+        return True
+
     def _flush_auto_drive_engagement(self, truck):
         """One mode-specific start; fresh forward SDK gear grants full control."""
         pending = getattr(self, "_drive_engagement", None)
@@ -1593,8 +1674,48 @@ class UltraPilotEngine:
             self._cancel_auto_drive_engagement_unlocked(
                 observation_reason)
             return True
+        if (getattr(self.controller, 'mode', None) != 'SCS_SDK'
+                or not getattr(getattr(self.controller, 'scs', None), 'connected', False)):
+            self._cancel_auto_drive_engagement_unlocked('SCS backend počas aktivácie nie je dostupný')
+            return True
+        if gear < 0 or speed < -.10:
+            self._cancel_auto_drive_engagement_unlocked('spiatočka alebo spätný pohyb počas aktivácie')
+            return True
+        if frame < pending['last_frame']:
+            self._cancel_auto_drive_engagement_unlocked('SDK frame sa vrátil späť počas aktivácie')
+            return True
         from core.longitudinal import launch_rejection
         longitudinal_reason = launch_rejection(self.shared_state)
+        if pending.get('phase') == 'activation_wait' and longitudinal_reason and not longitudinal_reason.endswith('braking forbids launch'):
+            self._cancel_auto_drive_engagement_unlocked(longitudinal_reason)
+            return True
+        # The traffic publisher is slower than the physical owner. Inspect the
+        # actual producer-timed sidecar before any probe, without pretending a
+        # Python read creates a new signal generation/observation.
+        signal = None
+        if hasattr(self, '_signal_reader') or getattr(self, 'ets2la', None):
+            from core.longitudinal import context
+            signal = self._signal_observation(truck, context(self.shared_state))
+        red = bool(signal and signal.get('valid')
+                   and (signal.get('candidate') or {}).get('color') == 'red')
+        if (pending.get('phase') == 'activation_wait'
+                or (pending.get('phase') != 'handoff' and abs(speed) < .05
+                    and (red or longitudinal_reason.endswith('braking forbids launch')))):
+            pending['last_frame'] = frame
+            return self._wait_stationary_activation(pending, truck, signal, longitudinal_reason)
+        if (pending.get('phase') == 'handoff' and longitudinal_reason.endswith('braking forbids launch')
+                and speed > .05 and self.shared_state.get('autopilot_active', False)):
+            # A confirmed forward launch encountering a planned stop transfers
+            # to the EXISTING active arbitration/brake path, never release_all.
+            from core.longitudinal import engine_decision
+            from core.service_brake_hold import planned_stop
+            selected, failure = engine_decision(self.shared_state, truck)
+            if not failure and planned_stop(selected):
+                self._drive_engagement = None
+                self.shared_state.update_batch({'simple_auto_launch': None,
+                    'simple_auto_launch_output': None, 'service_brake_resume': None,
+                    'auto_drive_pending': False})
+                return False
         if longitudinal_reason:
             if (longitudinal_reason.startswith(("acc:", "policy:"))
                     and time.monotonic() <= pending["deadline_at"]):
@@ -1798,7 +1919,7 @@ class UltraPilotEngine:
                         "SCS backend nepotvrdil uvoľnenie selectoru D")
                     return True
                 pending["released"] = True
-        if (pending["mode"] == 3 and gear > 0
+        if (pending["mode"] == 3 and gear > 0 and not pending.get('already_forward')
                 and (pending["press_frame"] is None
                      or frame <= pending["press_frame"])
                 and not (pending.get('signal_resume') and pending['press_frame'] is None)):
@@ -1905,7 +2026,7 @@ class UltraPilotEngine:
         if desired and not rejection_reason:
             truck = ((self.shared_state.get("telemetry", {}) or {})
                      .get("truck", {}) or {})
-            if truck.get("gear") == 0:
+            if truck.get("gear") == 0 or self._stationary_activation_blocked(truck):
                 rejection_reason = self._begin_auto_drive_engagement(seq)
                 pending_started = not rejection_reason
                 desired = False
@@ -2835,8 +2956,11 @@ class UltraPilotEngine:
                                  'requires confirmed stop clearance')
                 self.shared_state.update_batch({
                     'autopilot_control_state': 'planned_wait',
-                    'navigation_status': 'Čakám so súvislou prevádzkovou brzdou – '
-                        + next_hold['restart_blocker']})
+                    'navigation_status': (
+                        'Čakám na zelenú – súvislá prevádzková brzda'
+                        if next_hold.get('signal_lock') and next_hold['restart_blocker'] == 'locked signal is not green'
+                        else 'Čakám so súvislou prevádzkovou brzdou – '
+                            + next_hold['restart_blocker'])})
         self.shared_state.set("longitudinal_applied", {
             "throttle": throttle, "brake": brake,
             "source": longitudinal["source"] if longitudinal else "legacy_offline",

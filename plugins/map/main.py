@@ -69,7 +69,7 @@ class Plugin(BasePlugin):
     """
 
     NAME = "map"
-    VERSION = "1.0.4"
+    VERSION = "1.0.5"
 
     def on_start(self):
         logging.info("Map (navigation) plugin started.")
@@ -2295,6 +2295,9 @@ class Plugin(BasePlugin):
         return 1.8
 
     def _publish_road_type(self, pos):
+        self._publish_road_constraint(pos, getattr(self, '_road_type_observation', {}) or {})
+
+    def _publish_road_constraint(self, pos, observation, *, reuse_prepared=False):
         """Classify the road under the truck and publish a speed cap.
 
         Slows the autopilot on narrow/local/dirt sectors (the „poľné / úzke
@@ -2306,7 +2309,15 @@ class Plugin(BasePlugin):
             return
         from core.longitudinal import context, publish
         binding = context(self.sdk.shared_state)
-        rt = net.road_type_at(pos)
+        prepared = getattr(self, '_prepared_road_class', None)
+        if (reuse_prepared and prepared and prepared[0] is net
+                and prepared[1] == tuple(pos)):
+            rt = prepared[2]
+        else:
+            # A changed real pose requires a new spatial classification. Never
+            # give the old-position cap the refreshed steering SDK timestamp.
+            rt = net.road_type_at(pos)
+            self._prepared_road_class = (net, tuple(pos), rt)
         if not rt:
             return
         rtype = rt.get("type", "local")
@@ -2321,7 +2332,6 @@ class Plugin(BasePlugin):
             "dirt": 35,
         }
         cap = caps.get(rtype, 70)
-        observation = getattr(self, "_road_type_observation", {}) or {}
         xyz = observation.get("tractor_position")
         coherent = (isinstance(xyz, (list, tuple)) and len(xyz) == 3
                     and tuple(pos) == (xyz[0], xyz[2]))
@@ -3132,6 +3142,12 @@ class Plugin(BasePlugin):
                             "source_map_key", "source_dataset_fingerprint")},
                         "completed_at": time.monotonic(),
                     })
+                    # Steering used a genuinely refreshed pose after reference
+                    # preparation. Longitudinal constraints must use that pose
+                    # too, not inherit the nearly spent initial-frame lease.
+                    # Publish after steering; this cannot delay its delivery.
+                    self._publish_road_constraint(pos, vehicle_observation,
+                                                  reuse_prepared=True)
                 # Diagnostic profile/traffic serialization is preparation
                 # for a later tick, never a prerequisite of this fresh packet.
                 evidence_worker.offer(

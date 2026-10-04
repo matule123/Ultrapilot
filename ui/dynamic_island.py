@@ -180,8 +180,8 @@ class DynamicIsland(QWidget):
     def _poll_log(self):
         """Read new records written by the engine, UI, HUD and all plugins."""
         state = getattr(self.parentWidget(), "state", None)
-        if (state is not None and state.get('autopilot_active')
-                and state.get('autopilot_control_state') in ('planned_wait', 'resuming')
+        if (state is not None and (state.get('autopilot_active') or state.get('auto_drive_pending'))
+                and state.get('autopilot_control_state') in ('planned_wait', 'resuming', 'activation_wait')
                 and not state.get('safety_hazard_active')
                 and not (state.get('longitudinal_applied') or {}).get('emergency')):
             phase = state.get('autopilot_control_state')

@@ -1,5 +1,25 @@
 # Odložená a nedokončená práca
 
+## Spoločná spoľahlivosť a zapnutie pred červenou – 4. 10. 2026
+
+[PHASE7_JOINT_LIFECYCLE_RELIABILITY_20261004.md](PHASE7_JOINT_LIFECYCLE_RELIABILITY_20261004.md)
+dokladá opravu starého mapového lease prenášaného do čerstvých pozdĺžnych
+povelov a odovzdania rozjazdu plánovanému súvislému brzdeniu. Aktívne čakanie
+po brzdení z jazdy a potvrdená zelená s rozjazdom bez ďalšieho N prešli offline.
+
+Požiadavka „jedno N pri už stojacom kamióne → aktívne Čakám na zelenú so
+samostatným držaním vozidla“ zostáva **BLOCKED** pre jednoduchú automatiku.
+Chýba overený spôsob prevádzkového držania zo státia, ktorý novou SDK brzdovou
+hranou nevyvolá R. Controller nemá oddelený potvrdený povel pre také držanie;
+zmiešaný SDK brzdový údaj nedokazuje vlastníctvo neprerušenej brzdy vodiča.
+Parkovaciu brzdu nepoužívame. Nový čakajúci požiadavkový stav s nulovými SDK
+pedálmi výslovne vyžaduje držanie vodičom a **nie je** splnením tejto požiadavky.
+Jeho pokračovanie po zelenej nie je dôkazom samostatného držania.
+
+Nové runtime zmeny nie sú nasadené. Herná spotreba SDK brzdy, držanie na svahu
+a úplný výsledok najnovšej opravy zostávajú neoverené. Ďalšia jazda sa teraz
+nežiada; najprv celá sada používateľa a samostatné schválenie prípadného nasadenia.
+
 ## Rozjazd po semaforovom čakaní – 4. 10. 2026
 
 [PHASE7_SIGNAL_STOP_RESUME_20261004.md](PHASE7_SIGNAL_STOP_RESUME_20261004.md)

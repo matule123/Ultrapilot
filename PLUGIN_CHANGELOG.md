@@ -4,6 +4,9 @@ Release history for individual plugins. See [PLUGIN_VERSIONS.md](PLUGIN_VERSIONS
 
 ## Core/application fixes — unreleased, 2026-10-04
 
+- Check the producer-timed red signal and longitudinal launch restrictions before a stationary propulsion probe. Keep a driver-held request explicitly pending with zero SDK pedals; this is not autonomous stationary holding or an active autopilot claim.
+- Transfer a confirmed, moving launch handoff to the existing planned service-brake arbitration without a release-all gap. Preserve active continuous waiting, locked-head green clearance and bounded restart.
+- Display active supported signal waiting as “Čakám na zelenú”; display stationary activation without a forward-started brake witness as requiring the driver to hold the vehicle. See [PHASE7_JOINT_LIFECYCLE_RELIABILITY_20261004.md](PHASE7_JOINT_LIFECYCLE_RELIABILITY_20261004.md) for the remaining stationary-hold blocker and reproduced lease budgets.
 - Keep the planned service-stop witness independent of passive diagnostic truncation. Retain only fixed consumed fields; real joint ACC/DrivePolicy/signal inputs must not erase brake continuity evidence.
 - Seed the existing continuous service-brake state from an actual positive planned brake write during the already validated, bounded moving zero-ratio transition. Do not authorize anonymous neutral, stationary re-press, reverse or expired launch.
 - Compact identical metadata within an immutable pedal-journal decision, restoring explicit fields on reading/export. Account for shared provenance once while preserving the 64 KB/128-event limits and ordered paired writes.
@@ -11,6 +14,14 @@ Release history for individual plugins. See [PLUGIN_VERSIONS.md](PLUGIN_VERSIONS
 - Verification and live limitations: [PHASE7_SIGNAL_LIFECYCLE_REGRESSION_20261004.md](PHASE7_SIGNAL_LIFECYCLE_REGRESSION_20261004.md).
 
 ## Map
+
+### 1.0.5 — 2026-10-04
+
+**Fixed**
+
+- Classify and publish the road speed constraint from the actual SDK pose used after slow reference preparation, retaining its original frame and observation time. Prevent the initial road-input lease from prematurely expiring a newer longitudinal command.
+- Reuse prepared classification only for the identical pose and RoadNetwork object; query the existing classifier again when the real pose changes. Publish this constraint after the steering packet so classification cannot delay that packet's delivery.
+- Preserve the original minimum input-expiry propagation, 500 ms freshness checks, road-cap values, geometry and both controllers. No old input receives a new timestamp.
 
 ### 1.0.4 — 2026-10-04
 
