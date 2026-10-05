@@ -69,7 +69,7 @@ class Plugin(BasePlugin):
     """
 
     NAME = "map"
-    VERSION = "1.0.6"
+    VERSION = "1.0.7"
 
     def on_start(self):
         logging.info("Map (navigation) plugin started.")
@@ -2800,7 +2800,7 @@ class Plugin(BasePlugin):
                 self.tags.nav_steering = 0.0
                 return
             curve_profile = self.active_route.curve_profile_ahead(pos, heading,
-                curve_preview_horizon_m(speed, self.sdk.get("acc_target_speed")))
+                curve_preview_horizon_m(speed, self.sdk.get("acc_target_speed")), speed)
             idx = self.active_route.closest_index(pos)
             upcoming = self._distance_window(
                 self.active_route.points[idx:], 220.0)
@@ -3034,7 +3034,7 @@ class Plugin(BasePlugin):
                     actuator_calibration_failure=(
                         actuator_calibration.failure_reason))
                 curve_profile = route.curve_profile_ahead(pos, heading,
-                    curve_preview_horizon_m(speed, self.sdk.get("acc_target_speed")))
+                    curve_preview_horizon_m(speed, self.sdk.get("acc_target_speed")), speed)
                 curve_profile = self._roundabout_speed_profile(
                     snapshot, curve_profile, (getattr(route, 'last_steering_debug', {})
                                              or {}).get('tracking_progress_m'))

@@ -1,5 +1,29 @@
 # Odložená a nedokončená práca
 
+## Kandidát ACC, nájazd a uzamknutý semafor – 5. 10. 2026
+
+[PHASE7_TRAFFIC_APPROACH_AND_SIGNAL_20261005.md](PHASE7_TRAFFIC_APPROACH_AND_SIGNAL_20261005.md)
+dokladá opravu získania pasívneho/neúčinného ACC kandidáta, výberu vzdialenej
+ostrejšej zákruty namiesto bližšieho účinného obmedzenia a straty uzamknutého
+semafora po prejdení SDK bodom aj pri odovzdaní rozjazdu. Offline reprodukcie
+prešli; volant a ochranné ACC scenáre zostali numericky nezmenené.
+
+Inštalácia pri audite obsahovo zodpovedala vstupnému 9350be7 po normalizácii
+LF/CRLF. Nové zmeny sa nenasadili. Historické ID a účinnosť ACC kandidáta
+20:29:05 neboli uložené; jeho vek a deadline dokazujú, že nešlo o expiráciu.
+Presné fyzické vjazdy oboch používateľom označených objazdov nie sú samostatne
+identifikované. Existujúci cieľ 35 km/h ostáva iba na identifikovaných objazdoch.
+
+Zdroj semafora neposkytuje potvrdenú stop čiaru ani vzdialenosť predku vozidla
+od SDK referencie. Zastavenie pred fyzickou čiarou preto zostáva neoverené;
+poloha hlavy sa za čiaru nevydáva. Strata získaného ochranného cieľa stále
+vyžaduje bezpečné odovzdanie, keď zdroj nevie potvrdiť voľnú cestu. Samostatné
+držanie pri novej aktivácii zo státia ostáva predchádzajúcim blokátorom.
+
+V modeli sa vjazd spomalil včas, ale jerk pri jitteri nie je všade lepší.
+Komfort, živá spotreba SDK brzdy a úplný herný výsledok ostávajú otvorené.
+Celú sadu spustí používateľ; ďalšia jazda sa teraz nežiada.
+
 ## Odovzdávanie pozdĺžnych rozhodnutí – 5. 10. 2026
 
 [PHASE7_LONGITUDINAL_HANDOFF_20261005.md](PHASE7_LONGITUDINAL_HANDOFF_20261005.md)

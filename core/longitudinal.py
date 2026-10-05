@@ -485,7 +485,12 @@ def _engine_decision(state, truck, now=None, *, diagnostic=None, rejection_info=
         # Target loss is not clear-road evidence, including between ACC ticks.
         # The old candidate cannot outlive its source's original short lease.
         if not isinstance(following, dict) or following.get('status') != 'candidate':
-            return reject('ACC target unavailable or unconfirmed departure', traffic)
+            result = reject('ACC target unavailable or unconfirmed departure', traffic)
+            if rejection_info is not None:
+                rejection_info['following_target_id'] = current_acc.get('following_target_id')
+                rejection_info['following_status'] = following.get('status') if isinstance(following, dict) else None
+                rejection_info['following_confirmed'] = current_acc.get('following_confirmed')
+            return result
         try:
             cap = number(following['speed_cap_mps'], 0., 140.)
             if float(truck['speed']) > cap:

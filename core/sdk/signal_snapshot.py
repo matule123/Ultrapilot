@@ -20,7 +20,8 @@ def compact(signal):
               'frame_us','observed_at','relevance') if k in signal}
     candidate = signal.get('candidate')
     if candidate:
-        result['candidate'] = {k: candidate[k] for k in ('id','x','y','z','color')}
+        result['candidate'] = {k: candidate[k] for k in (
+            'id','x','y','z','color','distance','distance_basis','stop_line_verified') if k in candidate}
     return result
 
 
@@ -115,12 +116,21 @@ class RouteSignalSelector:
             if ego is None or ego[0] > 1.2:
                 raise ValueError('signal route localization unavailable')
             candidates = []
+            locked_id = self.lock['candidate']['id'] if self.lock else None
             for light in snapshot['lights']:
                 # A traffic head faces against the directed approach tangent.
                 actor = dict(light, yaw=float(light.get('yaw', truck['rotation']+math.pi))+math.pi)
-                p = self.route._project(actor, max(0., ego[1]-.5), ego[1]+120.)
-                if p is not None and p[0] <= 6. and p[1] > ego[1]:
-                    candidates.append(dict(light, distance=p[1]-ego[1], lateral_distance=p[0]))
+                # Acquisition remains strictly ahead. Once braking locked this
+                # same head, retain its actual fresh observation across passage
+                # of the SDK reference. Do not acquire a different behind head,
+                # jump to another route lap, or fabricate stop-line geometry.
+                retained = light['id'] == locked_id
+                low = max(0., ego[1] - (20. if retained else .5))
+                p = self.route._project(actor, low, ego[1]+120.)
+                if p is not None and p[0] <= 6. and (retained or p[1] > ego[1]):
+                    candidates.append(dict(light, distance=p[1]-ego[1], lateral_distance=p[0],
+                        route_progress_m=p[1], distance_basis='sdk_reference_to_signal_head',
+                        stop_line_verified=False))
             candidates.sort(key=lambda x: (x['distance'], x['id']))
             if self.lock:
                 if self.lock['authority'] != authority or self.lock['lifecycle'] != snapshot['lifecycle']:

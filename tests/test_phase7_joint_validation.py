@@ -30,11 +30,11 @@ def producers(state):
     return policy, eco
 
 
-def offer_route_candidate(state, engine, clock):
+def offer_route_candidate(state, engine, clock, *, index=70, speed=10.):
     truck = state.get('telemetry')['truck']
     points = arc()
     binding = route_input(state, engine, truck, points)
-    captured = capture([car_on(points, 70, speed=10.)], clock[0])
+    captured = capture([car_on(points, index, speed=speed)], clock[0])
     captured = replace(captured, session=str(binding[1]))
     following = engine._route_lead_observation(captured, truck, binding)
     assert following['status'] == 'candidate'
@@ -88,7 +88,10 @@ def test_one_n_joint_launch_then_constraint_following_emergency_and_disable(flow
 
     # Same live consumers now combine actual route selection, map and curve.
     dt = update(8, 12., dt=.08)
-    following = offer_route_candidate(state, engine, clock)
+    # A nearby slower vehicle must actually constrain the road/curve plan;
+    # an irrelevant distant candidate must not acquire following ownership.
+    following = offer_route_candidate(state, engine, clock, index=40, speed=2.)
+    assert following['speed_cap_mps'] < 30. / 3.6
     current = state.get('telemetry')['truck']
     publish(state, current, 'road', speed_cap_kmh=30.)
     debug = state.get('nav_steering_debug')

@@ -807,8 +807,10 @@ class UltraPilotEngine:
                 return dict(snapshot, valid=False, candidate=None, reason='signal route publication changed during read')
             self._signal_route_token = token
         hold = getattr(self, '_service_brake_hold', None)
-        pending_wait = (getattr(self, '_drive_engagement', None) or {}).get('activation_wait')
-        self._signal_selector.lock = (hold or pending_wait or {}).get('signal_lock')
+        engagement = getattr(self, '_drive_engagement', None) or {}
+        pending_wait = engagement.get('activation_wait')
+        self._signal_selector.lock = ((hold or pending_wait or {}).get('signal_lock')
+                                     or engagement.get('signal_resume'))
         packet = self.shared_state.get('nav_steering_debug', {}) or {}
         match = self.shared_state.get('lane_match', {}) or {}
         expected = (binding[4], binding[5], binding[6], binding[1], binding[2], binding[3])

@@ -4,6 +4,11 @@ Release history for individual plugins. See [PLUGIN_VERSIONS.md](PLUGIN_VERSIONS
 
 ## Core/application fixes — unreleased, 2026-10-05
 
+- Retain the same fresh locked signal head across passage of the SDK reference within a bounded 20 m backward lookup, and preserve its lock through the existing bounded restart handoff. Keep ahead-only acquisition, authority, lifecycle, placement, ambiguity and green-generation checks.
+- Label signal distance as SDK-reference-to-head with unverified stop-line geometry; preserve it in the existing compact diagnostic receipt. Do not invent a painted line or vehicle-front offset.
+- Record the last protective ACC target ID, status and explicit unconfirmed flag in the existing first-fault details without replacing original identity/time evidence.
+- Paired offline reproduction and remaining physical-entry/stop-line limitations: [PHASE7_TRAFFIC_APPROACH_AND_SIGNAL_20261005.md](PHASE7_TRAFFIC_APPROACH_AND_SIGNAL_20261005.md).
+
 - Propagate the original limiting input's deadline provenance through effective longitudinal dependencies; do not let empty optional traffic or nonbinding higher limits expire unrelated fresh drive decisions.
 - Use one activation/route-bound, finite zero-drive refresh transition in Autopilot and Engine. Retain the original evidence times and 500 ms limits, refuse expired pedals, and stop safely if a required producer does not recover within the fixed bound.
 - Recheck identity and expiry after diagnostic binding and opposing-pedal release, immediately before positive backend I/O. Record actual write start/return and remaining validity without claiming game consumption.
@@ -24,6 +29,12 @@ Release history for individual plugins. See [PLUGIN_VERSIONS.md](PLUGIN_VERSIONS
 - Verification and live limitations: [PHASE7_SIGNAL_LIFECYCLE_REGRESSION_20261004.md](PHASE7_SIGNAL_LIFECYCLE_REGRESSION_20261004.md).
 
 ## Map
+
+### 1.0.7 — 2026-10-05
+
+- Select the most restrictive existing distance/speed curve envelope over the unchanged preview samples, so a sharper distant apex cannot hide an earlier bend. Supply actual SDK speed at both Map production query sites; preserve geometric-only callers.
+- Preserve LanePath, lateral controller, steering scheduling, freshness limits and the existing topology-specific 35 km/h roundabout ceiling. Ordinary roads receive no global roundabout cap.
+- Earlier curve-entry restriction is verified offline; uniform jerk improvement and actual physical entry speeds remain unverified. See [PHASE7_TRAFFIC_APPROACH_AND_SIGNAL_20261005.md](PHASE7_TRAFFIC_APPROACH_AND_SIGNAL_20261005.md).
 
 ### 1.0.6 — 2026-10-04
 
@@ -169,6 +180,12 @@ Commit: `3ef65c7`.
 - Comfort gains and ordinary pedal ramps are unchanged. Offline arbitration verification is not a game-comfort result.
 
 ## ACC
+
+### 1.1.4 — 2026-10-05
+
+- Acquire a protective following dependency only within the current active/pending activation when a candidate constrains the effective plan, is slower than actual motion or is hazardous. A passive or nonbinding candidate must not create a later target-loss technical stop.
+- Clear acquired target state across passive/disabled/changed-authority states; retain fail-closed handling for loss of an acquired limiting or hazardous target. Empty legacy traffic is not confirmed clear coverage.
+- Preserve the acquired target ID in the existing command/fault receipt with explicit unconfirmed status; keep the speed controller and protective following law unchanged.
 
 ### 1.1.3 — 2026-10-05
 

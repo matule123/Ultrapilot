@@ -18,7 +18,7 @@ class Plugin(BasePlugin):
     """
 
     NAME = "acc"
-    VERSION = "1.1.3"
+    VERSION = "1.1.4"
 
     def on_start(self):
         logging.info("ACC Plugin started with bounded speed PID control.")
@@ -39,6 +39,7 @@ class Plugin(BasePlugin):
         self._was_driving = False
         self._following_binding = None
         self._followed_target = False
+        self._following_target_id = None
         self._following_fault = ''
 
     def on_stop(self):
@@ -47,6 +48,7 @@ class Plugin(BasePlugin):
         self.speed_pid.reset()
         self._last_observation = None
         self._followed_target = False
+        self._following_target_id = None
         self._following_binding = None
         self._following_fault = ''
         self.sdk.set('acc_following_status', 'disabled')
@@ -85,6 +87,13 @@ class Plugin(BasePlugin):
         if binding != self._following_binding:
             self._following_binding = binding
             self._followed_target = False
+            self._following_target_id = None
+            self._following_fault = ''
+        owns_activation = bool(self.sdk.get('autopilot_active', False)
+                               or self.sdk.get('auto_drive_pending', False))
+        if not owns_activation:
+            self._followed_target = False
+            self._following_target_id = None
             self._following_fault = ''
         following = traffic.get('following') if traffic else None
         following_cap = None
@@ -97,7 +106,6 @@ class Plugin(BasePlugin):
                         or not isinstance(following.get('target_id'), str)
                         or not following['target_id']):
                     raise ValueError('invalid following constraint')
-                self._followed_target = True
                 following_reason = 'observed route candidate; reliable sensor freshness unproven'
             except (KeyError, TypeError, ValueError, OverflowError):
                 following_cap = None
@@ -191,6 +199,15 @@ class Plugin(BasePlugin):
             logging.debug(f"ACC: Adjusting target speed to {effective_target_speed:.1f} km/h due to traffic")
 
         if following_cap is not None:
+            # A geometric candidate which cannot lower the current cruise/road/
+            # curve plan is NOT an acquired protective following dependency.
+            # Losing it is not loss of drive authority. A candidate which limits
+            # us, is slower than us, or is hazardous still latches protection;
+            # its absence is never clear-road evidence.
+            if owns_activation and (following_cap < effective_target_speed
+                    or following_cap < speed_kmh or following.get('emergency') is True):
+                self._followed_target = True
+                self._following_target_id = following['target_id']
             effective_target_speed = min(effective_target_speed, following_cap)
             hard_limits.append(following_cap)
             if following_cap < 3.6 and speed < 1.:
@@ -337,4 +354,6 @@ class Plugin(BasePlugin):
         publish(self.sdk.shared_state, truck, "acc", binding=binding, evidence_valid=valid,
                 throttle=throttle, brake=brake, emergency=False,
                 requested_speed_kmh=target, constrained_speed_kmh=target,
-                speed_control_reason=reason, following_required=self._followed_target)
+                speed_control_reason=reason, following_required=self._followed_target,
+                following_target_id=self._following_target_id,
+                following_confirmed=False)

@@ -888,8 +888,13 @@ class Route:
                 STEERING_CURVATURE_SAMPLE_WEIGHTS))
 
     def curve_profile_ahead(self, pos: Point, heading: float,
-                            horizon_m: float = CURV_WINDOW_M) -> dict:
-        """Sharpest validated local curve in the forward driving horizon."""
+                            horizon_m: float = CURV_WINDOW_M,
+                            speed_ms: Optional[float] = None) -> dict:
+        """Most restrictive distance/speed envelope, not merely sharpest curve.
+
+        A sharper but distant apex cannot hide an earlier bend. This changes
+        longitudinal preview selection only; lateral reference/solver are intact.
+        """
         progress = self.tracking_progress(pos, heading)
         remaining = max(0.0, self._cumulative_m[-1] - progress)
         horizon = min(max(0.0, float(horizon_m)), remaining)
@@ -904,7 +909,16 @@ class Route:
                   for offset in offsets
                   for curvature in (self._curvature_at_progress(
                       progress + offset),)]
-        magnitude, distance, signed = max(ranked, default=(0.0, 0.0, 0.0))
+        if speed_ms is None:
+            # Preserve the historical geometric query for curvature_ahead and
+            # isolated callers. Actuator-facing Map preview supplies real speed.
+            magnitude, distance, signed = max(ranked, default=(0.0, 0.0, 0.0))
+        else:
+            from core.longitudinal import curve_speed_envelope
+            magnitude, distance, signed = min(ranked, key=lambda item: (
+                curve_speed_envelope(1e6 if item[0] < 1e-9 else 1./item[0],
+                                     item[1], speed_ms)[0], item[1]),
+                default=(0.0, 0.0, 0.0))
         radius = 1e6 if magnitude < 1e-9 else 1.0 / magnitude
         return {
             "radius_m": float(radius),
