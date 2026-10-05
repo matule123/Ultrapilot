@@ -11,6 +11,10 @@ from core.transmission_mode import vehicle_control_observation, vehicle_control_
 
 SCHEMA = 1
 LEASE_S = .5
+# Two 60 Hz executor opportunities plus one producer period and RPC reserve.
+# This is a zero-drive handoff budget, NOT an extension of any input lease.
+HANDOFF_RESERVE_S = .05
+HANDOFF_WAIT_S = .1
 COMMAND_KEY = "longitudinal_command"
 PRIORITY = {"emergency": 100, "safety": 90, "obstacle": 80, "traffic": 70,
             "maneuver": 60, "curve": 50, "acc": 40, "cruise": 10}
@@ -103,17 +107,64 @@ def exclusive(throttle, brake):
     return (0. if brake > 0 else throttle), brake
 
 
+def dependency(value):
+    """Small immutable lease receipt; a read time is never an observation."""
+    if not isinstance(value, dict):
+        return None
+    basis = value.get('deadline_basis')
+    if not isinstance(basis, dict):
+        basis = {k: value.get(k) for k in ('source', 'sdk_frame_us',
+                  'observation_timestamp', 'expires_at')}
+        basis['kind'] = ('spatial_observation' if value.get('source') in ('road', 'curve')
+                         else 'dynamic_evidence' if value.get('source') == 'traffic'
+                         else 'decision')
+    return dict(source=value.get('source'), expires_at=value['expires_at'],
+                deadline_basis=dict(basis))
+
+
+def traffic_required(value):
+    """No empty/uncovered buffer proves clear road; it also authorizes no drive.
+
+    A positive demand, latched candidate or actual light/lead constraint remains
+    required evidence. Empty optional perception isn't a cruise lease owner.
+    """
+    if not value:
+        return False
+    following = value.get('following') or {}
+    light = value.get('light') or {}
+    return bool(max(value.get('traffic_brake', 0.), value.get('light_brake', 0.)) > 0
+        or following.get('status') == 'candidate' or value.get('lead_distance')
+        or light.get('color') in ('red', 'yellow'))
+
+
 def packet(state, truck, source, *, binding=None, evidence_valid=True, **values):
     """Do not make an old/missing observation fresh at publication time."""
     binding = context(state) if binding is None else binding
     observed, reason = vehicle_control_observation(state, truck)
     observed_at = observed.get("observed_at")
     expires = (float(observed_at) + LEASE_S) if isinstance(observed_at, (int, float)) else 0.
-    expires = min(expires, values.pop("expires_at", expires))
+    own_expiry = expires
+    inputs = [dependency(v) for v in values.pop('dependencies', ()) if v is not None]
+    inherited = values.pop('expires_at', expires)
+    expires = min(expires, inherited, *(v['expires_at'] for v in inputs))
+    basis = dict(source=source,
+                 kind=('spatial_observation' if source in ('road', 'curve') else
+                       'dynamic_evidence' if source == 'traffic' else 'vehicle_observation'),
+                 sdk_frame_us=truck.get('sdkFrameTimeUs'),
+                 observation_timestamp=observed_at, expires_at=own_expiry)
+    winners = [v for v in inputs if v['expires_at'] == expires]
+    if winners:
+        basis = dict(sorted(winners, key=lambda v: str(v['source']))[0]['deadline_basis'])
+    elif expires < own_expiry:
+        basis = dict(source='unattributed_input', kind='legacy_deadline', expires_at=expires)
+    computed = time.monotonic()
     return dict(schema_version=SCHEMA, source=source, context=binding,
                 sdk_frame_us=truck.get("sdkFrameTimeUs"),
                 observation_timestamp=observed_at, expires_at=expires,
-                computed_at=time.monotonic(),
+                computed_at=computed, deadline_basis=basis, lease_dependencies=inputs,
+                remaining_at_computation_s=expires-computed,
+                handoff_required=(source in ('acc', 'autopilot')
+                    and not values.get('emergency') and expires-computed < HANDOFF_RESERVE_S),
                 valid=evidence_valid is True and not reason and observed.get("valid") is True
                     and binding == context(state), **values)
 
@@ -138,6 +189,8 @@ def rejection(value, binding, now):
             return "longitudinal observation is stale or incoherent"
     except (KeyError, TypeError, ValueError, OverflowError):
         return "incomplete longitudinal observation"
+    if value.get('handoff_required') is True:
+        return 'longitudinal decision needs refresh'
     return ""
 
 
@@ -148,7 +201,8 @@ def rejection_details(value, binding, now):
     if not isinstance(value, dict):
         return dict(result, packet_status='MISSING')
     result.update({k: value.get(k) for k in ('sdk_frame_us', 'observation_timestamp',
-        'computed_at', 'expires_at', 'valid', 'source', 'decision_source', 'reason')})
+        'computed_at', 'expires_at', 'valid', 'source', 'decision_source', 'reason',
+        'deadline_basis', 'handoff_required', 'remaining_at_computation_s')})
     actual = value.get('context')
     result['actual_context'] = actual
     if isinstance(actual, (tuple, list)):
@@ -165,6 +219,17 @@ def rejection_details(value, binding, now):
     return result
 
 
+def write_rejection(value, binding, now):
+    """Physical-boundary check, including time spent binding diagnostics/IPC."""
+    if tuple(value['context']) != tuple(binding):
+        return 'longitudinal identity or activation changed before write'
+    if not 0. <= now - value['observation_timestamp'] <= LEASE_S:
+        return 'longitudinal observation expired or incoherent before write'
+    if now > value['expires_at']:
+        return 'longitudinal input lease expired before write'
+    return ''
+
+
 def publish(state, truck, source, **values):
     value = packet(state, truck, source, **values)
     state.set("longitudinal_" + source, value)
@@ -177,6 +242,13 @@ def read(state, source, now=None, *, required=False, binding=None, diagnostic=No
     compared_binding = context(state) if binding is None else binding
     checked_at = time.monotonic() if now is None else now
     reason = rejection(value, compared_binding, checked_at)
+    if reason in ('longitudinal decision needs refresh', 'longitudinal observation is stale or incoherent'):
+        # One bounded reread: publication may have overtaken the first RPC.
+        # Validate the returned immutable value after reading, never retimestamp.
+        newer = state.get('longitudinal_' + source)
+        rechecked = time.monotonic() if now is None else now
+        if not rejection(newer, compared_binding, rechecked):
+            value, reason, checked_at = newer, '', rechecked
     if not reason:
         fields = {"acc": ("throttle", "brake"), "policy": ("brake",),
                   "traffic": ("traffic_brake", "light_brake"), "eco": ("smoothing",)}
@@ -242,6 +314,8 @@ def finalize(state, truck, throttle, brake, decision, binding):
                    decision_source=decision.get("source", "autopilot"),
                    reason=decision.get("reason", "autopilot state"),
                    emergency=bool(decision.get("emergency", False)),
+                   dependencies=decision.get('dependencies', ()),
+                   refresh_pending=decision.get('refresh_pending', False),
                    expires_at=decision.get("expires_at", float("inf")))
     # Manager.dict assigns this complete dictionary as one value. Scalars are
     # compatibility/UI mirrors; the production Engine never mixes them.
@@ -249,7 +323,109 @@ def finalize(state, truck, throttle, brake, decision, binding):
     return value
 
 
+def refresh_handoff(state, truck, value, binding, reason):
+    """Same bounded, zero-drive transition for Plugin and physical Engine.
+
+    A still-valid expiring leaf, or a demonstrably newer live leaf/SDK sample,
+    permits a bounded ZERO-drive transition. It never permits expired pedals.
+    A wait already started on valid evidence can finish within its fixed bound;
+    missing/invalid sources, foreign identity and faults cannot start a wait.
+    """
+    now = time.monotonic()
+    if reason.partition(': ')[0] in ('acc', 'policy', 'traffic'):
+        reason = reason.partition(': ')[2]
+    if (reason not in ('longitudinal decision needs refresh',
+                       'longitudinal observation is stale or incoherent',
+                       'longitudinal input lease expired before write')
+            or not isinstance(value, dict) or value.get('valid') is not True
+            or tuple(value.get('context', value.get('actual_context', ()))) != tuple(binding)
+            or vehicle_control_observation_rejection(state, truck, now)
+            or state.get('autopilot_control_state') == 'controlled_stop'):
+        return None
+    try:
+        obs, computed, expiry = (float(value[k]) for k in (
+            'observation_timestamp', 'computed_at', 'expires_at'))
+        if not 0 < obs <= computed <= now or now-obs > LEASE_S or expiry > obs+LEASE_S:
+            return None
+        basis = value['deadline_basis']
+        source = basis['source']
+        current = state.get('longitudinal_refresh_request')
+        same_request = (isinstance(current, dict)
+            and tuple(current.get('context', ())) == tuple(binding))
+        if source == 'curve':
+            fresh = curve_input(state, binding=binding)
+        elif source == 'route_projection':
+            fresh = projection_input(state, binding=binding)
+        elif source in ('road', 'traffic'):
+            fresh, failure = read(state, source, binding=binding, required=True)
+            if failure and not failure.endswith('longitudinal observation is stale or incoherent'):
+                return None
+        elif basis.get('kind') == 'vehicle_observation':
+            observed, invalid = vehicle_control_observation(state, truck)
+            fresh = None if invalid else dict(expires_at=observed['observed_at'] + LEASE_S)
+        else:
+            return None
+        newer = fresh and fresh['expires_at'] > expiry and fresh['expires_at']-now >= HANDOFF_RESERVE_S
+        expiring = fresh and fresh['expires_at'] == expiry and now <= expiry
+        if not (newer or expiring or same_request and now <= current['expires_at']):
+            return None
+    except (KeyError, TypeError, ValueError, OverflowError):
+        return None
+    if not same_request:
+        # Both processes can notice the SAME rejected decision concurrently.
+        # Anchor the bound to its ORIGINAL deadline, not a racing read time.
+        current = dict(context=binding, started_at=now, expires_at=expiry+HANDOFF_WAIT_S,
+                       reason=reason, rejected=value, source=source)
+        state.set('longitudinal_refresh_request', current)
+    if now > current['expires_at']:
+        return None  # Do not restart the wait on every rejected producer tick.
+    if tuple(binding) != context(state):
+        return None
+    return current
+
+
+def handoff_decision(state, truck, value, binding, reason):
+    request = refresh_handoff(state, truck, value, binding, reason)
+    if request is None:
+        return None
+    fresh = packet(state, truck, 'engine_handoff', binding=binding,
+        throttle=0., brake=0., decision_source='decision_refresh',
+        reason='waiting for a new longitudinal decision', emergency=False,
+        expires_at=request['expires_at'])
+    # New ZERO-drive transition, not a relabeled prior pedal command.
+    # A newer urgent demand always bypasses this wait.
+    traffic, _ = read(state, 'traffic', binding=binding)
+    if traffic and traffic['traffic_brake'] > .7:
+        fresh.update(brake=1., emergency=True, source='traffic_emergency',
+                     reason='emergency brake demand')
+        fresh['expires_at'] = min(fresh['expires_at'], traffic['expires_at'])
+    fresh['context'] = binding
+    fresh['sdk_frame_us'] = truck['sdkFrameTimeUs']
+    fresh['source'] = fresh['decision_source'] if not fresh['emergency'] else 'traffic_emergency'
+    fresh['refresh_pending'] = True
+    return fresh
+
+
 def engine_decision(state, truck, now=None, *, diagnostic=None, rejection_info=None):
+    details = rejection_info if rejection_info is not None else {}
+    result, reason = _engine_decision(state, truck, now, diagnostic=diagnostic, rejection_info=details)
+    request = state.get('longitudinal_refresh_request')
+    if reason and isinstance(request, dict) and (state.get(COMMAND_KEY) or {}).get('refresh_pending'):
+        # Plugin already requested this SAME bounded transition. Do not use the
+        # newly zeroed packet as provenance for the rejected original decision.
+        compared, original = request['rejected'], request['reason']
+    else:
+        compared, original = details, reason
+    if reason:
+        result = handoff_decision(state, truck, compared, context(state), original)
+        if result is not None:
+            reason = ''
+            if diagnostic is not None:
+                diagnostic['selected'] = dict(result)
+    return result, reason
+
+
+def _engine_decision(state, truck, now=None, *, diagnostic=None, rejection_info=None):
     """Final fail-closed pedal boundary, including newer emergency evidence."""
     # A producer can publish during any RPC. A clock captured before the read
     # must not label that complete, genuinely newer packet as future-dated.
@@ -261,7 +437,9 @@ def engine_decision(state, truck, now=None, *, diagnostic=None, rejection_info=N
         if rejection_info is not None and not rejection_info:
             rejection_info.update(rejection_details(compared, expected, decision_time()))
             rejection_info['vehicle_sdk_frame_us'] = truck.get('sdkFrameTimeUs')
-            rejection_info['vehicle_observation'] = truck.get('_control_observation')
+            observed = truck.get('_control_observation') or {}
+            rejection_info['vehicle_observation'] = {k: observed.get(k) for k in
+                ('sdk_frame_us', 'observed_at', 'valid', 'reason')}
         return None, reason
     if diagnostic is not None:
         from core.navigation.longitudinal_diagnostics import bounded_input
@@ -349,11 +527,21 @@ def engine_decision(state, truck, now=None, *, diagnostic=None, rejection_info=N
         return reject("invalid longitudinal safety demand")
     if binding != context(state):
         return reject("longitudinal identity changed during arbitration", value, context(state))
+    dependencies = [value]
+    if traffic_required(traffic):
+        dependencies.append(traffic)
+    if current_acc and (current_acc['brake'] > 0 or current_acc['throttle'] == 0):
+        dependencies.append(current_acc)
+    if policy and policy['brake'] > 0:
+        dependencies.append(policy)
     result.update(context=binding, sdk_frame_us=value["sdk_frame_us"],
                   observation_timestamp=value["observation_timestamp"],
                   computed_at=value["computed_at"],
-                  expires_at=min([value["expires_at"], *(p["expires_at"]
-                      for p in (traffic, current_acc, policy) if p is not None)]))
+                  refresh_pending=bool(value.get('refresh_pending')),
+                  expires_at=min(p['expires_at'] for p in dependencies))
+    winner = min(dependencies, key=lambda p: (p['expires_at'], p.get('source', '')))
+    result['deadline_basis'] = dependency(winner)['deadline_basis']
+    result['lease_dependencies'] = [dependency(p) for p in dependencies]
     if pending_service and result["brake"] == 0 and not result["emergency"]:
         result.update(source=pending_source, reason="service brake pending autopilot ramp")
     elif pending_source == "acc_coast" and result["brake"] == 0 and not result["emergency"]:
@@ -369,7 +557,8 @@ def engine_decision(state, truck, now=None, *, diagnostic=None, rejection_info=N
     if not reason:
         reason = rejection(value, binding, checked_at)
     if not reason:
-        for source, consumed in (("traffic", traffic), ("acc", current_acc), ("policy", policy)):
+        for source, consumed in (("traffic", traffic if traffic_required(traffic) else None),
+                                 ("acc", current_acc), ("policy", policy)):
             if consumed is not None:
                 failure = rejection(consumed, binding, checked_at)
                 if failure:
@@ -420,8 +609,39 @@ def engine_decision(state, truck, now=None, *, diagnostic=None, rejection_info=N
         # The same immutable traffic evidence already resides in inputs. Do
         # not duplicate actor fields in the bounded journal's selected command.
         diagnostic['selected'] = {k: v for k, v in result.items()
-                                  if k not in ('emergency_evidence', 'stopping_evidence')}
+                                  if k not in ('emergency_evidence', 'stopping_evidence', 'lease_dependencies')}
     return result, ""
+
+
+def projection_input(state, *, binding=None, debug=None):
+    """Receipt for the actual Map observation used for traffic projection.
+
+    This identifies a position-dependent navigation calculation, not the age
+    of the traffic DLL buffer or a confirmed actor-to-lane association.
+    """
+    binding = context(state) if binding is None else binding
+    debug = (state.get('nav_steering_debug') or {}) if debug is None else debug
+    identity = debug.get('trajectory_identity')
+    expected = dict(zip(('source_game_session_id', 'source_map_key',
+        'source_dataset_fingerprint', 'navigation_intent_id', 'revision',
+        'route_build_id'), binding[1:7]))
+    if (debug.get('authority_valid') is not True or not isinstance(identity, dict)
+            or any(v is None or identity.get(k) != v for k, v in expected.items())):
+        return None
+    result = dict(schema_version=SCHEMA, source='route_projection', valid=True,
+        context=binding, sdk_frame_us=debug.get('sdk_frame_us'),
+        observation_timestamp=debug.get('observation_timestamp'),
+        computed_at=debug.get('computed_at'))
+    try:
+        result['expires_at'] = float(result['observation_timestamp']) + LEASE_S
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if rejection(result, context(state), time.monotonic()):
+        return None
+    result['deadline_basis'] = dict(source='route_projection', kind='spatial_observation',
+        sdk_frame_us=result['sdk_frame_us'], observation_timestamp=result['observation_timestamp'],
+        expires_at=result['expires_at'])
+    return result
 
 
 def curve_input(state, *, binding=None):
@@ -453,7 +673,10 @@ def curve_input(state, *, binding=None):
         return None
     if radius <= 0 or rejection(candidate, context(state), time.monotonic()):
         return None
-    result = dict(radius_m=radius, distance_m=distance, expires_at=candidate["expires_at"])
+    result = dict(candidate, source='curve', radius_m=radius, distance_m=distance)
+    result['deadline_basis'] = dict(source='curve', kind='spatial_observation',
+        sdk_frame_us=candidate['sdk_frame_us'], observation_timestamp=candidate['observation_timestamp'],
+        expires_at=candidate['expires_at'])
     if 'roundabout_entry_distance_m' in profile:
         try:
             result['roundabout_entry_distance_m'] = number(profile['roundabout_entry_distance_m'], 0., 1e12)
@@ -462,7 +685,7 @@ def curve_input(state, *, binding=None):
     return result
 
 
-def speed_ceiling(state, *, binding=None, diagnostic=None):
+def speed_ceiling(state, *, binding=None, diagnostic=None, dependencies=None):
     if diagnostic is not None:
         from core.navigation.longitudinal_diagnostics import bounded_input
     limits = []
@@ -478,12 +701,15 @@ def speed_ceiling(state, *, binding=None, diagnostic=None):
                     'observation_timestamp', 'computed_at', 'expires_at', 'valid', key)}
                 if value is not None else None)
         if value is not None:
-            limits.append((float(value[key]) * factor, value["expires_at"]))
+            limits.append((float(value[key]) * factor, value))
     ceiling = min((limit for limit, _ in limits), default=None)
     # Retain every tied winning constraint. A higher static cap neither
     # authorizes nor limits this decision and must not shrink its input lease.
-    expiry = min((expires for limit, expires in limits if limit == ceiling),
+    winners = [value for limit, value in limits if limit == ceiling]
+    expiry = min((value['expires_at'] for value in winners),
                  default=float("inf"))
+    if dependencies is not None:
+        dependencies.extend(winners)
     if diagnostic is not None:
         diagnostic['speed_ceiling_mps'] = ceiling
     return ceiling, expiry

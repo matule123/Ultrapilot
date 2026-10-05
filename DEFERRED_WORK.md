@@ -1,5 +1,25 @@
 # Odložená a nedokončená práca
 
+## Odovzdávanie pozdĺžnych rozhodnutí – 5. 10. 2026
+
+[PHASE7_LONGITUDINAL_HANDOFF_20261005.md](PHASE7_LONGITUDINAL_HANDOFF_20261005.md)
+dokladá spoločnú opravu skladania účinných lease, pôvod deadline a ohraničené
+odovzdanie bez pohonu pri čakaní na nové rozhodnutie. Posledná kontrola ostáva
+tesne pred fyzickým zápisom; starý povel ani čas sa neobnovujú. Existujúci
+potvrdený brzdový reťazec sa nepreruší ani počas spomaľovania pred státím.
+Šesť 75-sekundových offline behov s nezávislými cadence a modelovaným IPC
+prešlo bez technickej straty autority; nejde o dôkaz živého časovania ETS2.
+Inštalovaných osem kontrolovaných súborov obsahovo zodpovedalo vstupnému
+b5a7aa3, takže aktuálny incident nevysvetľuje skorší nesúlad nasadenia.
+Historický producent konkrétneho deadline 21:02:40 nebol uložený a nedá sa
+jednoznačne určiť. Nové pôvodné lease údaje ostávajú v existujúcom zberači.
+
+Celá sada používateľa a herný účinok novej opravy zostávajú otvorené; nič sa
+nenasadilo. Blokátor samostatného držania pri zapnutí zo státia ostáva, rovnako
+ako nepotvrdená spotreba SDK brzdy/hill hold a limity legacy traffic zdroja.
+Staršie reporty nižšie dokladujú svoje zostavy, nie úplné vyriešenie neskorších
+opakovaných expirácií. Ďalšia jazda sa teraz nežiada.
+
 ## Lease a nájazd na objazd 35 km/h – 4. 10. 2026
 
 [PHASE7_LEASE_AND_ROUNDABOUT_20261004.md](PHASE7_LEASE_AND_ROUNDABOUT_20261004.md)

@@ -80,9 +80,9 @@ def record_control_fault(state, producer, reason, *, details=None):
     key = "autopilot_first_fault_" + producer
     previous = state.get(key)
     if not isinstance(previous, dict) or previous.get("epoch") != epoch:
-        from core.navigation.longitudinal_diagnostics import bounded_copy
+        from core.navigation.longitudinal_diagnostics import bounded_fault_details
         record = _intervention_record(state, producer, 'TECHNICAL_CONTROL_STOP',
-            reason, 'technical', bounded_copy(details, limit=8192)[0])
+            reason, 'technical', bounded_fault_details(details))
         state.set(key, record)
         first = first_control_fault_record(state)
         state.set('autopilot_intervention', first)

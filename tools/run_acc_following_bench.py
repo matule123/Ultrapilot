@@ -135,7 +135,8 @@ def simulate(case, *, baseline=False):
                     sdk_frame_us=frame, observed_at=clock[0]))
             values['telemetry'] = {'truck': truck}
             values['nav_steering_debug'] = dict(authority_valid=True, trajectory_identity=identity,
-                observation_timestamp=clock[0], tracking_progress_m=progress)
+                observation_timestamp=clock[0], computed_at=clock[0], sdk_frame_us=frame,
+                tracking_progress_m=progress)
             raw = raw_capture(actors, clock[0])
             if baseline:
                 display = [dict(id=i, x=p[0], y=p[1], z=p[2], yaw=h, speed=v,
@@ -157,7 +158,8 @@ def simulate(case, *, baseline=False):
                 switches += 1
             last_id = target_id
             publish(engine.shared_state, truck, 'traffic', traffic_brake=traffic_brake,
-                    light_brake=0., light=None, following=following)
+                    light_brake=0., light=None, following=following,
+                    dependencies=(following or {}).get('deadline_dependencies', ()))
             acc.on_tick(dt)
             request = values['longitudinal_acc']
             emergency = request.get('emergency') or traffic_brake > .7

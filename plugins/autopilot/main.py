@@ -487,7 +487,7 @@ class Plugin(BasePlugin):
     """
 
     NAME = "autopilot"
-    VERSION = "1.2.0"
+    VERSION = "1.2.1"
 
     def on_start(self):
         logging.info("Autopilot Plugin started (Phase 1 tuning).")
@@ -1513,7 +1513,7 @@ class Plugin(BasePlugin):
             return
 
         # --- Gather all brake requests, combine via max() -------------------
-        from core.longitudinal import read, choose
+        from core.longitudinal import read, choose, traffic_required, refresh_handoff
         strict_longitudinal = self.sdk.shared_state.get("longitudinal_control_schema") == 1
         input_failure = ""
         if strict_longitudinal:
@@ -1667,21 +1667,30 @@ class Plugin(BasePlugin):
             decision = {"throttle": 0., "brake": 0., "source": "invalid", "reason": input_failure}
         self._longitudinal_decision = decision
         if strict_longitudinal:
-            decision["expires_at"] = min((p["expires_at"] for p in (acc, traffic, policy)
-                                          if p is not None), default=float("inf"))
-            if curve:
-                decision["expires_at"] = min(decision["expires_at"], curve["expires_at"])
+            decision['dependencies'] = [p for p in (
+                acc, traffic if traffic_required(traffic) else None,
+                policy if policy and policy['brake'] > 0 else None,
+                curve if curve and (curve_factor < 1. or curve_brake > 0.) else None) if p is not None]
             from core.longitudinal import speed_ceiling
-            ceiling, expires = speed_ceiling(self.sdk.shared_state, binding=self._longitudinal_binding)
-            decision["expires_at"] = min(decision["expires_at"], expires)
+            ceiling_inputs = []
+            ceiling, expires = speed_ceiling(self.sdk.shared_state,
+                binding=self._longitudinal_binding, dependencies=ceiling_inputs)
             if ceiling is not None and abs(speed) > ceiling and decision["throttle"] > 0:
                 decision.update(throttle=0., source="speed_constraint", reason="speed ceiling coast")
+                decision['dependencies'].extend(ceiling_inputs)
         if input_failure:
-            record_control_fault(self.sdk.shared_state, "autopilot", input_failure,
-                                 details=rejected_input)
-            self.sdk.shared_state.update_batch({"autopilot_control_state": "controlled_stop",
-                "autopilot_stop_epoch": self._control_failure_epoch})
-            decision.update(throttle=0., brake=.70, source="safety", reason=input_failure)
+            refresh = refresh_handoff(self.sdk.shared_state, truck, rejected_input,
+                                      self._longitudinal_binding, input_failure)
+            if refresh is not None:
+                decision.update(throttle=0., brake=0., source='decision_refresh',
+                    reason='waiting for a new longitudinal decision', dependencies=[],
+                    expires_at=refresh['expires_at'], refresh_pending=True)
+            else:
+                record_control_fault(self.sdk.shared_state, "autopilot", input_failure,
+                                     details=rejected_input)
+                self.sdk.shared_state.update_batch({"autopilot_control_state": "controlled_stop",
+                    "autopilot_stop_epoch": self._control_failure_epoch})
+                decision.update(throttle=0., brake=.70, source="safety", reason=input_failure)
         self._set_brake(decision["brake"], dt)
         self._automatic_brake_stop = bool(
             autopilot_engaged and speed_kmh < 1.0

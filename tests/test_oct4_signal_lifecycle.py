@@ -90,6 +90,10 @@ def lifecycle(flow, mode=0, *, full_identity=False, start=True, initial_color=8)
             engine._flush_controls()
         return signal
 
+    # Expose the real producers for independent deadline/IPC scheduling tests.
+    tick.acc = acc
+    tick.policy = policy
+
     tick(0, 0., color=initial_color)
     if not start:
         return state, truck, engine, ap, tick, n, clock, writes, collected

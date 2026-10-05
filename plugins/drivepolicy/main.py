@@ -3,7 +3,7 @@ import math
 from sdk.base_plugin import BasePlugin
 from core.navigation.route import curve_speed_limit_ms, iter_path_xz
 from core.longitudinal import (context, read, publish, curve_input,
-                               curve_speed_envelope, curve_constraint_speed, number)
+                               curve_speed_envelope, curve_constraint_speed, number, traffic_required)
 
 
 # === Tuning =================================================================
@@ -76,7 +76,7 @@ class Plugin(BasePlugin):
     a pile of independent, sometimes-contradictory requests."""
 
     NAME = "drivepolicy"
-    VERSION = "1.0.4"
+    VERSION = "1.0.5"
 
     def on_start(self):
         logging.info("DrivePolicy plugin started.")
@@ -168,8 +168,9 @@ class Plugin(BasePlugin):
 
         plan = min(limits) if limits else 25.0
         plan = max(0.0, min(plan, 40.0))   # clamp 0..144 km/h
-        dependencies = ([traffic] if traffic is not None else [])
+        dependencies = ([traffic] if traffic_required(traffic) else [])
         dependencies.extend(value for limit, value in spatial_limits if limit <= plan)
+        self._longitudinal_dependencies = dependencies
         self._longitudinal_policy_expiry = min((v["expires_at"] for v in dependencies),
                                                default=float("inf"))
 
@@ -421,7 +422,7 @@ class Plugin(BasePlugin):
         self.sdk.set("aux_brake_request", self._compute_aux_brake(speed_ms, planned))
         publish(self.sdk.shared_state, truck, "policy", binding=binding,
                 planned_speed_ms=planned, brake=self._compute_aux_brake(speed_ms, planned),
-                expires_at=self._longitudinal_policy_expiry)
+                dependencies=self._longitudinal_dependencies)
 
         # Smooth the lane offset too so the trailer nudge doesn't twitch.
         target_lane = self._compute_lane_offset()

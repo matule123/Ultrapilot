@@ -2,6 +2,16 @@
 
 Release history for individual plugins. See [PLUGIN_VERSIONS.md](PLUGIN_VERSIONS.md) for versioning rules.
 
+## Core/application fixes — unreleased, 2026-10-05
+
+- Propagate the original limiting input's deadline provenance through effective longitudinal dependencies; do not let empty optional traffic or nonbinding higher limits expire unrelated fresh drive decisions.
+- Use one activation/route-bound, finite zero-drive refresh transition in Autopilot and Engine. Retain the original evidence times and 500 ms limits, refuse expired pedals, and stop safely if a required producer does not recover within the fixed bound.
+- Recheck identity and expiry after diagnostic binding and opposing-pedal release, immediately before positive backend I/O. Record actual write start/return and remaining validity without claiming game consumption.
+- Preserve the existing acknowledged forward-started service-brake chain during refresh, including moving planned braking before stationary hold. Never seed a new stationary brake edge or manipulate parking brake.
+- Retain compact original deadline receipts in the existing bounded pedal journal and first-fault details. Restore explicit fields on reading/export; keep the same allocation/event limits and quiet logging.
+- Attribute route-candidate expiry to the actual consumed Map projection and an explicitly unverified receiver budget. Do not fabricate traffic producer acquisition time, generation or coverage.
+- Offline reproduction, cadence comparison and remaining live limitations: [PHASE7_LONGITUDINAL_HANDOFF_20261005.md](PHASE7_LONGITUDINAL_HANDOFF_20261005.md). Core changes do not release unchanged Map or Controller components.
+
 ## Core/application fixes — unreleased, 2026-10-04
 
 - Check the producer-timed red signal and longitudinal launch restrictions before a stationary propulsion probe. Keep a driver-held request explicitly pending with zero SDK pedals; this is not autonomous stationary holding or an active autopilot claim.
@@ -80,6 +90,12 @@ Commit: `3ef65c7`.
 
 ## Autopilot
 
+### 1.2.1 — 2026-10-05
+
+- Compose the pedal command lease from inputs that actually constrain the decision, preserving each original limiting source/time/frame through speed-ceiling coast decisions.
+- Request the shared bounded zero-drive transition when an otherwise valid decision has insufficient handoff reserve. Genuine stale/foreign/invalid evidence and a hung required producer retain controlled-stop behavior.
+- Preserve existing launch, continuous signal waiting/restart, pedal ramps and lateral steering. Coordinated core/ACC/DrivePolicy changes are required; live behavior is not yet verified.
+
 ### 1.2.0 — 2026-10-04
 
 **Added**
@@ -154,6 +170,12 @@ Commit: `3ef65c7`.
 
 ## ACC
 
+### 1.1.3 — 2026-10-05
+
+- Retain original leases of effective speed constraints, required traffic and followed-target evidence without inheriting unrelated higher limits or empty uncovered traffic.
+- Recompute a decision needing refresh on a repeated SDK frame when producer inputs advance, without repeating PID integration or renewing the frame's original observation time.
+- Publish the limiting deadline provenance and handoff-reserve state. Preserve speed-controller gains, target-loss refusal and immediate urgent braking.
+
 ### 1.1.2 — 2026-10-04
 
 - Apply the existing distance/deceleration envelope to a 35 km/h roundabout upper ceiling. Tighter curves and traffic retain precedence; lateral gains, pedal ramps and emergency limits remain unchanged.
@@ -207,6 +229,11 @@ Commit: `3ef65c7`.
 - Consume current bound traffic and speed constraints without changing PID gains.
 
 ## DrivePolicy
+
+### 1.0.5 — 2026-10-05
+
+- Publish original dependency receipts for effective/tied spatial constraints and required dynamic traffic instead of an unattributed scalar minimum lease.
+- Avoid letting empty optional traffic become a speed-plan deadline owner. Preserve planning values, brake requests and original evidence freshness/identity checks.
 
 ### 1.0.4 — 2026-10-04
 

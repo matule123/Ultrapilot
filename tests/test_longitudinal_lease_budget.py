@@ -40,7 +40,12 @@ def test_recorded_lease_budget_only_inherits_applicable_map_limit(flow, cap):
         assert state.get('autopilot_active'), state.get('autopilot_disable_reason')
         assert pedal(engine, 'aforward') > 0 and pedal(engine, 'abackward') == 0
     else:
-        assert command['expires_at'] <= old['expires_at']
+        # The consumed constraint retains its original deadline. A separate
+        # bounded ZERO-drive refresh transition is not the expired drive packet.
+        assert state.get('longitudinal_acc')['expires_at'] <= old['expires_at']
+        assert command['throttle'] == 0.
+        assert command['refresh_pending']
+        assert command['expires_at'] <= old['expires_at'] + .1
         assert pedal(engine, 'aforward') == 0
 
 

@@ -5,7 +5,7 @@ import numpy as np
 from sdk.base_plugin import BasePlugin
 from core.pid import PID
 from core.longitudinal import (COMMAND_KEY, context, exclusive, read, publish,
-                               rejection, curve_input, curve_speed_envelope)
+                               rejection, curve_input, curve_speed_envelope, traffic_required)
 from core.transmission_mode import vehicle_control_observation_rejection
 from plugins.acc.settings import settings
 
@@ -18,7 +18,7 @@ class Plugin(BasePlugin):
     """
 
     NAME = "acc"
-    VERSION = "1.1.2"
+    VERSION = "1.1.3"
 
     def on_start(self):
         logging.info("ACC Plugin started with bounded speed PID control.")
@@ -115,7 +115,7 @@ class Plugin(BasePlugin):
             self.sdk.shared_state.set("acc_brake", 1.0)
             publish(self.sdk.shared_state, truck, "acc", binding=binding,
                     throttle=0., brake=1., emergency=True, requested_speed_kmh=None,
-                    constrained_speed_kmh=None, expires_at=traffic["expires_at"] if traffic else float("inf"))
+                    constrained_speed_kmh=None, dependencies=[traffic] if traffic else [])
             self.sdk.shared_state.set("tts_message", "Collision alert! Emergency braking.")
             return
 
@@ -234,7 +234,9 @@ class Plugin(BasePlugin):
                                      reason="regressing or incoherent speed observation")
                 return
             duplicate = frame == previous_frame
-            if duplicate and effective_target_speed == previous_target:
+            previous_packet = self.sdk.get('longitudinal_acc') if duplicate else None
+            needs_refresh = bool(previous_packet and rejection(previous_packet, binding, time.monotonic()))
+            if duplicate and effective_target_speed == previous_target and not needs_refresh:
                 return  # No new evidence, controller step or renewed packet lease.
             if not duplicate:
                 dt = stamp - previous_stamp
@@ -303,10 +305,12 @@ class Plugin(BasePlugin):
                 following_target_id=following.get('target_id') if isinstance(following, dict) else None,
                 following_confirmed=False,
                 following_required=self._followed_target,
-                expires_at=min((v["expires_at"] for v in (traffic,
-                                road_packet if road_cap is not None and float(road_cap) <= effective_target_speed else None,
-                                policy, curve)
-                                if v is not None), default=float("inf")))
+                dependencies=[v for v in (
+                    traffic if traffic_required(traffic) or self._followed_target else None,
+                    road_packet if road_cap is not None and float(road_cap) <= effective_target_speed else None,
+                    policy if plan_ms is not None and float(plan_ms)*3.6 < base_target_speed else None,
+                    curve if curve is not None and curve_constraint_speed(curve, speed)*3.6 <= effective_target_speed else None)
+                    if v is not None])
 
         # Update UI tags
         self.tags.acc_speed = effective_target_speed

@@ -17,6 +17,10 @@ INPUT_KEYS = (
     'traffic_brake', 'light_brake', 'speed_cap_kmh', 'planned_speed_ms',
     'controller_mode', 'mode', 'following', 'brake_basis',
 )
+JOURNAL_INPUT_KEYS = INPUT_KEYS + (
+    'unavailable_field_schema', 'unavailable_field_mask', 'signal',
+    'context_reference', 'observation_reference', 'deadline_reference', 'deadline_basis',
+)
 
 
 def bounded_copy(value, limit=16384):
@@ -48,6 +52,25 @@ def bounded_copy(value, limit=16384):
         return {'snapshot_status': 'UNVERIFIED_SNAPSHOT_BUDGET_EXCEEDED'}, 256
 
 
+def bounded_fault_details(value):
+    """Account identical compared identities once inside one fault receipt.
+
+    Restore the public explicit fields after the bounded immutable copy. Both
+    refer to that copied identity, never to a later IPC value. Keep the original
+    8 KB budget; genuinely different identities are copied independently.
+    """
+    if not isinstance(value, dict):
+        return bounded_copy(value, limit=8192)[0]
+    same = (isinstance(value.get('actual_context'), (list, tuple))
+            and isinstance(value.get('expected_context'), (list, tuple))
+            and tuple(value['actual_context']) == tuple(value['expected_context']))
+    selected = {k: v for k, v in value.items() if not (same and k == 'expected_context')}
+    result = bounded_copy(selected, limit=8192)[0]
+    if same and 'actual_context' in result:
+        result['expected_context'] = result['actual_context']
+    return result
+
+
 def bounded_input(value):
     # Producers already publish small immutable dictionaries. Exclude geometry,
     # actor arrays and transport buffers before any diagnostic copy.
@@ -60,6 +83,10 @@ def bounded_input(value):
     result = {k: value[k] for k in keys if value.get(k) is not None}
     result['unavailable_field_schema'] = 1
     result['unavailable_field_mask'] = sum(1 << i for i,k in enumerate(keys) if value.get(k) is None)
+    # Additive fields do not change schema-1 bitmap positions or byte limits.
+    for key in ('deadline_basis',):
+        if key in value:
+            result[key] = value[key]
     following_keys = (
         'status', 'target_id', 'gap_m', 'speed_mps', 'speed_cap_mps', 'emergency',
         'reason', 'receiver_time', 'source_timestamp', 'source_sequence',
@@ -134,6 +161,45 @@ def compact_decision(value):
             result['requested']['context_reference'] = 'decision'
         # A rejected/earlier command retains any differing frame/time verbatim.
         result['requested'] = same_observation(result['requested'])
+    # Deadline receipts often refer to the SAME original observation through
+    # several producers. Intern them within this immutable row, just like its
+    # context above; do not increase the fixed journal allocation budget.
+    fields = ('source', 'kind', 'sdk_frame_us', 'observation_timestamp', 'expires_at')
+    bases = []
+    def intern(item):
+        if not isinstance(item, dict) or not isinstance(item.get('deadline_basis'), dict):
+            return item
+        basis = item['deadline_basis']
+        if not basis.keys() <= set(fields):
+            return item  # Unknown schema remains explicit, never discarded.
+        encoded = [basis.get(k) for k in fields]
+        if encoded not in bases:
+            bases.append(encoded)
+        item = {k: v for k, v in item.items() if k != 'deadline_basis'}
+        item['deadline_reference'] = bases.index(encoded)
+        return item
+    for group in ('inputs', 'limits'):
+        if isinstance(result.get(group), dict):
+            result[group] = {k: intern(v) for k, v in result[group].items()}
+    for key in ('selected', 'requested'):
+        if key in result:
+            result[key] = intern(result[key])
+    if bases:
+        result['deadline_basis_schema'] = 1
+        result['deadline_bases'] = bases
+    return result
+
+
+def pack_journal_inputs(value):
+    """Lossless fixed-key storage; exported producer fields are unchanged."""
+    if not isinstance(value, dict) or not isinstance(value.get('inputs'), dict):
+        return value
+    result = dict(value, inputs=dict(value['inputs']))
+    for name, item in result['inputs'].items():
+        if isinstance(item, dict) and item.keys() <= set(JOURNAL_INPUT_KEYS):
+            result['inputs'][name] = dict(journal_input_schema=1,
+                presence=sum(1 << i for i, k in enumerate(JOURNAL_INPUT_KEYS) if k in item),
+                values=[item[k] for k in JOURNAL_INPUT_KEYS if k in item])
     return result
 
 
@@ -150,6 +216,16 @@ def expand_decision(value):
         if not isinstance(item, dict):
             return item
         item = dict(item)
+        if item.get('journal_input_schema') == 1:
+            values = iter(item['values'])
+            item = {k: next(values) for i, k in enumerate(JOURNAL_INPUT_KEYS)
+                    if item['presence'] & (1 << i)}
+        reference = item.pop('deadline_reference', None)
+        if reference is not None and value.get('deadline_basis_schema') == 1:
+            basis = value['deadline_bases'][reference]
+            item['deadline_basis'] = {k: v for k, v in zip(
+                ('source', 'kind', 'sdk_frame_us', 'observation_timestamp', 'expires_at'), basis)
+                if v is not None}
         if item.pop('context_reference', None) == 'decision':
             item['context'] = value['context']
         if item.pop('observation_reference', None) == 'decision':
@@ -170,6 +246,8 @@ def expand_decision(value):
     for k in ('selected', 'requested'):
         if k in result:
             result[k] = expand(result[k])
+    result.pop('deadline_basis_schema', None)
+    result.pop('deadline_bases', None)
     return result
 
 
@@ -198,7 +276,7 @@ class PedalJournal:
         if intervention is not None:
             value = {k: v for k, v in value.items() if k != 'intervention'}
         self._local.intervention, extra = bounded_copy(intervention, limit=16384)
-        self._local.source, self._local.size = bounded_copy(compact_decision(value), limit=32768) if value is not None else (None, 64)
+        self._local.source, self._local.size = bounded_copy(pack_journal_inputs(compact_decision(value)), limit=32768) if value is not None else (None, 64)
         self._local.size += extra
 
     def source(self):

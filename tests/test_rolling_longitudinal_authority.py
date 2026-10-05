@@ -77,6 +77,10 @@ def rolling(flow):
         return struct.unpack_from('f', engine.controller.scs._buf.getvalue(),
                                   engine.controller.scs._offsets[channel])[0]
 
+    # Independent-cadence tests invoke the actual Map without also injecting an
+    # SDK frame or running the other producers in the same idealized tick.
+    tick.publish_map = map_plugin.on_tick
+
     tick(0, 0.)
     n()
     for gear, speed in [(0, 0.), (4, 0.), (4, .2), (4, .4), (4, 4.)]:

@@ -41,6 +41,7 @@ def offer_route_candidate(state, engine, clock):
     assert following['confirmed'] is False
     publish(state, truck, 'traffic', traffic_brake=0., light_brake=0.,
             light=None, lead_distance=following['gap_m'], following=following,
+            dependencies=following.get('deadline_dependencies', ()),
             expires_at=following['expires_at'])
     return following
 
