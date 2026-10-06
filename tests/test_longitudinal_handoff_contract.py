@@ -282,6 +282,53 @@ def test_refresh_preserves_existing_physical_signal_brake_chain(flow, mode):
 
 
 @pytest.mark.parametrize('mode', [0, 3])
+@pytest.mark.parametrize('invalid', ['missing', 'invalid', 'identity', 'head',
+                                   'passage', 'lifecycle', 'expired', 'future',
+                                   'regressing_frame', 'retimestamped_frame'])
+def test_signal_refresh_rejects_unverified_replacement(flow, mode, invalid):
+    from core.longitudinal import refresh_handoff, HANDOFF_RESERVE_S
+    from tests.test_oct4_signal_lifecycle import lifecycle
+    state, truck, engine, ap, tick, n, clock, writes, _ = lifecycle(flow, mode)
+    tick(4, .2, color=2)
+    tick(0 if mode == 0 else 4, 0., color=2)
+    original = copy.deepcopy(state.get('longitudinal_command'))
+    signal_leaf = next(d for d in state.get('longitudinal_traffic')['lease_dependencies']
+                       if d['source'] == 'traffic_signal')
+    # Equal vehicle/signal timestamps can select the vehicle as tie-breaker.
+    # Exercise the newly introduced signal leaf explicitly, retaining its time.
+    original['deadline_basis'] = copy.deepcopy(signal_leaf['deadline_basis'])
+    assert original['expires_at'] == original['deadline_basis']['expires_at']
+    clock[0] = original['expires_at'] - HANDOFF_RESERVE_S / 2
+    tick(0 if mode == 0 else 4, 0., color=2, dt=.001, flush=False)
+    traffic = copy.deepcopy(state.get('longitudinal_traffic'))
+    signal = traffic['signal']
+    if invalid == 'missing':
+        traffic.pop('signal')
+    elif invalid == 'invalid':
+        signal['valid'] = False
+    elif invalid == 'identity':
+        signal['authority'] = ()
+    elif invalid == 'head':
+        signal['candidate']['id'] = -999
+    elif invalid == 'passage':
+        signal['candidate']['passage_key'] = 'foreign'
+    elif invalid == 'lifecycle':
+        signal['lifecycle'] = 'foreign'
+    elif invalid == 'expired':
+        signal['observed_at'] = clock[0] - .501
+    elif invalid == 'future':
+        signal['observed_at'] = clock[0] + .001
+    elif invalid == 'regressing_frame':
+        signal['frame_us'] = original['deadline_basis']['sdk_frame_us'] - 1
+    else:
+        signal['frame_us'] = original['deadline_basis']['sdk_frame_us']
+    state.set('longitudinal_traffic', traffic)
+    state.set('longitudinal_refresh_request', None)
+    assert refresh_handoff(state, state.get('telemetry')['truck'], original,
+                           context(state), 'longitudinal decision needs refresh') is None
+
+
+@pytest.mark.parametrize('mode', [0, 3])
 def test_refresh_preserves_forward_started_braking_before_stationary_hold(flow, mode):
     state, truck, engine, ap, update, n, clock, acc, policy = running(flow, mode)
     update(8, .2)

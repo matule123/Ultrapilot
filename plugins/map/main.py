@@ -69,7 +69,7 @@ class Plugin(BasePlugin):
     """
 
     NAME = "map"
-    VERSION = "1.0.7"
+    VERSION = "1.1.0"
 
     def on_start(self):
         logging.info("Map (navigation) plugin started.")
@@ -1689,6 +1689,8 @@ class Plugin(BasePlugin):
         live_match_payload = self._lane_match_payload(match, revision)
         lane_corridor = self._lane_corridor_payload(trajectory)
         turn_events = self._turn_events_payload(trajectory)
+        from core.navigation.prefab_signals import prepare_signal_passages
+        signal_passages = prepare_signal_passages(self.road_net, trajectory)
         control_points = [[float(p.x), float(p.y), float(p.z)]
                           for p in trajectory.points]
         elevation_by_lane = {
@@ -1735,6 +1737,7 @@ class Plugin(BasePlugin):
             "active_lane_id": self._lane_id_payload(match.lane_id),
             "lane_corridor": lane_corridor,
             "turn_events": turn_events,
+            "signal_passages": signal_passages,
             "lane_match": dict(live_match_payload),
             "points": control_points, "display_points": display_points,
             "distance_m": float(trajectory.distance_m), "failure_reason": "",

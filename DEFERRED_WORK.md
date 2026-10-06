@@ -1,5 +1,26 @@
 # Odložená a nedokončená práca
 
+## Prefabové priradenie semafora a odvodený cieľ – 6. 10. 2026
+
+[PHASE7_PREFAB_SIGNAL_BINDING_20261006.md](PHASE7_PREFAB_SIGNAL_BINDING_20261006.md)
+dokladá prenos autorovaného semaphoreId, smerovaný vstup do celého prejazdu,
+priestorovo a výškovo ohraničené priradenie živého ID a včasný brzdný profil.
+Chýbajúca väzba pri známom vstupe už nesmie byť nahradená nepotvrdenou zelenou.
+Súvislá kladná brzda môže počas platného dojazdu klesať; čakanie ju nepreruší.
+Prípustný tok pokračuje po potvrdenej zelenej bez ďalšieho N a bez ručnej brzdy.
+
+Cieľ je odvodený, nie namaľovaná stop čiara. Rezerva predku 6 m nie je meraná
+geometria ani záruka pre ľubovoľný mod. Modelové dostatočné nájazdy 20/35/50 km/h
+prešli; krátky 30 m nájazd z 50 km/h v použitom modeli prekročil vstup a následný
+automatický rozjazd ostal zablokovaný. Predošlý samostatný problém držania pri
+aktivácii už stojaceho vozidla na červenú sa touto úlohou nerieši.
+
+Nejednoznačné skupiny, chýbajúce údaje, živé priradenie PPD/DLL a spotreba SDK
+brzdy zostávajú otvorenými hranicami podpory. Tri zaznamenané skutočné prefabové
+reťazce boli rekonštruované bez zmeny geometrie; historické hlavy/farby a pedálové
+väzby však v starej jazde chýbajú. Nové zmeny nie sú nasadené ani herne potvrdené.
+Celú sadu spustí používateľ. Ďalšia jazda sa teraz nežiada.
+
 ## Kandidát ACC, nájazd a uzamknutý semafor – 5. 10. 2026
 
 [PHASE7_TRAFFIC_APPROACH_AND_SIGNAL_20261005.md](PHASE7_TRAFFIC_APPROACH_AND_SIGNAL_20261005.md)

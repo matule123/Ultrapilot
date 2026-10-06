@@ -33,7 +33,7 @@ from core.navigation.route_diagnostics import (
 )
 from core.navigation.road_look_offsets_159 import LANE_OFFSETS_159
 
-CACHE_VERSION = 13  # adds explicit display-only boundary-source metadata
+CACHE_VERSION = 14  # retains authored nav-curve semaphore IDs (old cache lacks them)
 MAX_PROVEN_LANE_BOUNDARY_GAP_M = 0.75
 MAX_PROVEN_LANE_BOUNDARY_VERTICAL_M = 0.50
 MAX_PROVEN_LANE_BOUNDARY_HEADING_DEG = 15.0
@@ -555,6 +555,9 @@ class RoadNetwork:
                         end_forward[0], end_forward[1],
                     ))
                     lane_curves.append({
+                        "semaphore_id": (curve.get("semaphoreId")
+                            if type(curve.get("semaphoreId")) is int
+                            and -1 <= curve["semaphoreId"] <= 0x7fffffff else None),
                         "nav_node_index": int(curve.get("navNodeIndex", -1)),
                         "next_lines": tuple(int(i) for i in curve.get("nextLines", ())),
                         "prev_lines": tuple(int(i) for i in curve.get("prevLines", ())),

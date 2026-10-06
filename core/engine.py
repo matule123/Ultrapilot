@@ -803,6 +803,7 @@ class UltraPilotEngine:
         if token != self._signal_route_token or self._signal_selector.route.binding is None:
             lane = self.shared_state.get('lane_trajectory', {}) or {}
             self._signal_route_points = lane.get('points', [])
+            self._signal_passages = lane.get('signal_passages')
             if token != self.shared_state.get('lane_trajectory_publication_token'):
                 return dict(snapshot, valid=False, candidate=None, reason='signal route publication changed during read')
             self._signal_route_token = token
@@ -830,7 +831,8 @@ class UltraPilotEngine:
                 or not isinstance(observed, (int, float)) or not 0 <= time.monotonic()-observed <= .5):
             return dict(snapshot, valid=False, candidate=None, reason='signal route packet or LaneId is not current')
         result = self._signal_selector.select(snapshot, self._signal_route_points,
-            (token, binding), binding, truck, packet.get('tracking_progress_m'))
+            (token, binding), binding, truck, packet.get('tracking_progress_m'),
+            getattr(self,'_signal_passages',None))
         if binding != context(self.shared_state):
             result.update(valid=False, reason='signal route changed during capture', candidate=None)
         return result
@@ -1024,6 +1026,14 @@ class UltraPilotEngine:
         color = light.get("color")
         dist = light.get("distance", 999.0)
         my_speed = float(self.shared_state.get("truck_speed_ms", 0.0) or 0.0)
+
+        if light.get('stop_target_kind') == 'derived_directed_curve_entry':
+            from core.longitudinal import signal_stop_brake_request
+            lock=((getattr(self,'_service_brake_hold',None) or {}).get('signal_lock') or {})
+            continuing=bool(light.get('color') in ('red','yellow')
+                and (lock.get('candidate') or {}).get('passage_key') == light.get('passage_key')
+                and lock.get('candidate'))
+            return signal_stop_brake_request(light, my_speed, continuing=continuing)
 
         if color == "red":
             # STOP-HOLD: once we're basically stopped near the line, clamp to a
@@ -2821,7 +2831,12 @@ class UltraPilotEngine:
             from core.service_brake_hold import clearance
             clear_signal = clearance(hold, self.shared_state)
             throttle = 0.
-            brake = max(brake, hold['brake'])
+            from core.service_brake_hold import fresh_moving_stop_request
+            # Continuous means no zero edge, not a forever-ratcheting pedal.
+            # Only a new positive, same-passage derived request may decrease
+            # braking while moving. Stationary/unknown clearance retains hold.
+            if not fresh_moving_stop_request(hold,longitudinal,truck_telemetry):
+                brake = max(brake, hold['brake'])
             longitudinal.update(throttle=0., brake=brake,
                 source='continuous_service_hold', reason='waiting: stop clearance is not producer-confirmed')
             trace = getattr(self, '_longitudinal_trace', None)
@@ -3472,8 +3487,9 @@ class UltraPilotEngine:
                     pos = (truck.get("x", 0.0), truck.get("z", 0.0))
                     hdg = truck.get("rotation", 0.0)
                     signal = self._signal_observation(truck, traffic_binding)
-                    light = signal.get('candidate') if signal.get('valid') else None
-                    if light is None and not getattr(self, '_service_brake_hold', None):
+                    light = signal.get('candidate') if signal.get('valid') else signal.get('stop_candidate')
+                    if (light is None and not signal.get('prefab_required')
+                            and not getattr(self, '_service_brake_hold', None)):
                         light = nearest_light_ahead(self.ets2la.read_traffic_lights(), pos, hdg)
                     # Lead-vehicle following: brake for the nearest car ahead in our lane.
                     traffic_brake = self._lead_brake(traffic, pos, hdg, truck.get("speed", 0.0))

@@ -45,6 +45,8 @@ def planned_stop(decision):
     acc = evidence.get('acc') or {}
     policy = evidence.get('policy') or {}
     return bool(traffic.get('light_brake', 0) > 0
+                or ((traffic.get('light') or {}).get('stop_target_kind') == 'derived_directed_curve_entry'
+                    and (traffic.get('light') or {}).get('color') != 'green')
                 or acc.get('following_status') in ('candidate', 'source_lost')
                 or policy.get('reason') == 'toll stop/payment')
 
@@ -116,6 +118,20 @@ def after_write(previous, controller, forward_context, truck, decision, now,
     return result
 
 
+def fresh_moving_stop_request(hold, decision, truck):
+    """Allow positive pedal adjustment without breaking the acknowledged chain."""
+    signal=(((decision.get('stopping_evidence') or {}).get('traffic') or {}).get('signal') or {})
+    candidate=signal.get('candidate') or {}
+    lock=hold.get('signal_lock') or {}
+    return bool(float(truck.get('speed',0.))>.05 and decision.get('brake',0.)>0
+        and signal.get('valid') and candidate.get('stop_target_kind')=='derived_directed_curve_entry'
+        and candidate.get('color') in ('red','yellow')
+        and candidate.get('passage_key') == (lock.get('candidate') or {}).get('passage_key')
+        and tuple(decision.get('context',())) == tuple(lock.get('authority',()))
+        and signal.get('lifecycle') == lock.get('lifecycle')
+        and 0 <= time.monotonic()-signal.get('observed_at',float('-inf')) <= .5)
+
+
 def clearance(record, state):
     """Green must be two new acquisitions >=100 ms apart, same locked head.
 
@@ -139,6 +155,13 @@ def clearance(record, state):
                 or signal.get('lifecycle') != lock['lifecycle']
                 or candidate.get('id') != lock['candidate']['id']):
             reason = signal.get('reason') or 'locked signal authority, lifecycle or ID is not valid'
+        elif candidate.get('passage_key') != lock['candidate'].get('passage_key'):
+            reason = 'locked directed prefab passage changed'
+        elif (record.get('entry_overrun') or (candidate.get('stop_target_kind')=='derived_directed_curve_entry'
+                and candidate.get('distance',0.)+candidate.get('front_allowance_m',0.)
+                    +candidate.get('junction_standoff_m',0.)<0.)):
+            record['entry_overrun']=True
+            reason='directed junction entry passed before stop; driver takeover required'
         elif not 0 <= now-signal.get('observed_at', float('-inf')) <= .5:
             reason = 'locked signal observation expired'
         elif signal.get('generation', 0) <= lock['generation'] or signal.get('frame_us', 0) <= lock['frame_us']:
@@ -153,7 +176,7 @@ def clearance(record, state):
             reason = launch_rejection(state)
     if reason:
         record.pop('green_candidate', None)
-        record.update(automatic_restart_supported=bool(lock), restart_blocker=reason)
+        record.update(automatic_restart_supported=bool(lock) and not record.get('entry_overrun'), restart_blocker=reason)
         return None
     first = record.get('green_candidate')
     if (first is None or signal['generation'] < first['generation']
@@ -183,6 +206,7 @@ def resume_rejection(witness, state):
                 or tuple(witness['authority']) != binding
                 or signal['lifecycle'] != witness['lifecycle']
                 or signal['candidate']['id'] != witness['candidate']['id']
+                or signal['candidate'].get('passage_key') != witness['candidate'].get('passage_key')
                 or signal['candidate']['color'] != 'green'
                 or signal['generation'] < witness['generation']
                 or signal['frame_us'] < witness['frame_us']

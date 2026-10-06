@@ -76,7 +76,7 @@ class Plugin(BasePlugin):
     a pile of independent, sometimes-contradictory requests."""
 
     NAME = "drivepolicy"
-    VERSION = "1.0.5"
+    VERSION = "1.1.0"
 
     def on_start(self):
         logging.info("DrivePolicy plugin started.")
@@ -162,9 +162,14 @@ class Plugin(BasePlugin):
         light = (traffic.get("light") if traffic else None) if strict else self.sdk.get("traffic_light")
         if light:
             color = light.get("color")
-            ldist = float(light.get("distance", 999.0) or 999.0)
-            if color in ("red", "yellow") and ldist < 70.0:
-                limits.append(max(0.0, ldist / 4.0))
+            from core.longitudinal import signal_stop_speed_limit
+            stop_limit = signal_stop_speed_limit(light, float(truck['speed']))
+            if stop_limit is not None:
+                limits.append(stop_limit)
+            else:
+                ldist = float(light.get("distance", 999.0) or 999.0)
+                if color in ("red", "yellow") and ldist < 70.0:
+                    limits.append(max(0.0, ldist / 4.0))
 
         plan = min(limits) if limits else 25.0
         plan = max(0.0, min(plan, 40.0))   # clamp 0..144 km/h

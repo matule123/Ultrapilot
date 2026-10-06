@@ -28,6 +28,42 @@ CURVE_STEERING_SETUP_M = 20.0
 ROUNDABOUT_ENTRY_SPEED_KMH = 35.0
 
 
+def signal_stop_speed_limit(light, speed_ms):
+    """Derived target already includes front allowance and junction stand-off.
+
+    Share the existing 1 m/s² approach assumption. Reserve the existing 1 s
+    vehicle response plus the full 0.5 s allowed evidence/transfer age. These
+    are conservative planning allowances, not a measured ETS2 brake model.
+    """
+    if (not isinstance(light, dict) or light.get('stop_target_kind') != 'derived_directed_curve_entry'
+            or light.get('color') not in ('red', 'yellow', 'unknown', 'off', 'sleep')):
+        return None
+    distance = number(light['distance'], -1e6, 1e6)
+    speed = number(abs(float(speed_ms)), 0., 100.)
+    usable = max(0., distance-speed*(CURVE_BRAKE_RESPONSE_S+LEASE_S))
+    return math.sqrt(2.*CURVE_APPROACH_DECEL_MS2*usable)
+
+
+def signal_stop_brake_request(light, speed_ms, *, continuing=False):
+    """Distance/deceleration feed-forward for the existing traffic request.
+
+    4 m/s² is the existing yellow-light full-brake planning assumption, not a
+    measured gain or an extra feedback controller. The current pedal arbiter
+    and Autopilot comfort ramp still own execution; emergencies still win.
+    """
+    cap = signal_stop_speed_limit(light, speed_ms)
+    if cap is None:
+        return 0.
+    speed = abs(float(speed_ms));distance = float(light['distance'])
+    if distance <= 0. or (speed < .5 and distance <= 1.5):
+        return 1.
+    if speed <= cap and not continuing:
+        return 0.
+    usable = max(.5, distance-speed*(CURVE_BRAKE_RESPONSE_S+LEASE_S))
+    required_decel = speed*speed/(2.*usable)
+    return min(1.,required_decel/4.)
+
+
 def curve_speed_envelope(radius_m, distance_m, speed_ms):
     from core.navigation.route import curve_speed_limit_ms
     radius = number(radius_m, 1e-9, 1e12)
@@ -134,7 +170,8 @@ def traffic_required(value):
     light = value.get('light') or {}
     return bool(max(value.get('traffic_brake', 0.), value.get('light_brake', 0.)) > 0
         or following.get('status') == 'candidate' or value.get('lead_distance')
-        or light.get('color') in ('red', 'yellow'))
+        or light.get('color') in ('red', 'yellow')
+        or light.get('stop_target_kind') == 'derived_directed_curve_entry')
 
 
 def packet(state, truck, source, *, binding=None, evidence_valid=True, **values):
@@ -145,6 +182,23 @@ def packet(state, truck, source, *, binding=None, evidence_valid=True, **values)
     expires = (float(observed_at) + LEASE_S) if isinstance(observed_at, (int, float)) else 0.
     own_expiry = expires
     inputs = [dependency(v) for v in values.pop('dependencies', ()) if v is not None]
+    signal_stamp = None
+    signal = values.get('signal')
+    if source == 'traffic' and isinstance(signal,dict) and signal.get('valid') is True:
+        # The truck's fresh observation cannot renew a previously acquired
+        # red/green. Keep the producer render-frame/time separate from the
+        # command's SDK frame and carry its original deadline to the writer.
+        try:
+            signal_stamp = number(signal['observed_at'],1e-9,1e12)
+            frame = signal['frame_us']
+            if type(frame) is not int or frame<=0:
+                raise ValueError('invalid signal render frame')
+            deadline = signal_stamp+LEASE_S
+            inputs.append(dict(source='traffic_signal',expires_at=deadline,
+                deadline_basis=dict(source='traffic_signal',kind='signal_render_observation',
+                    sdk_frame_us=frame,observation_timestamp=signal_stamp,expires_at=deadline)))
+        except (KeyError,TypeError,ValueError,OverflowError):
+            evidence_valid = False
     inherited = values.pop('expires_at', expires)
     expires = min(expires, inherited, *(v['expires_at'] for v in inputs))
     basis = dict(source=source,
@@ -158,6 +212,8 @@ def packet(state, truck, source, *, binding=None, evidence_valid=True, **values)
     elif expires < own_expiry:
         basis = dict(source='unattributed_input', kind='legacy_deadline', expires_at=expires)
     computed = time.monotonic()
+    if signal_stamp is not None and signal_stamp>computed:
+        evidence_valid = False
     return dict(schema_version=SCHEMA, source=source, context=binding,
                 sdk_frame_us=truck.get("sdkFrameTimeUs"),
                 observation_timestamp=observed_at, expires_at=expires,
@@ -360,6 +416,35 @@ def refresh_handoff(state, truck, value, binding, reason):
             fresh, failure = read(state, source, binding=binding, required=True)
             if failure and not failure.endswith('longitudinal observation is stale or incoherent'):
                 return None
+        elif source == 'traffic_signal':
+            traffic, failure = read(state, 'traffic', binding=binding, required=True)
+            if failure or not traffic:
+                return None
+            signal = traffic.get('signal') or {}
+            if (signal.get('valid') is not True
+                    or tuple(signal.get('authority', ())) != tuple(binding)):
+                return None
+            # A vehicle observation must never renew the separate render-frame
+            # lease. Preserve a locked head/lifecycle during brake continuity.
+            hold = state.get('simple_auto_service_hold') or {}
+            lock = hold.get('signal_lock') or {}
+            if lock and (signal.get('lifecycle') != lock.get('lifecycle')
+                    or (signal.get('candidate') or {}).get('id')
+                        != (lock.get('candidate') or {}).get('id')
+                    or (signal.get('candidate') or {}).get('passage_key')
+                        != (lock.get('candidate') or {}).get('passage_key')):
+                return None
+            stamp = float(signal['observed_at'])
+            frame = signal['frame_us']
+            if (type(frame) is not int or frame <= 0
+                    or not 0 <= now-stamp <= LEASE_S):
+                return None
+            original_stamp = float(basis['observation_timestamp'])
+            original_frame = basis['sdk_frame_us']
+            if (frame < original_frame or stamp < original_stamp
+                    or (stamp > original_stamp and frame <= original_frame)):
+                return None
+            fresh = dict(expires_at=stamp + LEASE_S)
         elif basis.get('kind') == 'vehicle_observation':
             observed, invalid = vehicle_control_observation(state, truck)
             fresh = None if invalid else dict(expires_at=observed['observed_at'] + LEASE_S)
@@ -605,7 +690,8 @@ def _engine_decision(state, truck, now=None, *, diagnostic=None, rejection_info=
         light = (traffic or {}).get('light')
         if isinstance(light, dict) and stop.get('traffic') is not None:
             stop['traffic']['light'] = {k: light[k] for k in (
-                'id', 'color', 'distance', 'producer_timestamp', 'producer_generation') if k in light}
+                'id', 'color', 'distance', 'producer_timestamp', 'producer_generation',
+                'stop_target_kind', 'passage_key') if k in light}
         for key in ('traffic', 'acc', 'policy'):
             if isinstance(stop.get(key), dict):
                 stop[key] = {k: v for k, v in stop[key].items() if v is not None}

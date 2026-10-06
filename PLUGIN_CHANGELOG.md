@@ -2,6 +2,17 @@
 
 Release history for individual plugins. See [PLUGIN_VERSIONS.md](PLUGIN_VERSIONS.md) for versioning rules.
 
+## Core/application changes — unreleased, 2026-10-06
+
+- Support the producer-timed `traffic_signal` leaf in the bounded decision-refresh contract. Preserve continuous service braking while waiting for replacement decisions; reject missing, expired, foreign-head/lifecycle/passage and retimestamped-frame evidence without extending the original signal lease.
+- Retain authored prefab-curve semaphore IDs and invalidate schema-13 caches which lack them. Prepare qualified control entries from the unchanged directed LanePath and existing world/elevation transform.
+- Scope live signal IDs to the selected placed passage with position, approach, height and ambiguity checks; allow repeated IDs in distinct prefabs without admitting duplicate ID/placement rows.
+- Carry the original producer-timed signal deadline through traffic publication, arbitration and the last physical boundary. Fresh vehicle telemetry cannot renew old red/green evidence; render-frame provenance remains separate from the truck SDK frame.
+- Derive a stop target before the complete directed passage, labelled as unverified painted-line geometry with a 6 m unmeasured front allowance and 2 m stand-off deducted once. Missing known-entry control data constrains approach as unknown and cannot be replaced by geometric green.
+- Feed the existing longitudinal flow a distance/response-aware stop constraint. Permit a fresh positive same-passage brake request to decrease while moving without interrupting the acknowledged chain; retain stationary/unknown hold and all safety checks.
+- Preserve the qualified passage through green confirmation and bounded restart. Latch actual directed-entry overrun to refuse automatic restart; preserve the prior stationary-red holding limitation and existing toll ownership.
+- Preserve derived-target fields in the existing bounded combined export without changing journal/chunk limits or granting runtime authority. Offline evidence and limitations: [PHASE7_PREFAB_SIGNAL_BINDING_20261006.md](PHASE7_PREFAB_SIGNAL_BINDING_20261006.md).
+
 ## Core/application fixes — unreleased, 2026-10-05
 
 - Retain the same fresh locked signal head across passage of the SDK reference within a bounded 20 m backward lookup, and preserve its lock through the existing bounded restart handoff. Keep ahead-only acquisition, authority, lifecycle, placement, ambiguity and green-generation checks.
@@ -29,6 +40,11 @@ Release history for individual plugins. See [PLUGIN_VERSIONS.md](PLUGIN_VERSIONS
 - Verification and live limitations: [PHASE7_SIGNAL_LIFECYCLE_REGRESSION_20261004.md](PHASE7_SIGNAL_LIFECYCLE_REGRESSION_20261004.md).
 
 ## Map
+
+### 1.1.0 — 2026-10-06
+
+- Add bounded prefab traffic-control metadata to the immutable validated LanePath publication, using selected directed curve IDs and placed-instance geometry. Prepare it during route construction, outside the fresh steering calculation.
+- Preserve lateral geometry, regulator, steering scheduling, 500 ms checks and existing roundabout profile. Missing metadata remains explicit; dedicated tollgate assets retain their existing control flow.
 
 ### 1.0.7 — 2026-10-05
 
@@ -246,6 +262,11 @@ Commit: `3ef65c7`.
 - Consume current bound traffic and speed constraints without changing PID gains.
 
 ## DrivePolicy
+
+### 1.1.0 — 2026-10-06
+
+- Consume the derived directed-entry stop target in the existing speed plan with response/transfer allowance; avoid braking solely from the light-head position or deducting stand-off twice.
+- Treat an unobserved known-entry control as an unknown stopping constraint, never green clearance. Preserve lower map/curve/traffic limits and existing arbitration/controller ownership.
 
 ### 1.0.5 — 2026-10-05
 
