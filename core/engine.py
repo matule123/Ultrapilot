@@ -600,6 +600,7 @@ class UltraPilotEngine:
         while self.running and not self._realtime_stop.is_set():
             now = time.monotonic()
             success = False
+            failure_reason = ''
             try:
                 success = bool(self.telemetry.update())
             except Exception as error:
@@ -614,11 +615,19 @@ class UltraPilotEngine:
                 data = dict(getattr(self.telemetry, "data", {}) or {})
                 truck = data.get("truck", {}) or {}
                 raw = data.get("raw", {}) or {}
+                captured_at = (raw.get('controlRead') or {}).get('observed_at', timestamp)
+                if not isinstance(captured_at, (int, float)) or not 0 <= timestamp-captured_at <= .5:
+                    captured_at = timestamp
+                    success = False
+                    failure_reason = 'SDK_CONTROL_ACQUISITION_TIME_INVALID'
                 try:
                     frame = int(truck.get("sdkFrameTimeUs", 0) or 0)
                 except (TypeError, ValueError, OverflowError):
                     frame = -1
                 active = bool(raw.get("sdkActive", bool(truck)))
+                if not active or raw.get('pause', False):
+                    success = False
+                    failure_reason = 'SDK_PAUSED_OR_INACTIVE'
                 if (last_active is not None and active != last_active) or (
                         frame > 0 and last_frame is not None
                         and frame < last_frame):
@@ -628,13 +637,14 @@ class UltraPilotEngine:
                 last_active = active
                 if frame > 0:
                     last_frame = frame
-                if decision.accepted and decision.is_new:
-                    self._store_telemetry_sample(True, data, timestamp)
-                    payload = self._vehicle_telemetry_payload(data, timestamp)
+                if success and decision.accepted and decision.is_new:
+                    self._store_telemetry_sample(True, data, captured_at)
+                    payload = self._vehicle_telemetry_payload(data, captured_at)
                     payload["telemetry_sequence"] = self._telemetry_sequence
                     payload["telemetry_generation"] = epoch
+                    payload['telemetry_read_failure'] = ''
                     self.shared_state.update_batch(payload)
-                    last_accepted_at = timestamp
+                    last_accepted_at = captured_at
                     last_failure_published = False
                 elif not decision.accepted:
                     # A regressing frame cannot replace the latest proven
@@ -642,12 +652,20 @@ class UltraPilotEngine:
                     self.shared_state.set(
                         "telemetry_ordering_failure", decision.reason)
                     success = False
+                    failure_reason = decision.reason
                 if (not decision.is_new and last_accepted_at > 0.0
                         and timestamp - last_accepted_at > 0.5):
                     success = False
+                    failure_reason = 'SDK_FRAME_DID_NOT_ADVANCE'
             else:
                 data = {}
-            if not success:
+            failure_reason = failure_reason or getattr(self.telemetry, 'last_read_failure', '')
+            # A detected overlapping copy cannot overwrite a previously
+            # accepted sample with synthetic frame=0. Retain its ORIGINAL age
+            # only; a pause, invalid field or real .5 s loss still revokes it.
+            retain_previous = (failure_reason == 'SDK_CONTROL_READ_CHANGED'
+                and last_accepted_at > 0 and 0 <= timestamp-last_accepted_at <= .5)
+            if not success and not retain_previous:
                 self._store_telemetry_sample(False, data, timestamp)
                 if not last_failure_published:
                     telemetry_loss = _telemetry_loss_navigation_payload(
@@ -659,6 +677,7 @@ class UltraPilotEngine:
                                 "observed_at": timestamp, "valid": False}}},
                         "game_in_truck": False,
                         "telemetry_valid": False,
+                        "telemetry_read_failure": failure_reason or 'SDK_CONTROL_READ_UNAVAILABLE',
                         "telemetry_timestamp": timestamp,
                         "telemetry_producer_heartbeat": timestamp,
                         "trailer_attached": False,
@@ -869,6 +888,7 @@ class UltraPilotEngine:
                     or not 0 <= time.monotonic()-float(debug['observation_timestamp']) <= .5):
                 raise ValueError('route calculation unavailable')
             result = selector.select(observed['actors'], truck, float(debug['tracking_progress_m']))
+            result['crossing'] = selector.crossing(observed['actors'], truck, float(debug['tracking_progress_m']))
             if context(self.shared_state) != binding:
                 raise ValueError('route identity changed during traffic projection')
             projection = projection_input(self.shared_state, binding=binding, debug=debug)
@@ -1012,6 +1032,21 @@ class UltraPilotEngine:
             return 0.0
         # Smooth 1→0 between TTC 1s..5s (square for a firmer near-range response).
         return float(((5.0 - ttc) / 4.0) ** 2)
+
+    def _route_crossing_brake(self, following, traffic_brake):
+        crossing = following.get('crossing') or {}
+        if crossing.get('brake', 0.) <= traffic_brake:
+            return traffic_brake
+        conflicts = crossing['conflicts']
+        # All actors affect selection. The bounded journal receives compact
+        # attribution, never the complete actor array or a clearance claim.
+        self._traffic_brake_basis = dict(kind='directed_crossing_heuristic',
+            conflict_count=len(conflicts), candidate_ids=[c['id'] for c in conflicts[:16]],
+            omitted_candidate_ids=max(0, len(conflicts)-16),
+            decisive=max(conflicts, key=lambda c: c['brake']),
+            producer_timestamp=None, confirmed_route_conflict=False,
+            coverage_confirmed=False, clearance_confirmed=False)
+        return crossing['brake']
 
     def _light_brake(self, light):
         """Brake (0..1) to stop smoothly at a red light ahead; 0 on green/none.
@@ -2735,7 +2770,7 @@ class UltraPilotEngine:
                 return
             self._simple_auto_forward_history = history
             self.shared_state.set("simple_auto_forward_history", history)
-            simple_auto_forward = True
+            simple_auto_forward = not history.get('brake_only', False)
 
         if gps_output_reason:
             # Gear/identity revocation above must not be bypassed by an earlier
@@ -2778,6 +2813,10 @@ class UltraPilotEngine:
             except (TypeError, ValueError, OverflowError):
                 self._automatic_safety_stop("invalid longitudinal pedal values")
                 return
+        if (getattr(self, '_simple_auto_forward_history', None) or {}).get('brake_only'):
+            throttle = 0.
+            if longitudinal:
+                longitudinal['throttle'] = 0.
         # The plugin and Engine run on different clocks. Block an unconfirmed
         # ratio or Reverse before the plugin consumes the new frame; only the
         # bounded, activation-bound simple-auto transition may bridge zero.
@@ -3511,6 +3550,7 @@ class UltraPilotEngine:
                                 reason=following.get('reason'), producer_timestamp=None,
                                 confirmed_route_conflict=False, coverage_confirmed=False)
                         self.shared_state.set('lead_distance', following.get('gap_m'))
+                    traffic_brake = self._route_crossing_brake(following, traffic_brake)
                     # Stop on red / go on green.
                     self.shared_state.update_batch({
                         "traffic": traffic,

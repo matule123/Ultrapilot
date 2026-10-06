@@ -24,6 +24,9 @@ tests/.tmp-map-compat/
 .pytest-*/
 pytest-*/
 .tmp-stage5e-*/
+.tmp-*/
+.pytest_cache/
+tests/manual-tmp-check/
 
 # Local-only / agent artifacts
 docs/

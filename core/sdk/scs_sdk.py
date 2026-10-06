@@ -2,6 +2,8 @@ import mmap
 import struct
 import logging
 import os
+import math
+import time
 from typing import Any, Dict, Tuple
 
 class SCSTelemetry:
@@ -163,6 +165,56 @@ class SCSTelemetry:
             return ""
 
     def update(self) -> Dict[str, Any]:
+        """Decode one bounded immutable image, never a partial field read.
+
+        Equal copies detect overlap only: the upstream ABI has no seqlock.
+        No read clock or repeated SDK frame grants new observation freshness.
+        """
+        from core.sdk.vehicle_observation import (CAPTURE_SIZE, SOURCE,
+            VehicleObservation, ObservationError, decode_vehicle_observation)
+        self.last_read_failure = ''
+        if self.mm is None:
+            self.last_read_failure = 'SDK_CONTROL_READ_UNAVAILABLE'
+            return {}
+        try:
+            first = bytes(self.mm[:CAPTURE_SIZE])
+            for _ in range(2):
+                image = bytes(self.mm[:CAPTURE_SIZE])
+                if image == first:
+                    break
+                first = image
+            else:
+                self.last_read_failure = 'SDK_CONTROL_READ_CHANGED'
+                return {}
+            if len(image) != CAPTURE_SIZE:
+                raise ValueError('truncated SDK image')
+            captured_at = time.monotonic()
+            # Independent decoder view: never replace the live mm attribute
+            # while another consumer reads trailer/job data.
+            reader = SCSTelemetry()
+            reader.mm = image
+            data = reader._decode_control_snapshot()
+            if not data:
+                raise ValueError('incomplete SDK control fields')
+            if (image[0] not in (0, 1) or image[4] not in (0, 1)
+                    or any(not math.isfinite(v) for v in (
+                        data['truckFloat']['speed'], data['truckFloat']['gameSteer'],
+                        *data['truckPlacement'].values()))):
+                raise ValueError('invalid SDK control field')
+            data['controlRead'] = dict(stable=True, atomic=False,
+                sdk_frame_us=data['time'], observed_at=captured_at)
+            try:
+                data['vehicleObservation'] = decode_vehicle_observation(image, captured_at)
+            except ObservationError as exc:
+                # Unsupported optional body/profile evidence cannot silently
+                # alter the established control fields from the same image.
+                data['vehicleObservation'] = VehicleObservation(1, SOURCE, str(exc), captured_at)
+            return data
+        except (ValueError, TypeError, KeyError, OSError, BufferError, struct.error):
+            self.last_read_failure = 'SDK_CONTROL_READ_INVALID'
+            return {}
+
+    def _decode_control_snapshot(self) -> Dict[str, Any]:
         """Read the telemetry fields we use from shared memory.
 
         Uses the **fixed absolute zone offsets** of the scs-sdk-plugin shared
@@ -246,10 +298,6 @@ class SCSTelemetry:
             data["sdkActive"] = self.read_bool(0)[0]
 
         except Exception as e:
-            logging.error(f"Error reading SCS telemetry: {e}")
-
-        # Phase 5B1 is observational. Keep the established steering fields and
-        # their read order unchanged; a failed profile read cannot erase them.
-        from core.sdk.vehicle_observation import capture_vehicle_observation
-        data["vehicleObservation"] = capture_vehicle_observation(self.mm)
+            logging.debug("Error decoding SCS telemetry: %s", e)
+            return {}
         return data

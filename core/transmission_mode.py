@@ -249,9 +249,6 @@ def simple_auto_forward_transition(state, truck, history, now=None):
             observed_at = history["last_observed_at"]
             if not 0.0 <= now - observed_at <= 0.5:
                 return None, "simple automatic SDK frame is stale"
-        deadline = history.get("zero_deadline_at")
-        if deadline is not None and now > deadline:
-            return None, "simple automatic zero-ratio transition expired"
     result = dict(history or {})
     result.update(context=context, last_frame=frame,
                   last_observed_at=observed_at, signature=signature)
@@ -264,7 +261,11 @@ def simple_auto_forward_transition(state, truck, history, now=None):
             and 0. <= now-hold.get('returned_at', float('-inf')) <= .5
             and history and not history.get('launch_deadline_at')):
         result.update(phase='continuous_service_brake', zero_deadline_at=None)
+        result['brake_only'] = True
         return result, ''
+    deadline = (history or {}).get('zero_deadline_at')
+    if deadline is not None and now > deadline:
+        return None, "simple automatic zero-ratio transition expired"
     launch_deadline = result.get("launch_deadline_at")
     if launch_deadline is not None:
         if truck.get("parkBrake") is not False:
@@ -278,12 +279,22 @@ def simple_auto_forward_transition(state, truck, history, now=None):
         elif gear == 0:
             if not history or frame <= history["confirmed_frame"]:
                 return None, "simple automatic launch has no new ratio observation"
-            result.update(phase="launch_zero_ratio")
+            result.update(phase="launch_zero_ratio", brake_only=False)
             return result, ""
     if gear > 0:
         result.update(confirmed_frame=frame, confirmed_at=observed_at,
-                      zero_deadline_at=None, phase="forward_confirmed")
+                      zero_deadline_at=None, phase="forward_confirmed", brake_only=False)
         return result, ""
+    if (history and not history.get('launch_deadline_at')
+            and frame > history.get('confirmed_frame', frame)
+            and speed > .05 and truck.get('parkBrake') is False):
+        from core.longitudinal import planned_braking_input
+        if planned_braking_input(state):
+            deadline = history.get('zero_deadline_at') or (observed_at + SIMPLE_AUTO_ZERO_RATIO_MAX_S)
+            if time.monotonic() <= deadline:
+                result.update(phase='planned_brake_transition', brake_only=True,
+                              zero_deadline_at=deadline)
+                return result, ''
     if (not history or frame <= history["confirmed_frame"]
             or (history.get("zero_deadline_at") is None
                 and not 0.0 <= now - history["confirmed_at"] <= 0.5)):
@@ -295,7 +306,7 @@ def simple_auto_forward_transition(state, truck, history, now=None):
         deadline = observed_at + SIMPLE_AUTO_ZERO_RATIO_MAX_S
     if now > deadline:
         return None, "simple automatic zero-ratio transition expired"
-    result.update(zero_deadline_at=deadline, phase="zero_ratio_transition")
+    result.update(zero_deadline_at=deadline, phase="zero_ratio_transition", brake_only=False)
     return result, ""
 
 

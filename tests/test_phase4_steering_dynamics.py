@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import math
 import statistics
+import struct
 import time
 import unittest
 from unittest import mock
@@ -565,16 +566,16 @@ class Phase4SteeringDynamicsTests(unittest.TestCase):
         self.assertAlmostEqual(plugin._steering_dynamics.command, 0.18)
 
     def test_scs_abi_publishes_manual_and_game_wheel_positions(self):
-        reader = SCSTelemetry.__new__(SCSTelemetry)
-        reader.mm = object()
-        reader.read_bool = lambda offset, count=1: (False if count == 1 else [False]*count, offset + count)
-        reader.read_long_long = lambda offset: (0, offset + 8)
-        reader.read_int = lambda offset: (0, offset + 4)
-        reader.read_float = lambda offset, count=1: ({
-            956: 0.17, 972: -0.23,
-        }.get(offset, 0.0) if count == 1 else [0.0]*count, offset + 4*count)
-        reader.read_double = lambda offset: (0.0, offset + 8)
+        reader = SCSTelemetry()
+        # Exercise the actual immutable capture and ABI decoder, rather than
+        # mocked field readers that the independent snapshot view cannot use.
+        image = bytearray(reader.mmap_size)
+        struct.pack_into('<f', image, 956, 0.17)
+        struct.pack_into('<f', image, 972, -0.23)
+        reader.mm = image
         snapshot = reader.update()
+        self.assertEqual(reader.last_read_failure, '')
+        self.assertTrue(snapshot['controlRead']['stable'])
         self.assertAlmostEqual(snapshot["truckFloat"]["userSteer"], 0.17)
         self.assertAlmostEqual(snapshot["truckFloat"]["gameSteer"], -0.23)
 

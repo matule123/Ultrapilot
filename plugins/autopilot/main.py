@@ -487,7 +487,7 @@ class Plugin(BasePlugin):
     """
 
     NAME = "autopilot"
-    VERSION = "1.2.1"
+    VERSION = "1.2.2"
 
     def on_start(self):
         logging.info("Autopilot Plugin started (Phase 1 tuning).")
@@ -1427,12 +1427,14 @@ class Plugin(BasePlugin):
         # simple-auto mode can bridge it, using Engine's activation-bound,
         # time-limited evidence and the same rule as the physical output gate.
         ratio_reason = "forward gear is no longer confirmed"
+        ratio_brake_only = False
         if autopilot_engaged and selected_mode(
                 self.sdk.shared_state.get("ets2_transmission_mode", {}) or {},
                 self.sdk.shared_state.get("transmission_mode_preference", "auto")) == 0:
             _history, ratio_reason = simple_auto_forward_transition(
                 self.sdk.shared_state, truck,
                 forward_history)
+            ratio_brake_only = bool(_history and _history.get('brake_only'))
         else:
             ratio_reason = ratio_reason if gear == 0 else ""
             if autopilot_engaged and gear == 0:
@@ -1666,6 +1668,8 @@ class Plugin(BasePlugin):
             input_failure = "invalid longitudinal producer values"
             decision = {"throttle": 0., "brake": 0., "source": "invalid", "reason": input_failure}
         self._longitudinal_decision = decision
+        if ratio_brake_only:
+            decision['throttle'] = 0.
         if strict_longitudinal:
             decision['dependencies'] = [p for p in (
                 acc, traffic if traffic_required(traffic) else None,

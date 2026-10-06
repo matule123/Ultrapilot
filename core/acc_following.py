@@ -170,6 +170,81 @@ class RouteLeadSelector:
                     emergency=any(c['emergency'] for c in constraints),
                     reason='projected receiver observation; publisher freshness and lane membership unproven')
 
+    def crossing(self, actors, truck, progress):
+        """All observed crossing candidates on the directed local reference.
+
+        Constant actor velocity and 0..2 m/s² nominal ego acceleration define
+        a protective arrival window, NOT a measured acceleration bound or a
+        certified gap. The 2 s reserve is the existing ACC headway. No result,
+        including an empty buffer, can authorize entry or release a stop.
+        """
+        result = dict(status='no_conflict_unproven_coverage', conflicts=[], brake=0.,
+            clearance_confirmed=False, producer_timestamp=None,
+            coverage_confirmed=False, confirmed_route_conflict=False)
+        try:
+            speed = float(truck['speed'])
+            if (not self.arcs or not math.isfinite(progress) or not 0 <= progress <= self.arcs[-1]
+                    or not math.isfinite(speed) or speed < 0 or len(actors) > 80):
+                raise ValueError('invalid route kinematics')
+            ego = self._project(dict(truck, yaw=truck['rotation']), max(0.,progress-20.), progress+20.)
+            if ego is None or ego[0] > LATERAL_GATE_M:
+                raise ValueError('invalid ego projection')
+            first = max(0, bisect.bisect_right(self.arcs, ego[1])-1)
+            last = min(len(self.edges), bisect.bisect_left(self.arcs, ego[1]+HORIZON_M)+1)
+            if last-first > 512:
+                raise ValueError('unsupported edge count')
+            ids = [a.get('id') for a in actors]
+            if any(i is None for i in ids) or len(set(ids)) != len(ids):
+                raise ValueError('ambiguous actor identity')
+            for actor in actors:
+                x,y,z,yaw,v = (float(actor[k]) for k in ('x','y','z','yaw','speed'))
+                if not all(math.isfinite(n) for n in (x,y,z,yaw,v)) or not 0 <= v <= 70.:
+                    raise ValueError('invalid actor kinematics')
+                if v <= .1:
+                    continue  # standing actors remain the lead/obstacle path
+                lead = self._project(actor,max(0.,ego[1]-5.),ego[1]+HORIZON_M)
+                if lead is not None and lead[0] <= LATERAL_GATE_M:
+                    continue  # directed same-lane lead already uses ACC
+                vx,vz = -math.sin(yaw)*v, -math.cos(yaw)*v
+                candidates = []
+                for i in range(first,last):
+                    ax,ay,az,dx,dy,dz,length,inv,_,start = self.edges[i]
+                    den = vx*dz-vz*dx
+                    if abs(den)*inv/v < math.sin(math.radians(20.)):
+                        continue  # parallel/oncoming reference is not crossing
+                    ox,oz = ax-x,az-z
+                    t = (ox*dz-oz*dx)/den
+                    u = (ox*vz-oz*vx)/den
+                    distance = start+u*length-ego[1]
+                    if not (0 <= t <= 8. and 0 <= u <= 1. and 0 <= distance <= HORIZON_M
+                            and abs(y-ay-u*dy) <= HEIGHT_GATE_M):
+                        continue
+                    earliest = (math.sqrt(speed*speed+4.*distance)-speed)/2.
+                    latest = distance/speed if speed > .1 else float('inf')
+                    # The immutable buffer dimensions remain explicitly raw;
+                    # no cab/trailer outline or bumper distance is invented.
+                    dims = actor.get('dimensions_whl')
+                    body_time = (float(dims[2])/(2*v) if dims and len(dims)==3
+                        and all(math.isfinite(float(n)) and n > 0 for n in dims) else 0.)
+                    if earliest > t+HEADWAY_S+body_time or latest < t-HEADWAY_S-body_time:
+                        continue
+                    urgency = min(t,earliest)
+                    brake = 1. if urgency <= 1. else ((5.-min(5.,urgency))/4.)**2
+                    candidates.append(dict(id=actor['id'], route_progress_m=start+u*length,
+                        distance_m=distance, actor_arrival_s=t, ego_arrival_earliest_s=earliest,
+                        ego_arrival_latest_s=latest if math.isfinite(latest) else None,
+                        reserve_s=HEADWAY_S, assumed_ego_acceleration_mps2=2.,
+                        dimensions_whl=dims, brake=brake))
+                if candidates:
+                    result['conflicts'].append(max(candidates,key=lambda c:c['brake']))
+            result['conflicts'].sort(key=lambda c:(c['actor_arrival_s'],str(c['id'])))
+            result['brake'] = max((c['brake'] for c in result['conflicts']),default=0.)
+            if result['conflicts']:
+                result['status'] = 'protective_crossing_candidates'
+        except (KeyError, TypeError, ValueError, OverflowError):
+            result.update(status='crossing_projection_unavailable',conflicts=[],brake=0.)
+        return result
+
 
 def following_demand(gap_m, lead_speed_mps, ego_speed_mps):
     """Time-gap speed constraint for the existing PID, not another controller."""

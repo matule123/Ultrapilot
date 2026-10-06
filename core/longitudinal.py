@@ -64,6 +64,40 @@ def signal_stop_brake_request(light, speed_ms, *, continuing=False):
     return min(1.,required_decel/4.)
 
 
+def planned_braking_input(state):
+    """Current planned stop evidence, never an authorization for zero-ratio drive.
+
+    Used by the shared drivetrain gate before the first physical brake receipt.
+    An old positive ratio alone is insufficient. Only a still-valid identified
+    stop request can bridge the first braking write; the ordinary pedal arbiter
+    and final write check remain authoritative.
+    """
+    binding = context(state)
+    traffic, _ = read(state, 'traffic', binding=binding)
+    policy, _ = read(state, 'policy', binding=binding)
+    acc, _ = read(state, 'acc', binding=binding)
+    try:
+        values = [number(value,0.,1.) for value in (
+            (traffic or {}).get('light_brake',0.), (traffic or {}).get('traffic_brake',0.),
+            (acc or {}).get('brake',0.), (policy or {}).get('brake',0.))]
+    except (TypeError, ValueError, OverflowError):
+        return False
+    light_brake, traffic_brake, acc_brake, policy_brake = values
+    light = (traffic or {}).get('light') or {}
+    signal_stop = bool(light.get('color') in ('red', 'yellow', 'unknown', 'off', 'sleep')
+        and (light_brake > 0
+             or light.get('stop_target_kind') == 'derived_directed_curve_entry'))
+    traffic_stop = signal_stop or bool(traffic_brake > 0
+        or ((traffic or {}).get('following') or {}).get('status') == 'candidate'
+        )
+    policy_stop = (policy or {}).get('reason') == 'toll stop/payment'
+    required = [p for p,used in ((traffic,traffic_stop),(policy,policy_stop),(acc,acc_brake>0)) if p and used]
+    current = context(state)
+    checked_at = time.monotonic()
+    return bool((traffic_stop or policy_stop) and max(values)>0 and current==binding
+        and all(not rejection(p,binding,checked_at) for p in required))
+
+
 def curve_speed_envelope(radius_m, distance_m, speed_ms):
     from core.navigation.route import curve_speed_limit_ms
     radius = number(radius_m, 1e-9, 1e12)

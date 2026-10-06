@@ -66,7 +66,7 @@ def after_write(previous, controller, forward_context, truck, decision, now,
     history = forward_history or {}
     zero_forward = bool(int(truck['gear']) == 0
         and history.get('context') == forward_context
-        and history.get('phase') == 'zero_ratio_transition'
+        and history.get('phase') in ('zero_ratio_transition', 'planned_brake_transition')
         and history.get('last_frame') == truck['sdkFrameTimeUs']
         and not history.get('launch_deadline_at')
         and 0. <= now-history.get('last_observed_at', float('-inf')) <= .5
@@ -90,7 +90,7 @@ def after_write(previous, controller, forward_context, truck, decision, now,
         return None
     if 'signal_lock' not in result:
         signal = ((result['stop_evidence'].get('traffic') or {}).get('signal') or {})
-        if signal.get('valid') and (signal.get('candidate') or {}).get('color') == 'red':
+        if signal.get('valid') and (signal.get('candidate') or {}).get('color') in ('red', 'yellow'):
             result['signal_lock'] = dict(authority=tuple(decision['context']),
                 lifecycle=signal['lifecycle'], generation=signal['generation'],
                 frame_us=signal['frame_us'], observed_at=signal['observed_at'],

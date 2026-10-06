@@ -1,5 +1,34 @@
 # Odložená a nedokončená práca
 
+## Spoločný brzdový tok a krížiaca premávka – 6. 10. 2026
+
+[PHASE7_JOINT_STOP_TRAFFIC_20261006.md](PHASE7_JOINT_STOP_TRAFFIC_20261006.md)
+dokladá reprodukovaný konflikt prvého plánovaného brzdenia pri čerstvom gear=0
+so staršou potvrdenou históriou. Spoločný ohraničený stav povoľuje iba brzdu,
+nie plyn; skutočný zápis vytvorí existujúce súvislé držanie. Aktuálny brzdový
+reťazec sa preverí pred zastaraným deadline prechodnej nuly. Semafor sa uzamkne
+aj pri začatí brzdenia na žltú. Tri cykly červená–čakanie–zelená–rozjazd prešli
+cez produkčné komponenty offline bez ďalšieho N a bez ručnej brzdy.
+
+Nový ochranný výpočet skúma všetkých zachytených aktérov na smerovanej trase
+a nezabudne druhé auto po odstránení prvého. Nie je to potvrdenie voľného
+priechodu: legacy traffic nemá producentov čas/generáciu, úplné pokrytie ani
+doloženú históriu konfliktov. Kolízny problém preto zostáva NOT VERIFIED;
+spoľahlivé autonómne prijatie medzery na objazde tým nie je hotové.
+
+Opravené SDK čítanie odmieta čiastočný obraz a pri zistenom prekrývaní kópie
+uchová poslednú prijatú snímku iba s pôvodným časom, najviac v existujúcom
+500 ms limite. Pauza a skutočný výpadok naďalej bezpečne odoberú autoritu.
+Historický výpadok 19:26:54 neobsahuje pôvodný pause/active/read-failure stav;
+posledný Map tick trval 27,06 ms, takže blokovanie Mapu nie je preukázané.
+Presný pôvod piatich historických prepnutí pedálov tiež nie je doložený.
+
+Volant a pozdĺžny komfort sú v príslušných benchmarkoch numericky nezmenené.
+Autopilot má 1.2.2; nezmenené pluginy nedostali nové verzie. Zmeny sa
+nenasadili; celá sada používateľa a herná spotreba súvislej SDK brzdy zostávajú
+otvorené. Samostatné bezpečné držanie pri novej aktivácii už stojaceho vozidla
+na červenú ostáva predošlým blokátorom. Ďalšia jazda sa teraz nežiada.
+
 ## Prefabové priradenie semafora a odvodený cieľ – 6. 10. 2026
 
 [PHASE7_PREFAB_SIGNAL_BINDING_20261006.md](PHASE7_PREFAB_SIGNAL_BINDING_20261006.md)

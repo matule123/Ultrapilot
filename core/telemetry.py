@@ -31,11 +31,18 @@ class Telemetry:
         if self.use_sdk:
             try:
                 raw = self.sdk_reader.update()
+                if not raw or not (raw.get('controlRead') or {}).get('stable'):
+                    self.last_read_failure = getattr(self.sdk_reader, 'last_read_failure', '') or 'SDK_CONTROL_READ_INCOMPLETE'
+                    return False
                 self.data = self._normalize_sdk(raw)
+                self.last_read_failure = ''
                 return True
             except Exception as e:
-                logging.error(f"SDK Telemetry error: {e}. Falling back to HTTP.")
-                self.use_sdk = False
+                # A transient shared-memory overlap is not a transport switch
+                # or an HTTP pose/gear confirmation.
+                self.last_read_failure = 'SDK_CONTROL_READ_INVALID'
+                logging.debug("SDK telemetry read rejected: %s", e)
+                return False
 
         if requests is None:
             return False

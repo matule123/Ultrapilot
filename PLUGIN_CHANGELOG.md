@@ -4,6 +4,12 @@ Release history for individual plugins. See [PLUGIN_VERSIONS.md](PLUGIN_VERSIONS
 
 ## Core/application changes — unreleased, 2026-10-06
 
+- Admit the first fresh identified planned brake at a moving zero ratio as a bounded brake-only transition. Let its actual returned brake write establish the existing service hold; validate that current chain before an obsolete zero-transition deadline. Do not permit anonymous neutral propulsion or renew old observations.
+- Lock the qualified signal head when continuous braking starts on yellow as well as red. Preserve same-head/passage/lifecycle green confirmation and other-stop clearance checks through repeated supported wait/restart cycles.
+- Evaluate all observed protective crossing candidates on the unchanged directed local reference, retaining the stronger existing brake. Bound actor/edge work and compact diagnostic attribution; missing producer freshness and coverage remain explicit and cannot authorize entry or stop release.
+- Decode truck control fields from one bounded immutable SDK image after equal-copy checks, rejecting partial/nonfinite reads. Preserve its original acquisition time; retain an accepted sample only during a detected copy overlap within its existing age limit. Pause, inactive game and true loss still revoke authority.
+- Production counterexamples, unchanged steering/comfort benchmarks and unproven historical SDK/collision causes: [PHASE7_JOINT_STOP_TRAFFIC_20261006.md](PHASE7_JOINT_STOP_TRAFFIC_20261006.md).
+
 - Support the producer-timed `traffic_signal` leaf in the bounded decision-refresh contract. Preserve continuous service braking while waiting for replacement decisions; reject missing, expired, foreign-head/lifecycle/passage and retimestamped-frame evidence without extending the original signal lease.
 - Retain authored prefab-curve semaphore IDs and invalidate schema-13 caches which lack them. Prepare qualified control entries from the unchanged directed LanePath and existing world/elevation transform.
 - Scope live signal IDs to the selected placed passage with position, approach, height and ambiguity checks; allow repeated IDs in distinct prefabs without admitting duplicate ID/placement rows.
@@ -116,6 +122,11 @@ Commit: `3ef65c7`.
 - Introduced independent version tracking for existing map dataset, localization and navigation-packet functionality.
 
 ## Autopilot
+
+### 1.2.2 — 2026-10-06
+
+- Use the common bounded zero-ratio planned-braking and acknowledged service-hold transition before rejecting lost forward confirmation. Suppress propulsion in its brake-only phases; preserve existing launch, reverse, freshness and route-identity guards.
+- Keep supported continuous waiting active without ordinary-wait hazards, using the existing Engine-owned hold and qualified green restart rather than a separate gearbox exception.
 
 ### 1.2.1 — 2026-10-05
 
