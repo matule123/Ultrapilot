@@ -2,6 +2,12 @@
 
 Release history for individual plugins. See [PLUGIN_VERSIONS.md](PLUGIN_VERSIONS.md) for versioning rules.
 
+## Core/application fixes — unreleased, 2026-10-07
+
+- Pin the longitudinal command before drivetrain checks. If IPC publication overtakes the captured SDK frame, obtain at most one actual replacement truck observation and fully validate the pinned command against it. Reuse the same observation through forward-ratio, continuous-hold and physical output checks; preserve the ahead predicate, original times, identity checks and final write deadline.
+- Keep exact compared command/truck receipts, original capture and retry timing in the existing bounded fault/journal export. Do not replace the fault header with later telemetry. Pack fixed-key receipts losslessly within unchanged memory budgets; normal commands add no routine retry payload.
+- Verify both automatic modes, repeated races, stale/future/foreign inputs, expiry during reread and existing red/wait/green cycles through actual Controller mapping writes. Steering (16 cases) and longitudinal comfort (12 cases) are numerically unchanged. See [PHASE7_COMMAND_OBSERVATION_PAIRING_20261007.md](PHASE7_COMMAND_OBSERVATION_PAIRING_20261007.md). No plugin implementation or version changes; ETS2 confirmation remains open.
+
 ## Core/application changes — unreleased, 2026-10-06
 
 - Admit the first fresh identified planned brake at a moving zero ratio as a bounded brake-only transition. Let its actual returned brake write establish the existing service hold; validate that current chain before an obsolete zero-transition deadline. Do not permit anonymous neutral propulsion or renew old observations.

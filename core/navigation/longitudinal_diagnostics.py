@@ -22,6 +22,13 @@ JOURNAL_INPUT_KEYS = INPUT_KEYS + (
     'context_reference', 'observation_reference', 'deadline_reference', 'deadline_basis',
 )
 
+_COMPARISON_FIELDS = (
+    'checked_at', 'sdk_frame_us', 'observation_timestamp', 'computed_at', 'expires_at',
+    'valid', 'source', 'decision_source', 'reason', 'handoff_required',
+    'remaining_at_computation_s', 'observation_age_s', 'decision_age_s', 'lease_overrun_s',
+    'schema_version', 'throttle', 'brake', 'emergency',
+)
+
 
 def bounded_copy(value, limit=16384):
     """Conservative byte/node budget, without serialization on the control tick."""
@@ -52,7 +59,32 @@ def bounded_copy(value, limit=16384):
         return {'snapshot_status': 'UNVERIFIED_SNAPSHOT_BUDGET_EXCEEDED'}, 256
 
 
-def bounded_fault_details(value):
+def _pack_pairing(pairing):
+    """Fixed-key receipt within existing budgets, expanded at the public edge."""
+    def row(vehicle):
+        observed = vehicle['observation']
+        return [vehicle.get(k) for k in ('sdk_frame_us', 'gear', 'speed_mps', 'park_brake')] + [
+            observed.get(k) for k in ('schema_version', 'sdk_frame_us', 'observed_at', 'valid', 'reason')]
+    return dict(schema=1, values=[row(pairing['initial_vehicle']),
+        row(pairing['compared_vehicle']), pairing['reread_count'],
+        *(pairing[k] for k in ('command_read_started_at', 'command_read_at', 'checked_after_read_at'))])
+
+
+def _expand_pairing(pairing):
+    if not isinstance(pairing, dict) or pairing.get('schema') != 1:
+        return pairing
+    def row(values):
+        result = dict(zip(('sdk_frame_us', 'gear', 'speed_mps', 'park_brake'), values[:4]))
+        result['observation'] = dict(zip(
+            ('schema_version', 'sdk_frame_us', 'observed_at', 'valid', 'reason'), values[4:]))
+        return result
+    values = pairing['values']
+    return dict(initial_vehicle=row(values[0]), compared_vehicle=row(values[1]),
+        reread_count=values[2], **dict(zip(
+            ('command_read_started_at', 'command_read_at', 'checked_after_read_at'), values[3:])))
+
+
+def bounded_fault_details(value, *, packed=False):
     """Account identical compared identities once inside one fault receipt.
 
     Restore the public explicit fields after the bounded immutable copy. Both
@@ -65,10 +97,62 @@ def bounded_fault_details(value):
             and isinstance(value.get('expected_context'), (list, tuple))
             and tuple(value['actual_context']) == tuple(value['expected_context']))
     selected = {k: v for k, v in value.items() if not (same and k == 'expected_context')}
+    pairing = selected.get('command_observation_pairing')
+    if isinstance(pairing, dict):
+        actual, expected = value.get('actual_context'), value.get('expected_context')
+        if (not same and isinstance(actual, (tuple, list))
+                and isinstance(expected, (tuple, list)) and len(actual) == len(expected)):
+            # Preserve genuine differences, including foreign session, without
+            # duplicating every unchanged route string within the 8 KB receipt.
+            selected.pop('expected_context')
+            selected['compared_context_delta'] = [[i, v] for i, v in enumerate(expected)
+                                                  if v != actual[i]]
+        selected['command_observation_pairing'] = _pack_pairing(pairing)
+        selected.pop('vehicle_sdk_frame_us', None)
+        selected.pop('vehicle_observation', None)
+        # Fixed names already have a public schema. Account their values once,
+        # then restore names after the bounded copy; no evidence is discarded.
+        selected['comparison_fields'] = sum(1 << i for i, k in enumerate(_COMPARISON_FIELDS) if k in selected)
+        selected['comparison_values'] = [selected.pop(k) for k in _COMPARISON_FIELDS if k in selected]
     result = bounded_copy(selected, limit=8192)[0]
-    if same and 'actual_context' in result:
+    if packed:
+        if same and 'actual_context' in result:
+            result['expected_context_reference'] = 'actual_context'
+        return result
+    return _expand_fault_details(result, same=same)
+
+
+def _expand_fault_details(result, *, same=False):
+    result = dict(result)
+    if 'command_observation_pairing' in result:
+        mask = result.pop('comparison_fields')
+        result.update(zip((k for i, k in enumerate(_COMPARISON_FIELDS) if mask & (1 << i)),
+                          result.pop('comparison_values')))
+        pairing = _expand_pairing(result['command_observation_pairing'])
+        result['command_observation_pairing'] = pairing
+        compared = pairing['compared_vehicle']
+        result['vehicle_sdk_frame_us'] = compared['sdk_frame_us']
+        result['vehicle_observation'] = {k: compared['observation'].get(k) for k in
+            ('sdk_frame_us', 'observed_at', 'valid', 'reason')}
+    if (same or result.pop('expected_context_reference', None) == 'actual_context') and 'actual_context' in result:
         result['expected_context'] = result['actual_context']
+    elif 'compared_context_delta' in result:
+        result['expected_context'] = list(result['actual_context'])
+        for index, item in result.pop('compared_context_delta'):
+            result['expected_context'][index] = item
     return result
+
+
+def _pack_intervention(value):
+    if not isinstance(value, dict) or not isinstance(value.get('details'), dict):
+        return value
+    return {**value, 'details': bounded_fault_details(value['details'], packed=True)}
+
+
+def _expand_intervention(value):
+    if not isinstance(value, dict) or not isinstance(value.get('details'), dict):
+        return value
+    return {**value, 'details': _expand_fault_details(value['details'])}
 
 
 def bounded_input(value):
@@ -108,6 +192,8 @@ def compact_decision(value):
     if not isinstance(value, dict) or not isinstance(value.get('context'), (list, tuple)):
         return value
     result = dict(value)
+    if isinstance(result.get('command_observation_pairing'), dict):
+        result['command_observation_pairing'] = _pack_pairing(result['command_observation_pairing'])
     binding = tuple(value['context'])
     inputs = value.get('inputs') if isinstance(value.get('inputs'), dict) else {}
     def same_observation(item):
@@ -246,6 +332,8 @@ def expand_decision(value):
     for k in ('selected', 'requested'):
         if k in result:
             result[k] = expand(result[k])
+    if 'command_observation_pairing' in result:
+        result['command_observation_pairing'] = _expand_pairing(result['command_observation_pairing'])
     result.pop('deadline_basis_schema', None)
     result.pop('deadline_bases', None)
     return result
@@ -275,7 +363,7 @@ class PedalJournal:
         intervention = value.get('intervention') if isinstance(value, dict) else None
         if intervention is not None:
             value = {k: v for k, v in value.items() if k != 'intervention'}
-        self._local.intervention, extra = bounded_copy(intervention, limit=16384)
+        self._local.intervention, extra = bounded_copy(_pack_intervention(intervention), limit=16384)
         self._local.source, self._local.size = bounded_copy(pack_journal_inputs(compact_decision(value)), limit=32768) if value is not None else (None, 64)
         self._local.size += extra
 
@@ -286,7 +374,7 @@ class PedalJournal:
         # intervention into the actual zero writes and restore it afterwards.
         # Returning only the decision silently dropped that event on handover.
         if isinstance(source, dict) and intervention is not None:
-            return {**source, 'intervention': intervention}
+            return {**source, 'intervention': _expand_intervention(intervention)}
         return source
 
     def next_decision(self):
@@ -351,6 +439,7 @@ class PedalJournal:
             self._dropped = 0
         for event in result['events']:
             event['source'] = expand_decision(event['source'])
+            event['intervention'] = _expand_intervention(event.get('intervention'))
             if isinstance(event['source'], dict) and event.get('intervention') is not None:
                 event['source'] = {**event['source'], 'intervention': event['intervention']}
         return result

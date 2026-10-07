@@ -1503,7 +1503,8 @@ class UltraPilotEngine:
 
     def _revoke_simple_auto_launch(self, truck, reason):
         """Revoke forward authority at the Engine's single physical boundary."""
-        record_control_fault(self.shared_state, "engine", reason)
+        record_control_fault(self.shared_state, "engine", reason,
+            details=getattr(self, '_longitudinal_rejection_detail', None))
         first_reason = first_control_fault(self.shared_state, reason)
         self.shared_state.update_batch({
             "autopilot_active": False, "autopilot_engagement_request": None,
@@ -2716,14 +2717,21 @@ class UltraPilotEngine:
         # Navigation/steering preparation can block on IPC while independent
         # producers advance. Do not select pedals before that work, then write
         # the already-expired selection despite a newer valid command waiting.
-        # Read ONE actual vehicle snapshot afterwards; keep its embedded time
-        # and validate it, never retimestamp the earlier observation.
+        # Pin the command before drivetrain checks. If its producer overtakes
+        # the truck read, pair it with at most ONE actual replacement snapshot.
+        # All subsequent checks consume that same truck, never a retimestamp.
+        command_observation = None
         if self.shared_state.get("longitudinal_control_schema") == 1:
+            from core.longitudinal import capture_command_observation, command_observation_details
             truck_telemetry = ((self.shared_state.get("telemetry", {}) or {})
                                .get("truck", {}) or {})
+            command_observation = capture_command_observation(self.shared_state, truck_telemetry)
+            truck_telemetry = command_observation.truck
             vehicle_reason = vehicle_control_observation_rejection(
                 self.shared_state, truck_telemetry)
             if vehicle_reason:
+                self._longitudinal_rejection_detail = command_observation_details(
+                    command_observation, time.monotonic())
                 self._automatic_safety_stop(vehicle_reason)
                 return
             if journal is not None and journal.enabled:
@@ -2734,6 +2742,8 @@ class UltraPilotEngine:
                     observation_valid=metadata.get("valid") is True,
                     actual_speed_mps=truck_telemetry.get("speed"),
                     observed_gear=truck_telemetry.get("gear"))
+                if command_observation.provenance['reread_count']:
+                    self._longitudinal_trace['command_observation_pairing'] = command_observation.provenance
 
         simple_auto_forward = False
         hold = getattr(self, '_service_brake_hold', None)
@@ -2741,6 +2751,9 @@ class UltraPilotEngine:
             from core.service_brake_hold import rejection as hold_rejection
             reason = hold_rejection(hold, self.controller, self.shared_state, truck_telemetry)
             if reason:
+                if command_observation is not None:
+                    self._longitudinal_rejection_detail = command_observation_details(
+                        command_observation, time.monotonic())
                 self._revoke_simple_auto_launch(truck_telemetry, reason)
                 return
         if getattr(self, "_active_transmission_mode", None) == 0:
@@ -2752,6 +2765,9 @@ class UltraPilotEngine:
                 if hold_reason:
                     self._service_brake_hold = None
                     self.shared_state.set('simple_auto_service_hold', None)
+                    if command_observation is not None:
+                        self._longitudinal_rejection_detail = command_observation_details(
+                            command_observation, time.monotonic())
                     self._revoke_simple_auto_launch(truck_telemetry, hold_reason)
                     return
             starting = (getattr(self, "_simple_auto_forward_history", None) or {}).get(
@@ -2766,6 +2782,9 @@ class UltraPilotEngine:
                          or not getattr(getattr(self.controller, "scs", None), "connected", False))):
                 ratio_reason = "simple automatic launch lost SCS backend"
             if ratio_reason:
+                if command_observation is not None:
+                    self._longitudinal_rejection_detail = command_observation_details(
+                        command_observation, time.monotonic())
                 self._revoke_simple_auto_launch(truck_telemetry, ratio_reason)
                 return
             self._simple_auto_forward_history = history
@@ -2786,7 +2805,8 @@ class UltraPilotEngine:
             self._longitudinal_rejection_detail = {}
             longitudinal, pedal_reason = engine_decision(self.shared_state, truck_telemetry,
                 diagnostic=getattr(self, '_longitudinal_trace', None),
-                rejection_info=self._longitudinal_rejection_detail)
+                rejection_info=self._longitudinal_rejection_detail,
+                command_observation=command_observation)
             if pedal_reason:
                 if self._wait_for_first_pedal_command(truck_telemetry, pedal_reason):
                     return

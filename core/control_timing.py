@@ -29,15 +29,24 @@ def first_control_fault_record(state):
 
 def _intervention_record(state, producer, code, reason, kind, details):
     from core.longitudinal import context
-    telemetry = state.get('telemetry')
-    truck = telemetry.get('truck') if isinstance(telemetry, dict) else None
-    truck = truck if isinstance(truck, dict) else {}
-    observation = truck.get('_control_observation')
-    observation = observation if isinstance(observation, dict) else {}
+    pairing = details.get('command_observation_pairing') if isinstance(details, dict) else None
+    compared = pairing.get('compared_vehicle') if isinstance(pairing, dict) else None
+    if isinstance(compared, dict):
+        # A later telemetry read cannot stand in for the rejected comparison.
+        truck = {'sdkFrameTimeUs': compared.get('sdk_frame_us')}
+        observation = compared.get('observation') or {}
+    else:
+        telemetry = state.get('telemetry')
+        truck = telemetry.get('truck') if isinstance(telemetry, dict) else None
+        truck = truck if isinstance(truck, dict) else {}
+        observation = truck.get('_control_observation')
+        observation = observation if isinstance(observation, dict) else {}
     try:
         binding = list(context(state))
     except (AttributeError, TypeError, ValueError):
         binding = None  # Malformed authority is not reconstructed by logging.
+    if isinstance(compared, dict) and isinstance(details.get('expected_context'), (tuple, list)):
+        binding = list(details['expected_context'])
     return dict(epoch=state.get('autopilot_failure_epoch'), sequence=time.monotonic_ns(),
         observed_at=time.monotonic(), producer=producer, source=producer,
         code=code, kind=kind, reason=str(reason)[:512],

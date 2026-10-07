@@ -6,6 +6,7 @@ physical owner. Timestamps refer to the original vehicle observation.
 """
 import math
 import time
+from dataclasses import dataclass
 
 from core.transmission_mode import vehicle_control_observation, vehicle_control_observation_rejection
 
@@ -525,11 +526,76 @@ def handoff_decision(state, truck, value, binding, reason):
     return fresh
 
 
-def engine_decision(state, truck, now=None, *, diagnostic=None, rejection_info=None):
+def _vehicle_receipt(truck):
+    """The exact control fields consumed, not a later diagnostic telemetry read."""
+    observation = truck.get('_control_observation')
+    observation = observation if isinstance(observation, dict) else {}
+    return dict(sdk_frame_us=truck.get('sdkFrameTimeUs'), gear=truck.get('gear'),
+        speed_mps=truck.get('speed'), park_brake=truck.get('parkBrake'),
+        observation={k: observation.get(k) for k in
+            ('schema_version', 'sdk_frame_us', 'observed_at', 'valid', 'reason')})
+
+
+@dataclass(frozen=True)
+class CommandObservation:
+    binding: tuple
+    command: object
+    truck: dict
+    provenance: dict
+
+
+def capture_command_observation(state, truck, now=None):
+    """Pin ONE command; at most one real truck read if publication overtook it.
+
+    This pairs observations only. It grants no authority and changes neither
+    packet nor SDK metadata. All ordinary validity/identity/deadline/drivetrain
+    checks must run on the returned truck, after these IPC reads.
+    """
+    binding = context(state)
+    initial = _vehicle_receipt(truck)
+    read_started = time.monotonic() if now is None else now
+    value = state.get(COMMAND_KEY)
+    command_read_at = time.monotonic() if now is None else now
+    retry = False
+    try:
+        retry = isinstance(value, dict) and int(value['sdk_frame_us']) > int(truck['sdkFrameTimeUs'])
+    except (KeyError, TypeError, ValueError, OverflowError):
+        pass  # The full validator retains its malformed-input rejection.
+    if retry:
+        telemetry = state.get('telemetry')
+        truck = telemetry.get('truck') if isinstance(telemetry, dict) else None
+        truck = truck if isinstance(truck, dict) else {}
+    checked_at = time.monotonic() if now is None else now
+    return CommandObservation(binding, value, truck, dict(
+        initial_vehicle=initial, compared_vehicle=_vehicle_receipt(truck),
+        command_read_started_at=read_started, command_read_at=command_read_at,
+        checked_after_read_at=checked_at, reread_count=int(retry)))
+
+
+def command_observation_details(pair, now, *, value=None, binding=None):
+    command = pair.command if value is None else value
+    result = rejection_details(command, pair.binding if binding is None else binding, now)
+    result['vehicle_sdk_frame_us'] = pair.truck.get('sdkFrameTimeUs')
+    observed = pair.provenance['compared_vehicle']['observation']
+    result['vehicle_observation'] = {k: observed.get(k) for k in
+        ('sdk_frame_us', 'observed_at', 'valid', 'reason')}
+    result['command_observation_pairing'] = pair.provenance
+    if isinstance(command, dict):
+        result.update({k: command.get(k) for k in ('schema_version', 'throttle', 'brake', 'emergency')})
+    return result
+
+
+def engine_decision(state, truck, now=None, *, diagnostic=None, rejection_info=None,
+                    command_observation=None):
+    pair = (command_observation if command_observation is not None
+            else capture_command_observation(state, truck, now))
+    truck = pair.truck
     details = rejection_info if rejection_info is not None else {}
-    result, reason = _engine_decision(state, truck, now, diagnostic=diagnostic, rejection_info=details)
-    request = state.get('longitudinal_refresh_request')
-    if reason and isinstance(request, dict) and (state.get(COMMAND_KEY) or {}).get('refresh_pending'):
+    result, reason = _engine_decision(state, truck, now, diagnostic=diagnostic,
+        rejection_info=details, command_observation=pair)
+    request = state.get('longitudinal_refresh_request') if reason else None
+    if (reason and isinstance(request, dict) and isinstance(pair.command, dict)
+            and pair.command.get('refresh_pending')):
         # Plugin already requested this SAME bounded transition. Do not use the
         # newly zeroed packet as provenance for the rejected original decision.
         compared, original = request['rejected'], request['reason']
@@ -544,25 +610,27 @@ def engine_decision(state, truck, now=None, *, diagnostic=None, rejection_info=N
     return result, reason
 
 
-def _engine_decision(state, truck, now=None, *, diagnostic=None, rejection_info=None):
+def _engine_decision(state, truck, now=None, *, diagnostic=None, rejection_info=None,
+                     command_observation=None):
     """Final fail-closed pedal boundary, including newer emergency evidence."""
     # A producer can publish during any RPC. A clock captured before the read
     # must not label that complete, genuinely newer packet as future-dated.
     # Explicit `now` remains an injected decision clock for isolated clients.
     decision_time = lambda: time.monotonic() if now is None else now
-    binding = context(state)
-    value = state.get(COMMAND_KEY)
+    pair = (command_observation if command_observation is not None
+            else capture_command_observation(state, truck, now))
+    truck = pair.truck
+    binding, value = pair.binding, pair.command
     def reject(reason, compared=value, expected=binding):
         if rejection_info is not None and not rejection_info:
-            rejection_info.update(rejection_details(compared, expected, decision_time()))
-            rejection_info['vehicle_sdk_frame_us'] = truck.get('sdkFrameTimeUs')
-            observed = truck.get('_control_observation') or {}
-            rejection_info['vehicle_observation'] = {k: observed.get(k) for k in
-                ('sdk_frame_us', 'observed_at', 'valid', 'reason')}
+            rejection_info.update(command_observation_details(pair, decision_time(),
+                value=compared, binding=expected))
         return None, reason
     if diagnostic is not None:
         from core.navigation.longitudinal_diagnostics import bounded_input
         diagnostic['requested'] = bounded_input(value)
+        if pair.provenance['reread_count']:
+            diagnostic['command_observation_pairing'] = pair.provenance
     vehicle_reason = vehicle_control_observation_rejection(state, truck, decision_time())
     if vehicle_reason:
         return reject(vehicle_reason)
