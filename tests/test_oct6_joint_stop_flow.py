@@ -14,6 +14,9 @@ def test_late_first_brake_at_zero_ratio_does_not_require_new_drive(flow, engine_
     # committed confirmation is older than .5 s when it first sees zero.
     for _ in range(6):
         tick(4, .5424093604, dt=.09, flush=False)
+    # Approach the derived target (1 m from the initial SDK position) so the
+    # red really requests the first brake, rather than permitting coasting.
+    truck['z'] = -1.
     tick(0, .5424093604, color=2, engine_first=engine_first)
     assert state.get('autopilot_active'), state.get('autopilot_disable_reason')
     assert pedal(engine, 'aforward') == 0 and pedal(engine, 'abackward') > 0

@@ -34,8 +34,9 @@ def test_compiled_publisher_lifecycle_and_qpc_match_python(tmp_path):
     assert green['valid'] and green['generation']>red['generation']
     assert red['lights'][0]['color']=='red' and green['lights'][0]['color']=='green'
     selector=RouteSignalSelector()
+    from tests.test_signal_stop_resume import authored_test_passage
     selected=selector.select(green,[[0.,10.,0.],[0.,10.,-50.]],'route',('session',),
-        dict(x=0.,y=10.,z=0.,rotation=0.),0.)
+        dict(x=0.,y=10.,z=0.,rotation=0.),0.,authored_test_passage())
     assert selected['valid'] and selected['candidate']['id']==19
     for stage in ('paused','incomplete','shutdown'):
         assert not read(stage)[1]['valid']

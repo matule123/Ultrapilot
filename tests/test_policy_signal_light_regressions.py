@@ -91,7 +91,9 @@ class PolicySignalLightRegressionTests(unittest.TestCase):
         plugin = MapPlugin.__new__(MapPlugin)
         first_id = LaneId(10, 1, 0, prefab_token="junction",
                           connector_index=0, connector_path=(1,))
-        second_id = LaneId(11, 1, 0, prefab_token="junction",
+        # Curves belonging to one placed prefab share min(instance.node_uids)
+        # as road_uid; a different UID denotes a different placed junction.
+        second_id = LaneId(10, 1, 0, prefab_token="junction",
                            connector_index=0, connector_path=(2,))
         first_points = tuple(LanePoint(
             float(i), 4.0, float(i * 8), float(i * 8), heading,
@@ -164,7 +166,8 @@ class PolicySignalLightRegressionTests(unittest.TestCase):
 
         state.set("autopilot_active", False)
         plugin.on_tick(0.1)
-        self.assertEqual(state.get("route_blinker"), "off")
+        # No acknowledged automatic switch to cancel; None releases ownership.
+        self.assertIsNone(state.get("route_blinker"))
         self.assertTrue(state.get("lane_change_safe"))
 
     def test_game_self_cancel_consumes_event_instead_of_reactivating_it(self):
@@ -197,7 +200,8 @@ class PolicySignalLightRegressionTests(unittest.TestCase):
         plugin.on_tick(0.05)
         state.values["telemetry"]["truck"]["blinkerRight"] = False
         plugin.on_tick(0.05)
-        self.assertEqual(state.get("route_blinker"), "off")
+        # Game already cancelled it: no new toggle request may be generated.
+        self.assertIsNone(state.get("route_blinker"))
         self.assertIn("junction-7", plugin._consumed_event_ids)
 
     def test_tts_dispatcher_serializes_rapid_messages_on_one_run_loop(self):

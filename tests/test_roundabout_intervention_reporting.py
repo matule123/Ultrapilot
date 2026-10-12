@@ -306,6 +306,12 @@ def test_engine_disable_replay_classification_and_first_cause(flow, tmp_path, ma
     assert not state.get('autopilot_active')
     with patch('plugins.autopilot.main.app_dir', return_value=str(tmp_path)):
         ap.on_tick(.033)
+        # Export is deliberately asynchronous: observe completion, not thread
+        # scheduling, before checking the persisted evidence.
+        writer = getattr(ap, '_replay_export_writer', None)
+        assert writer is not None
+        status = writer.wait(5.)
+        assert not status['busy'] and not status['error']
     files = list((tmp_path / 'route-diagnostics').glob('steering-replay*.json'))
     assert len(files) == 1
     document = json.loads(files[0].read_text(encoding='utf-8'))

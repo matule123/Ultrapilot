@@ -22,6 +22,15 @@ def source_bytes(clock, generation, frame, color=2, lifecycle=11, flags=3, signa
         generation, frame, clock, flags, 1, bytes(semaphore_buffer(state=color, signal_id=signal_id)), seq)
 
 
+def authored_test_passage():
+    """Explicit directed binding as published by Map, not a nearest-head fake."""
+    return dict(schema_version=1, status='prepared', blockers=[], passages=[dict(
+        passage_key='fixture-directed-control', semaphore_id=19,
+        entry_xyz=[0.,10.,-9.], entry_heading_rad=0., entry_progress_m=9.,
+        bounds_xyz=[-5.,9.,-30.,5.,11.,0.], front_allowance_m=6.,
+        junction_standoff_m=2., front_geometry_status='synthetic_test_allowance')])
+
+
 def signal_tick(values, generation, color=2, gear=0, speed=0., dt=.1, **fault):
     state, truck, engine, ap, update, n, clock, acc, collected = values
     update(gear, speed, dt=dt)
@@ -49,6 +58,7 @@ def signal_stop(flow, mode=0):
     engine._signal_route_token = None
     lane = state.get('lane_trajectory')
     lane['points'] = [[0.,10.,0.],[0.,10.,-50.]]
+    lane['signal_passages'] = authored_test_passage()
     state.set('lane_trajectory', lane)
     state.set('lane_trajectory_publication_token', 'signal-test-publication')
     lane_id=dict(road_uid=11, direction=1, lane_index=0)
@@ -318,7 +328,11 @@ def test_actual_map_prefix_rebase_preserves_locked_signal_and_activation(rolling
     for step in range(1,81):
         tick(speed=10.,z=15.+step*.5)
         engine._flush_controls()
+    from tests.test_oct4_signal_lifecycle import install_rolling_signal_test_passage
+    install_rolling_signal_test_passage(state)
     light_tick(1,55.,2.)
+    assert state.get('simple_auto_service_hold')['stop_reason']['signal_id'] == 19
+    assert state.get('simple_auto_service_hold')['stop_reason']['signal_color'] == 'red'
     lock=state.get('simple_auto_service_hold')['signal_lock']
     assert observe(list(range(2,9))).classification.value=='ADVANCED_PREFIX'
     light_tick(2,55.5,1.)
@@ -392,10 +406,10 @@ def test_route_selection_rejects_ambiguity_height_and_direction():
     snapshot=decode(source_bytes(100.,2,90),100.)
     truck=dict(x=0.,y=10.,z=0.,rotation=0.)
     points=[[0.,10.,0.],[0.,10.,-50.]]
-    first=selector.select(snapshot,points,'a',('session',),truck,0.)
+    first=selector.select(snapshot,points,'a',('session',),truck,0.,authored_test_passage())
     assert first['valid'] and first['candidate']['id']==19
-    for change in (dict(id=20,x=3.),dict(y=30.),dict(z=5.),dict(yaw=0.)):
+    for change in (dict(id=19,x=3.),dict(y=30.),dict(z=50.),dict(yaw=0.)):
         other=dict(snapshot['lights'][0],**change)
         snap=dict(snapshot,lights=([snapshot['lights'][0],other] if 'id' in change else [other]))
-        result=selector.select(snap,points,'a',('session',),truck,0.)
+        result=selector.select(snap,points,'a',('session',),truck,0.,authored_test_passage())
         assert not result['valid'], result

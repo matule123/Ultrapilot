@@ -1,0 +1,7 @@
+{
+  "source": "def stopping_brake_request(distance_m, speed_ms, *, continuing=False):\n    \"\"\"Same feed-forward for an already qualified planned stop.\"\"\"\n    cap = stopping_speed_ceiling(distance_m, speed_ms)\n    speed = abs(float(speed_ms));distance = float(distance_m)\n    if cap == 0. or distance <= 0. or (speed < .5 and distance <= 1.5):\n        # The response/transfer reserve has consumed the remaining distance.\n        # A v\u00b2 pedal fading toward zero here cannot oppose idle load. Keep the\n        # existing full terminal demand; do not coast past the derived target.\n        return 1.\n    if speed <= cap and not continuing:\n        return 0.\n    usable = max(.5, distance-speed*(CURVE_BRAKE_RESPONSE_S+LEASE_S))\n    required_decel = speed*speed/(2.*usable)\n    return min(1.,required_decel/4.)\n",
+  "sha256": "3cc6e42ac1b98b121236d99d260cd86780a152ef8614637d2e4c734d14dae955",
+  "file_sha256_at_capture": "6c86602fa0338c5c373d6ed1910da7d48a2b2880660a23469522dca405f77511",
+  "base_commit": "787d012a2a78ac917bb5506e0958c32d8d06575f",
+  "definition": "Current dirty working-tree function before the terminal-approach correction; not the installed or HEAD-only baseline."
+}

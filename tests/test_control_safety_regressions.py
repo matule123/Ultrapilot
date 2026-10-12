@@ -1027,6 +1027,11 @@ class ControlSafetyRegressionTests(unittest.TestCase):
         self.assertEqual(controller.blinker, "right")
         self.assertEqual(state.get("active_blinker"), "right")
 
+        # Real Controller cancellation is a toggle of the observed switch,
+        # not an idempotent off value. A successful request alone is no SDK
+        # acknowledgement; model that separate stable feedback explicitly.
+        state.set("telemetry", {"truck": {
+            "blinkerLeft": False, "blinkerRight": True}})
         state.set("autopilot_active", False)
         engine._flush_controls()
         self.assertEqual(controller.blinker, "off")

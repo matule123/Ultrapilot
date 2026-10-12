@@ -4,6 +4,7 @@ Speed/ratio observations are test inputs, not measured ETS2 brake consumption.
 The mapping records every pedal edge, including intermediate writes.
 """
 import io
+import math
 import struct
 
 import pytest
@@ -16,7 +17,7 @@ from tests.test_activation_observation_binding import flow  # noqa: F401
 from tests.test_longitudinal_arbitration import strict_flow
 from tests.test_longitudinal_evidence_diagnostics import attach
 from tests.test_roundabout_intervention_reporting import pedal
-from tests.test_signal_stop_resume import source_bytes
+from tests.test_signal_stop_resume import source_bytes, authored_test_passage
 from tests.test_continuous_service_stop import UserObservedGearbox
 from tests.test_rolling_longitudinal_authority import rolling  # noqa: F401
 
@@ -43,6 +44,7 @@ def lifecycle(flow, mode=0, *, full_identity=False, start=True, initial_color=8)
     engine._signal_route_token = None
     lane = state.get('lane_trajectory')
     lane['points'] = [[0., 10., 0.], [0., 10., -50.]]
+    lane['signal_passages'] = authored_test_passage()
     state.set('lane_trajectory', lane)
     state.set('lane_trajectory_publication_token', 'a'*64 if full_identity else 'oct4-lifecycle')
     from core.navigation.lane_model import LaneId
@@ -222,6 +224,24 @@ def test_runtime_stop_witness_is_independent_of_optional_diagnostic_text(flow):
     assert evidence['traffic']['signal']['candidate']['color'] == original == 'red'
 
 
+def install_rolling_signal_test_passage(state):
+    # SyntheticMap has no authored signal IDs. This stop/rolling-window test
+    # must explicitly supply its selected placed control passage; a nearby
+    # geometric head alone is no longer a controlling-light contract.
+    lane = state.get('lane_trajectory')
+    from core.acc_following import RouteLeadSelector
+    reference = RouteLeadSelector()
+    reference.prepare(lane['points'], 'signal-test-control')
+    entry = reference._project(dict(x=2.25, y=10., z=64., yaw=math.pi), 0., reference.arcs[-1])
+    lane['signal_passages'] = dict(schema_version=1, status='prepared', blockers=[], passages=[dict(
+        passage_key='rolling-test-directed-control', semaphore_id=19,
+        entry_xyz=[2.25,10.,64.], entry_heading_rad=math.pi, entry_progress_m=entry[1],
+        bounds_xyz=[0.,9.,60.,5.,11.,110.], front_allowance_m=6., junction_standoff_m=2.,
+        front_geometry_status='conservative_unmeasured_allowance')])
+    state.set('lane_trajectory', lane)
+    state.set('lane_trajectory_publication_token', 'rolling-test-control-publication')
+
+
 def test_actual_map_window_with_both_real_producers_preserves_stop(rolling):
     # rolling uses the actual directed LanePath build, Map packet publication,
     # navigation window classifier and real Controller/memory backend.
@@ -233,6 +253,7 @@ def test_actual_map_window_with_both_real_producers_preserves_stop(rolling):
     for step in range(1, 81):
         map_tick(speed=10., z=15.+step*.5)
         engine._flush_controls()
+    install_rolling_signal_test_passage(state)
 
     def light_tick(gen, speed, z):
         map_tick(speed=speed, z=z, pedals=False)

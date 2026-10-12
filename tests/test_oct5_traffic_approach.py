@@ -110,28 +110,34 @@ def test_locked_signal_survives_passed_head_without_replacing_it(flow, mode):
     signal = signal_tick(values, 6, color=8, gear=8 if mode == 3 else 0)
     assert signal['valid'], signal
     assert signal['candidate']['id'] == 19
-    assert signal['candidate']['distance'] == pytest.approx(-10.)
+    # Distance is to the derived stop target, not the observed head at -5 m:
+    # entry 9 m - progress 15 m - front 6 m - stand-off 2 m.
+    assert signal['candidate']['distance'] == pytest.approx(9. - 15. - 6. - 2.)
+    assert signal['candidate']['distance_basis'] == 'sdk_reference_to_derived_stop_target'
     signal_tick(values, 7, color=8, gear=8 if mode == 3 else 0, dt=.12)
     signal_tick(values, 8, color=8, gear=8 if mode == 3 else 0)
-    if mode == 3:
-        signal_tick(values, 9, color=8, gear=8, speed=.3)
-        signal_tick(values, 10, color=8, gear=8, speed=.3)
     assert state.get('autopilot_active'), state.get('autopilot_disable_reason')
-    assert pedal(engine, 'aforward') > 0 and pedal(engine, 'abackward') == 0
+    # Retaining the actual head does not authorize launch after the vehicle
+    # has already overrun the directed junction entry at 9 m.
+    assert pedal(engine, 'aforward') == 0 and pedal(engine, 'abackward') > 0
+    hold = state.get('simple_auto_service_hold')
+    assert hold['entry_overrun'] is True
+    assert hold['restart_blocker'] == 'directed junction entry passed before stop; driver takeover required'
     assert not any(channel == 'parkingbrake' for _, channel, _ in writes)
 
 
 def test_retained_signal_cannot_authorize_from_beyond_backward_bound(flow):
     values, writes = signal_stop(flow)
     state, truck, engine, ap, update, n, clock, acc, collected = values
-    truck['z'] = -26.
+    # Retention is bounded from the authored entry at 9 m, not the head at 5 m.
+    truck['z'] = -30.
     update(0, 0.)
-    packet = state.get('nav_steering_debug'); packet['tracking_progress_m'] = 26.
+    packet = state.get('nav_steering_debug'); packet['tracking_progress_m'] = 30.
     state.set('nav_steering_debug', packet)
     engine._signal_reader.buffer = source_bytes(clock[0], 6, truck['sdkFrameTimeUs'], color=8)
     signal = engine._signal_observation(state.get('telemetry')['truck'], context(state))
     assert not signal['valid'] and signal['candidate'] is None
-    assert signal['reason'] == 'locked signal missing or no longer route relevant'
+    assert signal['reason'] == 'locked prefab entry passed outside bounded lookup'
     assert pedal(engine, 'aforward') == 0 and pedal(engine, 'abackward') > 0
 
 

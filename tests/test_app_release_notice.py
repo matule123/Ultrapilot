@@ -133,6 +133,10 @@ def test_shipped_release_snapshot_matches_all_plugins():
                              {}, plugin_versions(root))
     assert len(history) == 12
     assert all(plugin["releases"] for plugin in history)
+    # Every current plugin release must be readable by the welcome dialog,
+    # including Autopilot; combined plugin/version headings are not its schema.
+    assert all(plugin["releases"][-1]["version"] == current[plugin["name"]]
+               for plugin in history)
     map_history = [entry["version"] for entry in next(
         p for p in history if p["name"] == "map")["releases"]]
     assert map_history[:4] == ["1.0.0", "1.0.1", "1.0.2", "1.0.3"]

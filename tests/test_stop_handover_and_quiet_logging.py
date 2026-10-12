@@ -162,11 +162,17 @@ def test_untrusted_stop_data_never_authorizes_waiting_or_restart(flow, fault):
     engine._flush_controls()
     record = state.get('autopilot_intervention')
     if fault in ('expired_light', 'foreign_light'):
-        # Traffic is an optional producer; its invalid snapshot is excluded.
-        # The still-valid ACC brake cannot become permission to wait/restart.
-        assert record['kind'] == 'handover'
-        assert record['details']['decision']['traffic'] is None
-        assert record['details']['automatic_restart_supported'] is False
+        # A positive light-brake demand is required evidence, not optional
+        # perception. Its stale/foreign lease must fail before hold/restart.
+        assert record['kind'] == 'technical'
+        assert record['code'] == 'TECHNICAL_CONTROL_STOP'
+        expected = ('longitudinal observation is stale or incoherent'
+                    if fault == 'expired_light'
+                    else 'longitudinal identity or activation changed')
+        assert record['reason'] == 'traffic: ' + expected
+        assert record['details']['rejected_source'] == 'traffic'
+        assert record['details']['traffic_comparison']['light_brake'] == 1.
+        assert record['details']['rejection_cause'] == expected
         assert not state.get('autopilot_active')
     else:
         assert record['kind'] == 'technical'

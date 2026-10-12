@@ -106,7 +106,7 @@ def signal_bytes(clock,generation,frame,lights):
         tx,tz=math.floor(x/512.),math.floor(z/512.)
         yaw=light['yaw']
         struct.pack_into('<fffhhffffifii',payload,i*48,x-tx*512,y,z-tz*512,tx,tz,
-            math.cos(yaw/2),math.sin(yaw/2),0.,0.,1,10.,light.get('state',2),light['id'])
+            math.cos(yaw/2),math.sin(yaw/2),0.,0.,1,light.get('time_left',10.),light.get('state',2),light['id'])
     return LAYOUT.pack(generation*2,0x32535055,2,LAYOUT.size,11,generation,frame,clock,3,
                        len(lights),bytes(payload),generation*2)
 
@@ -116,6 +116,13 @@ def test_known_control_never_uses_unrelated_green_as_clearance(tmp_path,fault):
     from core.sdk.signal_snapshot import decode
     net,path,_=parsed_path(tmp_path);plan=plan_for(net,path)
     correct=dict(id=3,x=2.,y=10.,z=-125.,yaw=math.pi,state=8)
+    selector=RouteSignalSelector()
+    points=[[p.x,p.y,p.z] for p in path.points]
+    truck=dict(x=0.,y=10.,z=0.,rotation=0.)
+    # Known control means an actual, matching producer head was observed.
+    acquired=selector.select(decode(signal_bytes(99.9,1,99,[correct]),99.9),
+        points,'pub',('authority',),truck,0.,plan)
+    assert acquired['valid']
     lights=[correct]
     if fault=='missing':lights=[]
     if fault=='ambiguous':lights.append(dict(correct,x=3.))
@@ -123,8 +130,7 @@ def test_known_control_never_uses_unrelated_green_as_clearance(tmp_path,fault):
     if fault=='opposite':lights=[dict(correct,yaw=0.)]
     lights.append(dict(id=19,x=0.,y=10.,z=-40.,yaw=math.pi,state=8))
     snap=decode(signal_bytes(100.,1,100,lights),100.501 if fault=='stale' else 100.)
-    result=RouteSignalSelector().select(snap,[[p.x,p.y,p.z] for p in path.points],
-        'pub',('authority',),dict(x=0.,y=10.,z=0.,rotation=0.),0.,plan)
+    result=selector.select(snap,points,'pub',('authority',),truck,0.,plan)
     assert not result['valid'] and result['candidate'] is None
     assert result['prefab_required'] and result['stop_candidate']['color']=='unknown'
     assert not result['stop_candidate']['head_observed']
@@ -178,19 +184,38 @@ def test_real_policy_acc_backend_stop_wait_and_green_resume(tmp_path,mode):
     assert result['resumed_without_n'] and result['active']
     assert result['simultaneous_positive_pedals']==result['parking_writes']==result['hold_brake_zero_count']==0
     writes=result['writes']
-    first=next(t for t,c,v in writes if c=='abackward' and v>0)
+    # Moving approach corrections may release an early brake. The terminal
+    # stop must establish a NEW continuous positive chain and never release it
+    # at standstill before independently confirmed green.
+    terminal=next(row for row in result['rows'] if row['hold_phase'] in ('braking','holding'))
+    first=terminal['write_checked_at_s']
     last_red=next(row for row in reversed(result['rows']) if row['red'])
     red_writes=[w for w in writes if w[0]<=last_red['write_checked_at_s']]
     assert all(v>0 for t,c,v in red_writes if c=='abackward' and t>=first)
+    assert terminal['brake']>0
+    first_approach_brake=next(row['t'] for row in result['rows'] if row['brake']>0)
+    assert all(row['hold_phase']=='approaching' and row['speed_mps']>.05
+               for row in result['rows'] if row['red'] and row['brake']==0
+               and first_approach_brake<=row['t']<terminal['t'])
+    assert all(row['throttle']==0 and row['brake']>0 for row in result['rows']
+               if row['red'] and row['write_checked_at_s']>=first)
     assert any(b['brake']<a['brake'] and b['brake']>0 for a,b in zip(result['rows'],result['rows'][1:]) if a['red'] and b['red'])
 
 
-def test_head_position_baseline_stops_inside_junction_but_derived_target_does_not(tmp_path):
+def test_head_distance_counterfactual_overruns_entry_but_derived_target_does_not(tmp_path):
     from tools.run_prefab_signal_bench import run
-    old=run(tmp_path,baseline=True);current=run(tmp_path)
-    assert old['stop']['front_gap_to_entry_m']<0.
+    wrong_target=run(tmp_path,baseline=True,allow_rejection=True)
+    current=run(tmp_path)
+    # The wrong head-distance target crosses the actual entry. Current route
+    # guards then reject it, so never describe it as a completed historical stop.
+    assert wrong_target['red_entry_overrun_samples']>0
+    assert not wrong_target['active'] and wrong_target['stop'] is None
+    assert not wrong_target['resumed_without_n']
+    assert 'signal regulation coverage unverified' in wrong_target['termination_reason']
     assert current['stop']['front_gap_to_entry_m']>=2.
-    assert current['maximum_deceleration_mps2']<old['maximum_deceleration_mps2']
+    assert current['red_entry_overrun_samples']==0
+    assert current['active'] and current['resumed_without_n']
+    assert current['maximum_deceleration_mps2']<wrong_target['maximum_deceleration_mps2']
 
 
 def test_new_positive_brake_can_reduce_while_moving_but_not_release_hold(tmp_path):
@@ -337,12 +362,18 @@ def test_distinct_control_groups_at_same_entry_do_not_choose_arbitrary_green(tmp
     import copy
     from core.sdk.signal_snapshot import decode
     net,path,_=parsed_path(tmp_path);plan=plan_for(net,path)
+    selector=RouteSignalSelector()
+    points=[[p.x,p.y,p.z] for p in path.points]
+    truck=dict(x=0.,y=10.,z=0.,rotation=0.)
+    acquired=selector.select(decode(signal_bytes(99.9,1,99,[
+        dict(id=3,x=2.,y=10.,z=-125.,yaw=math.pi,state=2)]),99.9),
+        points,'p',('a',),truck,0.,plan)
+    assert acquired['valid']
     other=copy.deepcopy(plan['passages'][0]);other.update(semaphore_id=4,passage_key='other-control-group')
     plan['passages'].append(other)
     snap=decode(signal_bytes(100.,1,100,[dict(id=3,x=2.,y=10.,z=-125.,yaw=math.pi,state=8),
         dict(id=4,x=3.,y=10.,z=-125.,yaw=math.pi,state=2)]),100.)
-    result=RouteSignalSelector().select(snap,[[p.x,p.y,p.z] for p in path.points],'p',('a',),
-        dict(x=0.,y=10.,z=0.,rotation=0.),0.,plan)
+    result=selector.select(snap,points,'p',('a',),truck,0.,plan)
     assert not result['valid'] and result['candidate'] is None
     assert result['reason']=='ambiguous regulated prefab passages'
     assert result['stop_candidate']['color']=='unknown' and result['stop_candidate']['distance']==92.
@@ -357,7 +388,10 @@ def test_missing_authored_id_cannot_be_replaced_by_geometric_green(tmp_path):
     result=RouteSignalSelector().select(snap,[[p.x,p.y,p.z] for p in path.points],'p',('a',),
         dict(x=0.,y=10.,z=-20.,rotation=0.),20.,plan)
     assert not result['valid']
-    assert result['stop_candidate']['color']=='unknown' and not result['stop_candidate']['head_observed']
+    # A missing authored ID cannot qualify a control or an unknown stop; a
+    # nearby green is still refused as clearance, never inferred as our head.
+    assert result['candidate'] is None and not result.get('prefab_required')
+    assert not result.get('stop_candidate')
 
 
 def test_dedicated_tollgate_control_is_not_a_required_traffic_light(tmp_path):
