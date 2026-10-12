@@ -36,7 +36,7 @@ class Plugin(BasePlugin):
     """
 
     NAME = "turnsignals"
-    VERSION = "1.0.0"
+    VERSION = "1.0.2"
 
     def on_start(self):
         logging.info("Turn-signals plugin started (topology state machine).")
@@ -48,13 +48,17 @@ class Plugin(BasePlugin):
         self._route = None
         self._observed_active = False
         self._consumed_event_ids = set()
-        self.sdk.set("route_blinker", "off")
+        self._cancel_side = None
+        self._last_observed = None
+        self._authority_key = None
+        self.sdk.set("route_blinker", None)
         self.sdk.set("turn_signal_event", None)
 
     def on_stop(self):
         self._clear("plugin stopped")
-        self.sdk.set("ctl_blinker", "off")
-        self.sdk.set("active_blinker", "off")
+        # Keep an owned cancellation on the persistent route channel. The
+        # explicit CTL channel also serves manual requests and would bypass
+        # Engine's late driver-switch ownership check.
 
     @staticmethod
     def _event_id(event):
@@ -80,6 +84,7 @@ class Plugin(BasePlugin):
 
     def on_tick(self, delta_time: float):
         del delta_time  # progress and telemetry, not wall-clock timers, own state
+        observed = self._last_observed = self._observed_side(self.sdk.shared_state)
 
         if not self.sdk.shared_state.get("autopilot_active", False):
             self._clear("autopilot inactive")
@@ -115,6 +120,13 @@ class Plugin(BasePlugin):
             snapshot.get("navigation_intent_id"), snapshot.get("revision"),
             snapshot.get("route_build_id"),
         )
+        authority_key = (self.sdk.shared_state.get("autopilot_failure_epoch"),
+            snapshot.get("source_game_session_id"),snapshot.get("source_map_key"),
+            snapshot.get("source_dataset_fingerprint"),snapshot.get("navigation_intent_id"))
+        if authority_key != getattr(self, "_authority_key", None):
+            self._clear("navigation activation changed")
+            self._consumed_event_ids.clear()
+            self._authority_key = authority_key
         if geometry_key != self._route_key:
             self._route_key = geometry_key
             self._route = Route(path, name="turn-signal-authority")
@@ -127,17 +139,22 @@ class Plugin(BasePlugin):
             self._event_id(event): event for event in events
             if isinstance(event, dict)
         }
+        # Same-intent geometry/window updates do not rearm a driver's cancelled
+        # event. Retain only the current bounded Map event window, not the trip.
+        self._consumed_event_ids.intersection_update(event_by_id)
 
         # Never fight ETS2's self-cancel or a driver's deliberate cancellation.
         # First observe that the requested side really became active; only a
         # subsequent active->off edge completes the manoeuvre.
-        observed = self._observed_side(self.sdk.shared_state)
         if self._active_event_id is not None:
             if observed == self._current:
                 self._observed_active = True
             elif self._observed_active and observed == "off":
                 self._consumed_event_ids.add(self._active_event_id)
                 self._clear("indicator cancelled by game or driver")
+            elif observed in ("left", "right", "hazard") and observed != self._current:
+                self._consumed_event_ids.add(self._active_event_id)
+                self._clear("driver indicator or hazards take precedence")
 
         if self._active_event_id is not None:
             active = event_by_id.get(self._active_event_id)
@@ -155,7 +172,7 @@ class Plugin(BasePlugin):
                     else:
                         self._active_event = active
 
-        if self._active_event_id is None:
+        if self._active_event_id is None and observed == "off" and not self._cancel_side:
             selected = self._next_event(
                 events, progress,
                 indication_approach_m(self.sdk.shared_state.get(
@@ -165,8 +182,9 @@ class Plugin(BasePlugin):
                 if event_id not in self._consumed_event_ids:
                     self._activate(event_id, selected, progress)
 
-        target = self._current if self._active_event_id is not None else "off"
-        self.tags.turn_signal = target
+        target = (self._current if self._active_event_id is not None
+                  else self._cancel_request(observed))
+        self.tags.turn_signal = target or "manual"
         self.sdk.set("route_blinker", target)
         self.sdk.set("turn_signal_event", self._diagnostic_payload(
             self._active_event, progress) if self._active_event else None)
@@ -192,6 +210,13 @@ class Plugin(BasePlugin):
             event_id = self._event_id(event)
             if direction not in ("left", "right"):
                 continue
+            if event.get('kind') == 'roundabout':
+                try:
+                    eligible = float(event.get('indication_not_before_s_m', event['start_s_m']))
+                except (KeyError, TypeError, ValueError, OverflowError):
+                    continue
+                if not math.isfinite(eligible) or progress < eligible:
+                    continue
             if event_id in getattr(self, "_consumed_event_ids", set()):
                 continue
             distance = signal_s - progress
@@ -220,6 +245,7 @@ class Plugin(BasePlugin):
 
     def _clear(self, reason):
         was_active = self._active_event_id
+        previous = self._current
         if self._current != "off":
             logging.info("Turn signal cancelled: side=%s reason=%s event=%s",
                          self._current, reason, was_active)
@@ -227,8 +253,20 @@ class Plugin(BasePlugin):
         self._active_event = None
         self._observed_active = False
         self._set("off")
-        self.sdk.set("route_blinker", "off")
+        if was_active and previous == getattr(self, "_last_observed", None):
+            self._cancel_side = previous
+        self.sdk.set("route_blinker", self._cancel_request(
+            getattr(self, "_last_observed", None)))
         self.sdk.set("turn_signal_event", None)
+
+    def _cancel_request(self, observed):
+        # None releases ownership; off is an explicit cancellation of our own
+        # observed switch only. Never toggle an unrelated driver's indication.
+        side = getattr(self, "_cancel_side", None)
+        if side and observed == side:
+            return "off"
+        self._cancel_side = None
+        return None
 
     @staticmethod
     def _diagnostic_payload(event, progress):

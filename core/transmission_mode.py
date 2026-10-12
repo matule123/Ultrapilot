@@ -13,6 +13,14 @@ _LOG_MODE = re.compile(r'^\d\d:\d\d:\d\d\.\d+\s*:\s*uset g_trans "([^"]+)"', re.
 _LOG_CREATED = re.compile(r'^\*+\s*:\s*log created on\s*:\s*(.+)$', re.MULTILINE)
 
 
+def _read_log_bytes(path):
+    with path.open('rb') as stream:
+        data = stream.read(4*1024*1024+1)
+    if len(data) > 4*1024*1024:
+        raise ValueError('game log exceeds bounded read size')
+    return data
+
+
 def read_transmission_mode(root=None, *, now=None):
     """Require the active profile file and the current game log to agree.
 
@@ -27,15 +35,29 @@ def read_transmission_mode(root=None, *, now=None):
     try:
         log_path = root / "game.log.txt"
         before = log_path.stat()
+        before_log_ctime_ns = before.st_ctime_ns
         if before.st_size > 4 * 1024 * 1024:
             result["reason"] = "game log exceeds bounded read size"
             return result
-        log = log_path.read_text(encoding="utf-8", errors="replace")
-        after = log_path.stat()
-        if (before.st_ino, before.st_mtime_ns, before.st_size) != (
-                after.st_ino, after.st_mtime_ns, after.st_size):
+        original = _read_log_bytes(log_path)
+        log = original.decode('utf-8', errors='replace')
+        # NTFS can defer metadata updates for an open writer: same size/mtime
+        # does not prove unchanged bytes. Always verify the captured prefix
+        # once on this off-tick worker. Appends are allowed; rewrite, truncate
+        # or replacement cannot silently confirm the previous mode.
+        check = _read_log_bytes(log_path)
+        verified = log_path.stat()
+        if (before.st_ino != verified.st_ino
+                or before.st_ctime_ns != verified.st_ctime_ns
+                or verified.st_size > 4*1024*1024
+                or len(original) < before.st_size
+                or len(check) < len(original)
+                or check[:len(original)] != original):
             result["reason"] = "game log changed during read"
             return result
+        # Only complete producer-written lines are evidence. A partial
+        # append cannot become a guessed profile/mode confirmation.
+        log = log[:log.rfind('\n')+1]
         profiles = list(_PROFILE.finditer(log))
         if not profiles:
             return result
@@ -59,7 +81,7 @@ def read_transmission_mode(root=None, *, now=None):
             return result
         modes = _MODE.findall(config)
         previous_profile_end = profiles[-2].end() if len(profiles) > 1 else 0
-        logged = list(_LOG_MODE.finditer(log[previous_profile_end:profiles[-1].end()]))
+        logged = list(_LOG_MODE.finditer(log[previous_profile_end:]))
         if len(modes) != 1 or not logged:
             result["reason"] = "g_trans is missing or ambiguous"
             return result
@@ -95,7 +117,7 @@ def read_transmission_mode(root=None, *, now=None):
         except (TypeError, ValueError, OverflowError):
             result["reason"] = "game log transmission time is invalid"
             return result
-        log_identity = (str(log_path.stat().st_ctime_ns) + ":"
+        log_identity = (str(before_log_ctime_ns) + ":"
                         + str(previous_profile_end + logged[-1].start())
                         + ":" + str(profiles[-1].start()) + ":" + encoded
                         + ":" + log_event)
@@ -226,6 +248,11 @@ def simple_auto_forward_transition(state, truck, history, now=None):
     except (KeyError, TypeError, ValueError, OverflowError):
         return None, "simple automatic vehicle observation is incomplete"
     hold = state.get('simple_auto_service_hold') or {}
+    # Plugin may have validated a positive ratio on several fresh SDK frames
+    # while the physical executor still retains its earlier committed history.
+    # This receipt is an observation, never a pedal command or a new timestamp.
+    producer_forward = state.get('simple_auto_forward_observation') or {}
+    producer_forward = producer_forward if isinstance(producer_forward, dict) else {}
     from core.longitudinal import context as longitudinal_context
     hold_binding = longitudinal_context(state) if hold else None
     # All transport reads precede the decision clock. Never compare a newly
@@ -252,6 +279,38 @@ def simple_auto_forward_transition(state, truck, history, now=None):
     result = dict(history or {})
     result.update(context=context, last_frame=frame,
                   last_observed_at=observed_at, signature=signature)
+    producer_coast = False
+    if (history and producer_forward.get('context') == context and gear == 0
+            and history.get('zero_deadline_at') is None
+            and now-history.get('confirmed_at', float('-inf')) > .5):
+        try:
+            from core.longitudinal import read, rejection
+            binding = longitudinal_context(state)
+            command = state.get('longitudinal_command')
+            acc, failure = read(state, 'acc', binding=binding, required=True)
+            receipt_frame = int(producer_forward['sdk_frame_us'])
+            receipt_time = float(producer_forward['observation_timestamp'])
+            if (int(producer_forward['gear']) > 0 and float(producer_forward['speed_mps']) >= -.10
+                    and history.get('confirmed_frame', frame) < receipt_frame <= frame
+                    and 0. <= time.monotonic()-receipt_time <= .5 and receipt_time <= observed_at
+                    and not failure and acc['throttle'] == acc['brake'] == 0.
+                    and not rejection(command, binding, time.monotonic())
+                    and command['throttle'] == command['brake'] == 0.
+                    and command['sdk_frame_us'] <= frame):
+                result.update(confirmed_frame=receipt_frame, confirmed_at=receipt_time)
+                producer_coast = True
+                result['coast_confirmation'] = dict(sdk_frame_us=receipt_frame,
+                    observation_timestamp=receipt_time, gear=producer_forward['gear'],
+                    speed_mps=producer_forward['speed_mps'])
+        except (KeyError, TypeError, ValueError, OverflowError):
+            pass  # Invalid producer receipts cannot extend ratio confirmation.
+        checked_at = time.monotonic()
+        if simple_auto_context(state) != context:
+            return None, 'simple automatic activation or route identity changed'
+        vehicle_reason = vehicle_control_observation_rejection(state, truck, checked_at)
+        if vehicle_reason:
+            return None, 'simple automatic ' + vehicle_reason
+        now = checked_at
     # Only Engine publishes this witness after an actual uninterrupted positive
     # SCS brake write begun during forward motion. Engine revalidates its local
     # receipt before applying pedals. This is not a gear/selector inference.
@@ -282,8 +341,9 @@ def simple_auto_forward_transition(state, truck, history, now=None):
             result.update(phase="launch_zero_ratio", brake_only=False)
             return result, ""
     if gear > 0:
+        result.pop('coast_confirmation', None)
         result.update(confirmed_frame=frame, confirmed_at=observed_at,
-                      zero_deadline_at=None, phase="forward_confirmed", brake_only=False)
+                      zero_deadline_at=None, phase="forward_confirmed", brake_only=False, coast_only=False)
         return result, ""
     if (history and not history.get('launch_deadline_at')
             and frame > history.get('confirmed_frame', frame)
@@ -295,9 +355,9 @@ def simple_auto_forward_transition(state, truck, history, now=None):
                 result.update(phase='planned_brake_transition', brake_only=True,
                               zero_deadline_at=deadline)
                 return result, ''
-    if (not history or frame <= history["confirmed_frame"]
+    if (not history or frame <= result["confirmed_frame"]
             or (history.get("zero_deadline_at") is None
-                and not 0.0 <= now - history["confirmed_at"] <= 0.5)):
+                and not 0.0 <= now - result["confirmed_at"] <= 0.5)):
         return None, "simple automatic zero ratio has no fresh forward confirmation"
     if speed <= 0.05 or truck.get("parkBrake") is not False:
         return None, "simple automatic zero ratio lacks continuing forward motion"
@@ -306,7 +366,9 @@ def simple_auto_forward_transition(state, truck, history, now=None):
         deadline = observed_at + SIMPLE_AUTO_ZERO_RATIO_MAX_S
     if now > deadline:
         return None, "simple automatic zero-ratio transition expired"
-    result.update(zero_deadline_at=deadline, phase="zero_ratio_transition", brake_only=False)
+    result.update(zero_deadline_at=deadline, phase="zero_ratio_transition",
+                  brake_only=producer_coast or history.get('coast_only', False),
+                  coast_only=producer_coast or history.get('coast_only', False))
     return result, ""
 
 

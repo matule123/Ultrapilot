@@ -14,7 +14,7 @@ MAX_PASSAGES = 128
 
 
 def prepare_signal_passages(network, path):
-    result = dict(schema_version=1, status='prepared', passages=[], blockers=[])
+    result = dict(schema_version=1, status='prepared', passages=[], route_scopes=[], blockers=[])
     if not path.valid or len(path.points) < 2:
         return dict(result, status='unavailable', blockers=['invalid LanePath'])
     route = RouteLeadSelector()
@@ -54,8 +54,6 @@ def prepare_signal_passages(network, path):
                       if curves[i].get('semaphore_id') is not None and curves[i]['semaphore_id'] >= 0]
         if missing:
             controlled.insert(0,(indices[0],None))  # known entry, NO observed signal ID/colour
-        if not controlled:
-            continue
         # The same transform/elevation code as steering, never a new yaw formula.
         # Use the already transformed selected path plus placed descriptor
         # nodes as a scope gate, not a physical prefab boundary. Sampling all
@@ -75,6 +73,14 @@ def prepare_signal_passages(network, path):
             result['blockers'].append('directed passage entrance unavailable');continue
         if len(entry_curve)<2:
             result['blockers'].append('directed passage entrance unavailable');continue
+        ownership=(getattr(network,'_prefab_ownership',{}) or {}).get(instance) or {}
+        if ownership:
+            scope=dict(ownership,entry_xyz=[entry_curve[0].x,entry_curve[0].y,entry_curve[0].z],
+                entry_heading_rad=entry_curve[0].heading)
+            if scope not in result['route_scopes']:
+                if len(result['route_scopes'])>=MAX_PASSAGES:
+                    return dict(result,status='unavailable',passages=[],route_scopes=[],blockers=['scope capacity exceeded'])
+                result['route_scopes'].append(scope)
         for index, semaphore_id in controlled:
             if semaphore_id in seen:
                 continue  # same control group over consecutive pieces of this passage
@@ -86,10 +92,19 @@ def prepare_signal_passages(network, path):
             if projected is None or projected[0] > .5:
                 result['blockers'].append('directed control entry absent from current LanePath'); continue
             identity = [token,list(instance[1]),list(indices),index,semaphore_id]
+            ownership=(getattr(network,'_prefab_ownership',{}) or {}).get(instance) or {}
+            controlled_points=network._prefab_curve_chain_3d(instance,(index,))
             result['passages'].append(dict(passage_key=hashlib.sha256(repr(identity).encode()).hexdigest(), semaphore_id=semaphore_id,
                 prefab_token=token, instance_node_uids=list(instance[1]), curve_indices=list(indices),
                 controlled_curve_index=index, entry_xyz=[start.x,start.y,start.z],
+                **ownership,
+                controlled_heading_rad=controlled_points[0].heading if controlled_points else start.heading,
                 entry_heading_rad=start.heading, entry_progress_m=projected[1], bounds_xyz=bounds,
+                # Arc extent of this directed prefab only, not a surveyed
+                # conflict polygon or painted stop line. Prepared once.
+                passage_length_m=max(0., high-projected[1]),
+                passage_speed_ms=min((math.sqrt(1.8/abs(path.points[i].curvature))
+                    for i in owned if abs(path.points[i].curvature)>1e-6), default=40.),
                 stop_target_kind='derived_directed_curve_entry',stop_line_verified=False,
                 front_allowance_m=FRONT_ALLOWANCE_M,junction_standoff_m=JUNCTION_STANDOFF_M,
                 front_geometry_status='conservative_unmeasured_allowance'))

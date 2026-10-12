@@ -149,6 +149,8 @@ class UltraPilotEngine:
     """
 
     def __init__(self, shared_dict=None):
+        from core.paths import app_dir
+        self._automatic_replay_directory = os.path.join(app_dir(),'route-diagnostics')
         try:
             from core.logger import setup as _ls
             _ls()
@@ -333,6 +335,15 @@ class UltraPilotEngine:
         self._cancel_auto_drive_engagement("Engine sa vypína")
         self.shared_state.set("auto_drive_park_hold", False)
         self._release_controller()
+        journal=getattr(self.controller,'_pedal_journal',None)
+        if journal is not None and journal.enabled:
+            try:
+                writer=getattr(self,'_automatic_replay_writer',None)
+                if writer is not None:writer.wait(5.)
+                self._finish_automatic_longitudinal_incident(journal,shutdown=True)
+                self._finish_significant_longitudinal_event(journal,shutdown=True)
+            except Exception as error:
+                self._automatic_longitudinal_export_error = type(error).__name__
         self.module_manager.stop_all()
         self.plugin_manager.stop_all()
         self.voice.stop()
@@ -340,6 +351,9 @@ class UltraPilotEngine:
         if diagnostic is not None:
             diagnostic.close()
         recorder = getattr(self, "_maneuver_tracking_recorder", None)
+        writer = getattr(self,'_automatic_replay_writer',None)
+        if writer is not None:
+            writer.wait(5.)  # Shutdown only, never the control worker.
         if recorder is not None and self._maneuver_application_sequence:
             try:
                 from core.paths import app_dir
@@ -398,7 +412,9 @@ class UltraPilotEngine:
             diagnostic_read["control_sample_valid"] = self._latest_telemetry_success
         try:
             journal = getattr(self.controller, '_pedal_journal', None)
-            pedals = journal.drain() if journal is not None and journal.enabled else None
+            pedals = journal.snapshot(after_sequence=getattr(self,'_combined_pedal_cursor',0)) if journal is not None and journal.enabled else None
+            if pedals is not None:
+                self._combined_pedal_cursor = pedals['last_sequence']
             self._longitudinal_offer_done = True
             diagnostic.offer(capture_diagnostic_application(
                 self.shared_state, steering, time.monotonic(),
@@ -852,6 +868,9 @@ class UltraPilotEngine:
         result = self._signal_selector.select(snapshot, self._signal_route_points,
             (token, binding), binding, truck, packet.get('tracking_progress_m'),
             getattr(self,'_signal_passages',None))
+        # Exact already-compared map input; no extra IPC/SDK diagnostics read.
+        result.update(authority_lane_id=[*packet_key[:5],list(packet_key[5])],route_progress_m=packet.get('tracking_progress_m'),
+                      route_publication_token=token)
         if binding != context(self.shared_state):
             result.update(valid=False, reason='signal route changed during capture', candidate=None)
         return result
@@ -863,7 +882,10 @@ class UltraPilotEngine:
             return dict(status='traffic_receiver_session_changed', confirmed=False)
         observed = observation(capture, time.monotonic())
         if observed['status'] not in ('observed', 'empty_unproven_coverage'):
-            return dict(status=observed['status'], confirmed=False)
+            return dict(status=observed['status'], confirmed=False,
+                receiver_time=observed['receiver_time'], source_timestamp=None,
+                source_sequence=None, complete=False, atomic=False,
+                actor_identity=observed.get('actor_identity'))
         try:
             from core.longitudinal import context, projection_input
             token = self.shared_state.get('lane_trajectory_publication_token')
@@ -887,7 +909,8 @@ class UltraPilotEngine:
                     or debug.get('trajectory_identity') != identity
                     or not 0 <= time.monotonic()-float(debug['observation_timestamp']) <= .5):
                 raise ValueError('route calculation unavailable')
-            result = selector.select(observed['actors'], truck, float(debug['tracking_progress_m']))
+            result = selector.select(observed['actors'], truck, float(debug['tracking_progress_m']),
+                                     receiver_time=observed['receiver_time'])
             result['crossing'] = selector.crossing(observed['actors'], truck, float(debug['tracking_progress_m']))
             if context(self.shared_state) != binding:
                 raise ValueError('route identity changed during traffic projection')
@@ -1048,8 +1071,77 @@ class UltraPilotEngine:
             coverage_confirmed=False, clearance_confirmed=False)
         return crossing['brake']
 
+    def _traffic_control_observation(self, capture, truck, binding, traffic):
+        """Only the validated capture and confirmed directed route own demands.
+
+        ``traffic`` is the legacy display list, never actuator authority. Its
+        defaults/torn rows and straight-cab prediction cannot bypass a rejected
+        capture or override a no-conflict result on the actual curved route.
+        """
+        self._traffic_brake_basis=None
+        self.shared_state.set('lead_distance',None)
+        following=self._route_lead_observation(capture,truck,binding)
+        if following['status'] not in ('candidate','no_candidate_unproven_coverage'):
+            return following,0.  # Invalid/unavailable is never clear-road proof.
+        brake=0.
+        if following.get('emergency'):
+            brake=1.
+        elif not self.shared_state.get('longitudinal_acc_active'):
+            brake=following.get('protective_brake',0.)
+        else:
+            brake=following.get('unassigned_protective_brake',0.)
+        if brake>0:
+            self._traffic_brake_basis=dict(kind='protective_route_candidate',
+                target_id=following.get('target_id') or following.get('protective_target_id'),gap_m=following.get('gap_m'),
+                reason=following.get('reason'),producer_timestamp=None,
+                confirmed_route_conflict=False,coverage_confirmed=False)
+        self.shared_state.set('lead_distance',following.get('gap_m'))
+        brake=self._route_crossing_brake(following,brake)
+        return following,brake
+
+    def _publish_traffic_control(self, truck, telemetry_timestamp, binding, traffic,
+                                 capture, following, traffic_brake, signal, detected_light):
+        """Publish the already consumed traffic/signal observation together."""
+        light = signal.get('candidate') if signal.get('valid') else signal.get('stop_candidate')
+        available = following['status'] in ('candidate', 'no_candidate_unproven_coverage')
+        self.shared_state.update_batch({
+            'traffic': traffic, 'maneuver_traffic_capture': capture,
+            'traffic_light': light, 'traffic_light_detected': detected_light,
+            'traffic_light_relevance': signal.get('relevance'),
+            'traffic_light_coverage': signal.get('coverage'),
+            'traffic_light_selection_reason': signal.get('reason'),
+            'traffic_brake': traffic_brake, 'light_brake': self._light_brake(light),
+            'traffic_snapshot_valid': available,
+            'traffic_snapshot_timestamp': telemetry_timestamp,
+            'traffic_snapshot_failure': '' if available else following['status'],
+        })
+        from core.longitudinal import publish
+        traffic_truck = {**truck, '_control_observation': dict(schema_version=1,
+            sdk_frame_us=truck.get('sdkFrameTimeUs'), observed_at=telemetry_timestamp,
+            valid=bool(truck.get('pose_valid', False)))}
+        return publish(self.shared_state, traffic_truck, 'traffic', binding=binding,
+            # Envelope validity belongs to the exact vehicle/identity snapshot.
+            # Actor usability and signal qualification are separate contracts;
+            # an optional ambiguous actor feed is neither vehicle failure nor
+            # a clear-road certificate. read() validates any actuator demand.
+            traffic_available=available,
+            traffic_availability=dict(schema_version=1, actors_usable=available,
+                capture_status=following['status'], receiver_time=capture.observed_at,
+                buffers_present=capture.moving is not None and capture.parked is not None,
+                stable_read=capture.stable, atomic=False, coverage_confirmed=False,
+                source_timestamp=None, source_generation=None,
+                actor_identity=following.get('actor_identity')),
+            traffic_brake=traffic_brake, light_brake=self._light_brake(light), light=light,
+            signal=signal, lead_distance=self.shared_state.get('lead_distance'),
+            display_detection=dict(status='DETECTED_ONLY_UNTIMED',
+                candidate={k:detected_light.get(k) for k in ('id','color','x','y','z','yaw')}
+                if detected_light else None), following=following,
+            brake_basis=self._traffic_brake_basis,
+            dependencies=following.get('deadline_dependencies', ()),
+            expires_at=following.get('expires_at', float('inf')))
+
     def _light_brake(self, light):
-        """Brake (0..1) to stop smoothly at a red light ahead; 0 on green/none.
+        """Shared stop-envelope demand; ending qualified green can also stop.
 
         Phase 1 tuning — yellow now also eases the speed down (the old code kept
         full throttle through yellow), and the red stop is approached with a
@@ -1064,10 +1156,23 @@ class UltraPilotEngine:
 
         if light.get('stop_target_kind') == 'derived_directed_curve_entry':
             from core.longitudinal import signal_stop_brake_request
-            lock=((getattr(self,'_service_brake_hold',None) or {}).get('signal_lock') or {})
-            continuing=bool(light.get('color') in ('red','yellow')
-                and (lock.get('candidate') or {}).get('passage_key') == light.get('passage_key')
-                and lock.get('candidate'))
+            from core.service_brake_hold import consumed_stop_target
+            hold = getattr(self, '_service_brake_hold', None) or {}
+            original = consumed_stop_target(hold.get('stop_evidence'))
+            # A missing observed head does not clear a previously consumed
+            # authored control entry. Continue its positive distance profile
+            # until independently confirmed clearance, including source gaps.
+            continuing = bool(original.get('passage_key')
+                and original['passage_key'] == light.get('passage_key')
+                and (light.get('color') != 'green' or light.get('stop_required') is True))
+            from core.longitudinal import signal_stop_speed_limit
+            # Qualified moving approach: one distance target, one existing PID.
+            # Keep the protective open-loop request when ACC is absent or the
+            # observed head is unavailable, and retain terminal brake continuity.
+            if (self.shared_state.get('longitudinal_acc_active')
+                    and light.get('head_observed') is True
+                    and (signal_stop_speed_limit(light, my_speed) or 0.) > 0.):
+                return 0.
             return signal_stop_brake_request(light, my_speed, continuing=continuing)
 
         if color == "red":
@@ -1240,6 +1345,15 @@ class UltraPilotEngine:
                    ("Autopilot activation requested." if new_state
                     else "Autopilot disabled."))
             request_id = time.monotonic_ns() if new_state else None
+            from core.longitudinal import initialization_record
+            initial_at = time.monotonic()
+            initial_request = (self._drive_engagement if pending_started else None)
+            initial_epoch = initial_request['request_id'] if initial_request else request_id
+            initialization = (initialization_record(self.shared_state, initial_epoch,
+                initial_request['started_at'] if initial_request else initial_at,
+                initial_request['deadline_at'] if initial_request else initial_at+.5)
+                if initial_epoch is not None else None)
+            self._longitudinal_initialization = initialization
             # Publish the request and its preliminary message together. The
             # worker cannot confirm control initialization and then have this
             # older message overwrite its final "enabled" confirmation.
@@ -1254,6 +1368,7 @@ class UltraPilotEngine:
                 "autopilot_first_fault_autopilot": None,
                 "autopilot_control_state": "normal" if new_state else "inactive",
                 "autopilot_stop_epoch": None,
+                "longitudinal_initialization": initialization,
                 "tts_message": msg,
                 **({"safety_hazard_active": False} if new_state else {}),
                 **({"maneuver_reference_packet": {},
@@ -1293,8 +1408,7 @@ class UltraPilotEngine:
             timestamp = float(readiness.get("timestamp", 0.0) or 0.0)
         except (TypeError, ValueError, OverflowError):
             timestamp = 0.0
-        if timestamp <= 0.0 or time.monotonic() - timestamp > 0.5:
-            return "potvrdenie navigačnej autority je zastarané"
+        readiness_stale = timestamp <= 0.0 or time.monotonic() - timestamp > 0.5
         # A selector write is not proof of a gear change at the DLL/game
         # boundary. Only a fresh SDK forward-gear observation may grant
         # control after the Engine-owned parked selection attempt.
@@ -1328,7 +1442,7 @@ class UltraPilotEngine:
         # the worker repeats this check while control is active.
         from plugins.autopilot.main import (
             game_gps_navigation_present, lane_authority_rejection_reason,
-            navigation_command,
+            navigation_command, engagement_lateral_limit, ENGAGEMENT_MAX_HEADING_RAD,
         )
         snapshot = self.shared_state.get("lane_trajectory", {}) or {}
         if game_gps_navigation_present(self.shared_state, snapshot):
@@ -1336,6 +1450,21 @@ class UltraPilotEngine:
                 self.shared_state, snapshot)
             if reason:
                 return reason
+            if readiness_stale:
+                # Readiness is a worker summary, not the authoritative packet.
+                # An immediate N may outpace that summary after manual release.
+                # Re-evaluate the SAME engagement alignment limits against the
+                # fresh live match; do not timestamp or reuse the old summary.
+                match = self.shared_state.get('lane_match', {}) or {}
+                try:
+                    lateral = float(match.get('lateral_error_m', float('inf')))
+                    heading = float(match.get('heading_error_rad', float('inf')))
+                    if (not math.isfinite(lateral) or not math.isfinite(heading)
+                            or abs(lateral) > engagement_lateral_limit(match)
+                            or abs(heading) > ENGAGEMENT_MAX_HEADING_RAD):
+                        return 'truck is not centred and aligned in the confirmed GPS lane'
+                except (TypeError, ValueError, OverflowError):
+                    return 'current engagement lane alignment is invalid'
             if (readiness.get("source") != "gps_lane"
                     or readiness.get("revision") != snapshot.get("revision")):
                 return "potvrdenie navigačnej autority patrí starej trase"
@@ -1363,6 +1492,8 @@ class UltraPilotEngine:
                    > float(packet[key]) + .5
                    for key in ("observation_timestamp", "computed_at")):
                 return "steering packet cannot survive the next control tick; waiting for a fresh SDK frame"
+        elif readiness_stale:
+            return "potvrdenie navigačnej autority je zastarané"
         return ""
 
     def _begin_auto_drive_engagement(self, request_id):
@@ -1487,6 +1618,8 @@ class UltraPilotEngine:
     def _clear_simple_auto_forward_history(self):
         self._first_pedal_request = None
         self._first_pedal_started_at = None
+        self._longitudinal_initialization = None
+        self.shared_state.set('longitudinal_initialization', None)
         self._service_brake_hold = None
         self.shared_state.set('simple_auto_service_hold', None)
         self.shared_state.set('service_brake_resume', None)
@@ -1495,6 +1628,7 @@ class UltraPilotEngine:
         self._simple_auto_forward_history = None
         self.shared_state.update_batch({
             "simple_auto_forward_history": None,
+            "simple_auto_forward_observation": None,
             "simple_auto_activation_token": None,
             "simple_auto_launch": None,
             "simple_auto_launch_output": None,
@@ -1503,8 +1637,9 @@ class UltraPilotEngine:
 
     def _revoke_simple_auto_launch(self, truck, reason):
         """Revoke forward authority at the Engine's single physical boundary."""
-        record_control_fault(self.shared_state, "engine", reason,
+        fault = record_control_fault(self.shared_state, "engine", reason,
             details=getattr(self, '_longitudinal_rejection_detail', None))
+        self._request_automatic_longitudinal_incident(fault)
         first_reason = first_control_fault(self.shared_state, reason)
         self.shared_state.update_batch({
             "autopilot_active": False, "autopilot_engagement_request": None,
@@ -1743,6 +1878,15 @@ class UltraPilotEngine:
             return True
         from core.longitudinal import launch_rejection
         longitudinal_reason = launch_rejection(self.shared_state)
+        if longitudinal_reason.endswith('longitudinal initialization pending'):
+            # Same fixed activation bound as the existing launch owner.
+            # No D/probe or old pedal decision is executed while waiting.
+            # Do not release an acknowledged continuous brake chain.
+            self.controller.set_throttle(0.)
+            self.shared_state.update_batch({CTL_THROTTLE: 0.,
+                'autopilot_control_state': 'initializing',
+                'navigation_status': 'Čakám na pozdĺžny povel novej aktivácie – pohon vypnutý'})
+            return True
         if pending.get('phase') == 'activation_wait' and longitudinal_reason and not longitudinal_reason.endswith('braking forbids launch'):
             self._cancel_auto_drive_engagement_unlocked(longitudinal_reason)
             return True
@@ -2095,6 +2239,14 @@ class UltraPilotEngine:
             self.shared_state.set(
                 "navigation_status",
                 f"Autopilot zablokovaný: {rejection_reason}")
+        from core.longitudinal import initialization_record
+        initial_at = time.monotonic()
+        initial_request = self._drive_engagement if pending_started else None
+        initialization = (initialization_record(self.shared_state, seq,
+            initial_request['started_at'] if initial_request else initial_at,
+            initial_request['deadline_at'] if initial_request else initial_at+.5)
+            if desired or pending_started else None)
+        self._longitudinal_initialization = initialization
         self.shared_state.update_batch({
             "autopilot_active": desired,
             "autopilot_engagement_request": seq if desired else None,
@@ -2104,6 +2256,7 @@ class UltraPilotEngine:
             "autopilot_first_fault_autopilot": None,
             "autopilot_control_state": "normal" if desired else "inactive",
             "autopilot_stop_epoch": None,
+            "longitudinal_initialization": initialization,
             **({"safety_hazard_active": False} if desired else {}),
             **({"maneuver_reference_packet": {},
                 "maneuver_approach_packet": {}}
@@ -2176,8 +2329,9 @@ class UltraPilotEngine:
     # --- Control flush --------------------------------------------------------
     def _automatic_safety_stop(self, reason):
         """Return steering smoothly and ramp brake after producer loss."""
-        record_control_fault(self.shared_state, "engine", reason,
+        fault = record_control_fault(self.shared_state, "engine", reason,
             details=getattr(self, '_longitudinal_rejection_detail', None))
+        self._request_automatic_longitudinal_incident(fault)
         first_reason = first_control_fault(self.shared_state, reason)
         if (getattr(self, '_service_brake_hold', None) or {}).get('phase') == 'holding':
             # A technical fault is not an automatic clearance of a planned
@@ -2190,7 +2344,9 @@ class UltraPilotEngine:
         self.shared_state.update_batch({
             "autopilot_control_state": "controlled_stop",
             "autopilot_stop_epoch": self.shared_state.get("autopilot_failure_epoch"),
-            "navigation_status": f"Bezpečne spomaľujem: {first_reason}",
+            "navigation_status": (
+                "Prevezmite riadenie – príslušnosť semafora je nepotvrdená. Bezpečne spomaľujem."
+                if 'signal regulation coverage' in first_reason else f"Bezpečne spomaľujem: {first_reason}"),
         })
         now = time.monotonic()
         previous_time = float(getattr(self, "_last_control_flush", now - 0.02))
@@ -2260,7 +2416,7 @@ class UltraPilotEngine:
         if journal is not None and journal.enabled:
             source = dict(journal.source() or {})
             source.update(phase='safety_stop', safety_reason=first_control_fault(self.shared_state, reason),
-                          intervention=self.shared_state.get('autopilot_intervention'),
+                          intervention=fault,
                           selected={'throttle': 0., 'brake': brake, 'source': 'engine_safety',
                                     'reason': reason, 'emergency': True})
             journal.bind(source)
@@ -2324,7 +2480,8 @@ class UltraPilotEngine:
         diagnostic = getattr(self, '_maneuver_diagnostic_collector', None)
         journal = getattr(self.controller, '_pedal_journal', None)
         accepting = diagnostic is not None and getattr(diagnostic, 'state', 'COLLECTING') in ('ARMED', 'COLLECTING')
-        if not accepting:
+        automatic = getattr(self,'_automatic_longitudinal_diagnostics',True)
+        if not accepting and not automatic:
             self._longitudinal_trace = None
             if journal is not None:
                 journal.suspend()
@@ -2333,12 +2490,24 @@ class UltraPilotEngine:
             from core.navigation.longitudinal_diagnostics import PedalJournal
             journal = self.controller._pedal_journal = PedalJournal()
         journal.enabled = True
+        journal.begin_decision()
         self._longitudinal_offer_done = False
         try:
             return self._flush_controls_unlocked()
         finally:
-            if not self._longitudinal_offer_done:
+            try:
+                journal.finish_decision(time.monotonic())
+            except Exception as error:
+                self._automatic_longitudinal_export_error = type(error).__name__
+            if accepting and not self._longitudinal_offer_done:
                 self._offer_maneuver_evidence_diagnostic(None, time.monotonic())
+            if automatic:
+                try:
+                    self._finish_automatic_longitudinal_incident(journal)
+                    self._finish_significant_longitudinal_event(journal)
+                except Exception as error:
+                    # Observational export must not replace a control result.
+                    self._automatic_longitudinal_export_error = type(error).__name__
             journal.bind(None)
             self._longitudinal_trace = None
 
@@ -2350,13 +2519,89 @@ class UltraPilotEngine:
                 phase = 'safety_stop'
             source.update(phase=phase, output_intent={'throttle': throttle, 'brake': brake,
                 'source': 'engine_launch' if phase.startswith('launch') else 'engine', 'reason': reason})
-            record = self.shared_state.get('autopilot_intervention')
+            from core.navigation.longitudinal_diagnostics import hold_snapshot
+            source['service_hold'] = hold_snapshot(getattr(self,'_service_brake_hold',None))
+            record = getattr(self,'_automatic_longitudinal_fault',None)
             if isinstance(record, dict) and record.get('epoch') == source.get('activation'):
                 # Decision context and consumed inputs are already immutable
                 # in this same flush. Avoid duplicating them in the fixed byte
                 # budget, while retaining the first event's own time/identity.
                 source['intervention'] = record
             journal.bind(source)
+
+    def _request_automatic_longitudinal_incident(self, fault):
+        """Reuse an intervention already received for control/logging, no RPC."""
+        if not isinstance(fault,dict) or not getattr(self,'_automatic_longitudinal_diagnostics',True):
+            return
+        if fault.get('epoch') == getattr(self,'_automatic_longitudinal_export_epoch',None):
+            return
+        if (getattr(self,'_automatic_longitudinal_fault',None) or {}).get('epoch') == fault.get('epoch'):
+            return  # Preserve the first cause and the original finite tail window.
+        self._automatic_longitudinal_fault = fault
+        self._automatic_longitudinal_tail_until = time.monotonic()+.1
+        journal=getattr(self.controller,'_pedal_journal',None)
+        if journal is not None:
+            journal.history_intervention(fault)
+
+    def _finish_automatic_longitudinal_incident(self, journal, *, shutdown=False):
+        fault = getattr(self,'_automatic_longitudinal_fault',None)
+        directory = getattr(self,'_automatic_replay_directory',None)
+        if not directory or not fault or fault.get('epoch') == getattr(self,'_automatic_longitudinal_export_epoch',None):
+            return
+        if not shutdown and self._was_active and time.monotonic() < self._automatic_longitudinal_tail_until:
+            return
+        writer=getattr(self,'_automatic_replay_writer',None)
+        if writer is not None and writer.status.get('busy'):return
+        snapshot = journal.snapshot(expanded=False,include_history=True)
+        if not snapshot['events']:
+            return
+        from core.steering_replay import AsyncReplayExporter, SteeringReplayBuffer
+        from core.navigation.longitudinal_diagnostics import _pack_intervention, bounded_copy
+        first,_ = bounded_copy(_pack_intervention(fault),limit=16384)
+        preceding=journal.ready_significant(time.monotonic(),shutdown=True)
+        if preceding is not None:
+            snapshot['preceding_significant_event_receipt']={k:preceding[k] for k in
+                ('sequence','kind','observed_at','receipt','coalesced','suppressed_events')}
+            snapshot['preceding_significant_event_receipt']['sealed_history_superseded_by_fault']=True
+            journal.significant_submitted(preceding['sequence'])
+        snapshot.update(first_intervention=first,
+            post_fault_window_s=.1, tail_status='shutdown_release_calls' if shutdown else
+                'bounded_safety_tail' if self._was_active else 'release_calls_recorded',
+            snapshot_incomplete=bool(snapshot['dropped_events']))
+        writer = getattr(self,'_automatic_replay_writer',None)
+        if writer is None:
+            writer = self._automatic_replay_writer = AsyncReplayExporter()
+        if writer.submit(lambda: SteeringReplayBuffer(2).export(directory,
+            reason='automatic_disable', identity={'control_intervention':first},
+            sample_kind='longitudinal_boundary_incident', longitudinal=snapshot)):
+            self._automatic_longitudinal_export_epoch = fault['epoch']
+
+    def _finish_significant_longitudinal_event(self,journal,*,shutdown=False):
+        directory=getattr(self,'_automatic_replay_directory',None)
+        if not directory:return
+        fault=getattr(self,'_automatic_longitudinal_fault',None)
+        if fault and fault['epoch']!=getattr(self,'_automatic_longitudinal_export_epoch',None):return
+        writer=getattr(self,'_automatic_replay_writer',None)
+        if writer is not None and writer.status.get('busy'):return
+        pending=journal.ready_significant(time.monotonic(),shutdown=shutdown)
+        if pending is None:return
+        if fault and pending.get('context') and fault['epoch']==pending['context'][0]:return
+        from core.steering_replay import AsyncReplayExporter,SteeringReplayBuffer
+        if writer is None:writer=self._automatic_replay_writer=AsyncReplayExporter()
+        def write():
+            from pathlib import Path
+            root=Path(directory)
+            # Background-only quota. Never delete/overwrite prior evidence.
+            existing=list(root.glob('steering-replay-*-significant_event.json'))
+            remaining=16*1024*1024-sum(p.stat().st_size for p in existing)
+            if len(existing)>=8 or remaining<=0:
+                raise ValueError('SIGNIFICANT_EVENT_EXPORT_DISK_QUOTA')
+            snapshot=journal.expand_significant(pending)
+            return SteeringReplayBuffer(2).export(directory,reason='significant_event',
+                identity={'event_sequence':pending['sequence'],'context':pending['context']},
+                sample_kind='longitudinal_significant_event',longitudinal=snapshot,
+                maximum_output_bytes=remaining)
+        if writer.submit(write):journal.significant_submitted(pending['sequence'])
 
     def _record_drive_boundary(self, action, truck, *, selector=None,
                                returned=None, steering=None, throttle=None,
@@ -2496,9 +2741,9 @@ class UltraPilotEngine:
                            .get("truck", {}) or {})
         journal = getattr(self.controller, '_pedal_journal', None)
         if journal is not None and journal.enabled:
-            from core.navigation.longitudinal_diagnostics import source_snapshot
-            self._longitudinal_trace = source_snapshot(
-                self.shared_state, truck_telemetry, getattr(self, '_drive_engagement', None))
+            from core.navigation.longitudinal_diagnostics import local_source_snapshot
+            self._longitudinal_trace = local_source_snapshot(
+                truck_telemetry, getattr(self, '_drive_engagement', None))
             self._longitudinal_trace['decision_sequence'] = journal.next_decision()
             journal.bind(self._longitudinal_trace)
         observed_gear = truck_telemetry.get("gear")
@@ -2510,7 +2755,8 @@ class UltraPilotEngine:
         observed_right = bool(truck_telemetry.get("blinkerRight", False))
         observed_blinker = (
             "left" if observed_left and not observed_right else
-            "right" if observed_right and not observed_left else "off")
+            "right" if observed_right and not observed_left else
+            "hazard" if observed_left and observed_right else "off")
         observe_blinker = getattr(self.controller, "observe_blinker", None)
         if callable(observe_blinker):
             observe_blinker(observed_blinker)
@@ -2539,14 +2785,19 @@ class UltraPilotEngine:
             if self._was_active:
                 # Cancel only an automatic signal that UltraPilot still owns.
                 # On later manual frames leave the driver's indicators alone.
-                if self.shared_state.get("active_blinker") in ("left", "right"):
+                cancelled_owned_blinker = (
+                    getattr(self, '_automatic_blinker_side', None) in ("left", "right")
+                    and observed_blinker == self._automatic_blinker_side)
+                if cancelled_owned_blinker:
                     self.controller.set_blinker("off")
+                self._automatic_blinker_side = None
                 self.controller.release_all()
                 self._record_drive_boundary(
                     "release_all_after_disable", truck_telemetry,
                     selector=False, steering=0.0, throttle=0.0, brake=0.0)
                 self.shared_state.update_batch({
-                    "route_blinker": "off", "active_blinker": "off",
+                    "route_blinker": None,
+                    "active_blinker": "off" if cancelled_owned_blinker else observed_blinker,
                 })
                 self._was_active = False
                 self._drive_selector_pressed = False
@@ -2592,8 +2843,22 @@ class UltraPilotEngine:
                     != self._active_transmission_mode or
                     evidence.get("generation") != pinned_generation):
                 self.shared_state.set("autopilot_active", False)
-                self.shared_state.set("autopilot_disable_reason",
-                                      "aktívny režim prevodovky sa zmenil")
+                mode_reason = ('transmission mode evidence unavailable: '+str(evidence.get('reason') or 'confirmation expired')
+                    if selected_mode(evidence, self.shared_state.get('transmission_mode_preference', 'auto')) is None
+                    else 'aktívny režim prevodovky sa zmenil')
+                compared_vehicle = {
+                    'sdk_frame_us': truck_telemetry.get('sdkFrameTimeUs'),
+                    'observation': dict(metadata), 'gear': truck_telemetry.get('gear'),
+                    'speed_mps': truck_telemetry.get('speed'),
+                    'park_brake': truck_telemetry.get('parkBrake')}
+                fault = record_control_fault(self.shared_state, 'engine', mode_reason,
+                    details={'source': 'transmission_mode_gate', 'evidence': evidence,
+                        'command_observation_pairing': {
+                            'initial_vehicle': compared_vehicle, 'compared_vehicle': compared_vehicle,
+                            'reread_count': 0, 'command_read_started_at': None, 'command_read_at': None,
+                            'checked_after_read_at': time.monotonic()}})
+                self._request_automatic_longitudinal_incident(fault)
+                self.shared_state.set("autopilot_disable_reason", mode_reason)
                 self.controller.release_all()
                 self._clear_simple_auto_forward_history()
                 self._was_active = False
@@ -2623,7 +2888,10 @@ class UltraPilotEngine:
             return
         self._was_active = True
 
-        if (self.shared_state.get("autopilot_control_state") == "controlled_stop"
+        control_state = self.shared_state.get("autopilot_control_state")
+        if journal is not None and journal.enabled:
+            self._longitudinal_trace.update(control_state=control_state,autopilot_active=True,phase='active')
+        if (control_state == "controlled_stop"
                 and self.shared_state.get("autopilot_stop_epoch")
                 == self.shared_state.get("autopilot_failure_epoch")):
             self._automatic_safety_stop(first_control_fault(
@@ -2727,6 +2995,21 @@ class UltraPilotEngine:
                                .get("truck", {}) or {})
             command_observation = capture_command_observation(self.shared_state, truck_telemetry)
             truck_telemetry = command_observation.truck
+            if journal is not None and journal.enabled:
+                metadata = truck_telemetry.get('_control_observation') or {}
+                self._longitudinal_trace.update(
+                    context=list(command_observation.binding), activation=command_observation.binding[0],
+                    sdk_observation={k:metadata.get(k) for k in ('schema_version','sdk_frame_us','observed_at','valid','reason')},
+                    sdk_response={k:truck_telemetry.get(k) for k in ('gameThrottle','gameBrake')},
+                    sdk_frame_us=truck_telemetry.get("sdkFrameTimeUs"),
+                    observation_timestamp=metadata.get("observed_at"),
+                    observation_valid=metadata.get("valid") is True,
+                    actual_speed_mps=truck_telemetry.get("speed"),
+                    observed_gear=truck_telemetry.get("gear"))
+                from core.navigation.longitudinal_diagnostics import bounded_input
+                self._longitudinal_trace['requested'] = bounded_input(command_observation.command)
+                if command_observation.provenance['reread_count']:
+                    self._longitudinal_trace['command_observation_pairing'] = command_observation.provenance
             vehicle_reason = vehicle_control_observation_rejection(
                 self.shared_state, truck_telemetry)
             if vehicle_reason:
@@ -2734,16 +3017,6 @@ class UltraPilotEngine:
                     command_observation, time.monotonic())
                 self._automatic_safety_stop(vehicle_reason)
                 return
-            if journal is not None and journal.enabled:
-                metadata, _ = vehicle_control_observation(self.shared_state, truck_telemetry)
-                self._longitudinal_trace.update(
-                    sdk_frame_us=truck_telemetry.get("sdkFrameTimeUs"),
-                    observation_timestamp=metadata.get("observed_at"),
-                    observation_valid=metadata.get("valid") is True,
-                    actual_speed_mps=truck_telemetry.get("speed"),
-                    observed_gear=truck_telemetry.get("gear"))
-                if command_observation.provenance['reread_count']:
-                    self._longitudinal_trace['command_observation_pairing'] = command_observation.provenance
 
         simple_auto_forward = False
         hold = getattr(self, '_service_brake_hold', None)
@@ -2789,6 +3062,15 @@ class UltraPilotEngine:
                 return
             self._simple_auto_forward_history = history
             self.shared_state.set("simple_auto_forward_history", history)
+            if journal is not None and journal.enabled:
+                self._longitudinal_trace['forward_history'] = {k:history.get(k) for k in (
+                    'phase','confirmed_frame','confirmed_at','last_frame','last_observed_at',
+                    'zero_deadline_at','launch_deadline_at','brake_only','coast_only')}
+            if journal is not None and journal.enabled and history.get('coast_only'):
+                self._longitudinal_trace['forward_coast_confirmation'] = dict(
+                    history.get('coast_confirmation') or {},
+                    zero_deadline_at=history.get('zero_deadline_at'),
+                    last_frame=history.get('last_frame'), drive_authorized=False)
             simple_auto_forward = not history.get('brake_only', False)
 
         if gps_output_reason:
@@ -2797,9 +3079,20 @@ class UltraPilotEngine:
             self._automatic_safety_stop(gps_output_reason)
             return
 
+        destination_hold = (getattr(self, '_service_brake_hold', None) or {}).get('destination_lock')
+        if destination_hold:
+            from core.longitudinal import number
+            try:
+                destination_present = number(truck_telemetry['routeDistance'], 0., 1e7) > 0.
+            except (KeyError, TypeError, ValueError, OverflowError):
+                destination_present = False
+            if not destination_present:
+                self._automatic_safety_stop('GPS destination disappeared before confirmed planned completion')
+                return
+
         throttle = self.shared_state.get(CTL_THROTTLE, 0.0)
         brake = self.shared_state.get(CTL_BRAKE, 0.0)
-        from core.longitudinal import engine_decision, exclusive, context
+        from core.longitudinal import engine_decision, exclusive, context, write_rejection
         longitudinal = None
         if self.shared_state.get("longitudinal_control_schema") == 1:
             self._longitudinal_rejection_detail = {}
@@ -2812,19 +3105,24 @@ class UltraPilotEngine:
                     return
                 self._automatic_safety_stop(pedal_reason)
                 return
-            self._first_pedal_request = None
-            self._first_pedal_started_at = None
+            if not longitudinal.get('refresh_pending'):
+                self._first_pedal_request = None
+                self._first_pedal_started_at = None
+                if getattr(self, '_longitudinal_initialization', None) is not None:
+                    self._longitudinal_initialization = None
+                    self.shared_state.set('longitudinal_initialization', None)
             throttle, brake = longitudinal["throttle"], longitudinal["brake"]
             if longitudinal.get('refresh_pending') and not longitudinal['emergency']:
                 self.shared_state.set('navigation_status',
                     'Čakám na nové pozdĺžne rozhodnutie – pohon je odobratý')
             if longitudinal['emergency']:
-                record_control_intervention(self.shared_state, 'engine',
+                record = record_control_intervention(self.shared_state, 'engine',
                     'EMERGENCY_BRAKE', 'Núdzové brzdenie: ' + longitudinal['source'],
                     'emergency', details={'winner': longitudinal['source'],
                         'decision': longitudinal['reason'], 'sdk_frame_us': longitudinal['sdk_frame_us'],
                         'observation_timestamp': longitudinal['observation_timestamp'],
                         'evidence': longitudinal.get('emergency_evidence')})
+                self._request_automatic_longitudinal_incident(record)
         else:
             # Pre-schema offline clients still pass the same exclusive/range
             # physical guard. Live Engine initialization always requires schema 1.
@@ -2883,12 +3181,19 @@ class UltraPilotEngine:
         hold = getattr(self, '_service_brake_hold', None)
         continuing_hold = bool(hold and longitudinal
             and not longitudinal.get('emergency')
-            and self.shared_state.get('autopilot_control_state') != 'controlled_stop'
-            and (abs(float(truck_telemetry['speed'])) < .05 or hold.get('signal_lock')
-                 or longitudinal.get('refresh_pending')))
+            and self.shared_state.get('autopilot_control_state') != 'controlled_stop')
+        moving_clearance_decision = None
         if continuing_hold:
             from core.service_brake_hold import clearance
             clear_signal = clearance(hold, self.shared_state)
+            # Keep the already validated fresh decision separate from the hold
+            # override. Only final same-head clearance may remove that override.
+            moving_clearance_decision = dict(longitudinal)
+            # Approach commitment locks the head but is NOT a stationary brake
+            # continuity witness. Below the current red profile the existing
+            # validated speed controller may release/recover drive while moving.
+            from core.service_brake_hold import profile_approach_allowed
+            approach_control = profile_approach_allowed(hold, longitudinal, truck_telemetry)
             throttle = 0.
             from core.service_brake_hold import fresh_moving_stop_request
             # Continuous means no zero edge, not a forever-ratcheting pedal.
@@ -2896,8 +3201,15 @@ class UltraPilotEngine:
             # braking while moving. Stationary/unknown clearance retains hold.
             if not fresh_moving_stop_request(hold,longitudinal,truck_telemetry):
                 brake = max(brake, hold['brake'])
+            if hold.get('phase') == 'holding' or abs(float(truck_telemetry['speed'])) < .05:
+                from core.service_brake_hold import holding_floor
+                brake = max(brake,holding_floor(hold,truck_telemetry,time.monotonic()))
             longitudinal.update(throttle=0., brake=brake,
                 source='continuous_service_hold', reason='waiting: stop clearance is not producer-confirmed')
+            if approach_control:
+                longitudinal = moving_clearance_decision
+                throttle, brake = longitudinal['throttle'], longitudinal['brake']
+                continuing_hold = False
             trace = getattr(self, '_longitudinal_trace', None)
             if isinstance(trace, dict):
                 trace['selected'] = {k: v for k, v in longitudinal.items()
@@ -2927,6 +3239,7 @@ class UltraPilotEngine:
                         parking_brake_owner='driver_or_external',
                         decision=longitudinal.get('stopping_evidence') if longitudinal else None))
                 reason = record['reason']
+                self._request_automatic_longitudinal_incident(record)
                 self.shared_state.update_batch({
                     "autopilot_active": False,
                     'autopilot_engagement_request': None,
@@ -2966,18 +3279,34 @@ class UltraPilotEngine:
                 selector=False, steering=0.0, throttle=0.0, brake=0.0)
             return
         steering_write_returned_at_s = time.monotonic()
-        def check_pedal_boundary():
+        def check_pedal_boundary(*, positive_write=False):
             nonlocal longitudinal, throttle, brake, continuing_hold
             if longitudinal is None:
                 return True
             from core.longitudinal import write_rejection, rejection_details, handoff_decision
             commit_context = context(self.shared_state)
+            source_reason = ''
+            if positive_write and throttle > 0.:
+                from core.longitudinal import signal_drive_write_guard
+                previous_decision = longitudinal
+                longitudinal, source_reason = signal_drive_write_guard(
+                    self.shared_state, truck_telemetry, longitudinal, commit_context,
+                    diagnostic=getattr(self, '_longitudinal_trace', None),
+                    rejection_info=self._longitudinal_rejection_detail)
+                throttle = longitudinal['throttle']
+                if longitudinal is not previous_decision:
+                    self._bind_longitudinal_output(output_phase,
+                        throttle, brake, longitudinal['reason'])
+                # Read/validation may span an authority change. The final gate
+                # below checks the original command against the current context.
+                commit_context = context(self.shared_state)
             commit_at = time.monotonic()  # after the last identity IPC read
-            commit_reason = write_rejection(longitudinal, commit_context, commit_at)
+            commit_reason = source_reason or write_rejection(longitudinal, commit_context, commit_at)
             if not commit_reason:
                 return True
-            self._longitudinal_rejection_detail = rejection_details(
-                longitudinal, commit_context, commit_at)
+            if not source_reason:
+                self._longitudinal_rejection_detail = rejection_details(
+                    longitudinal, commit_context, commit_at)
             replacement = handoff_decision(self.shared_state, truck_telemetry,
                 longitudinal, commit_context, commit_reason)
             if replacement is None:
@@ -2985,7 +3314,7 @@ class UltraPilotEngine:
                 return False
             longitudinal = replacement
             throttle = 0.
-            continuing_hold = bool(hold and not replacement['emergency'])
+            continuing_hold = bool(hold and hold.get('phase') != 'approaching' and not replacement['emergency'])
             if hold and not replacement['emergency']:
                 from core.service_brake_hold import rejection as hold_rejection
                 hold_reason = hold_rejection(hold, self.controller, self.shared_state,
@@ -2996,7 +3325,7 @@ class UltraPilotEngine:
                 # The zero-drive handoff must not interrupt forward-started
                 # planned braking on its way to rest, even without a signal
                 # lock. This uses the existing acknowledged physical chain.
-                continuing_hold = True
+                continuing_hold = hold.get('phase') != 'approaching'
             brake = max(hold['brake'] if continuing_hold else 0., replacement['brake'])
             if continuing_hold:
                 longitudinal.update(brake=brake, source='continuous_service_hold')
@@ -3020,13 +3349,35 @@ class UltraPilotEngine:
             if hold_reason:
                 self._revoke_simple_auto_launch(truck_telemetry, hold_reason)
                 return
-            if clear_signal is not None and abs(float(truck_telemetry['speed'])) < .05:
+            if clear_signal is not None and not hold.get('destination_lock'):
                 # Recheck the actual source/authority after steering and IPC;
                 # no previously green snapshot can authorize a later red write.
                 from core.service_brake_hold import resume_rejection
                 if not resume_rejection(clear_signal, self.shared_state):
-                    self._resume_signal_wait(truck_telemetry, clear_signal)
-                    return
+                    if abs(float(truck_telemetry['speed'])) < .05:
+                        self._resume_signal_wait(truck_telemetry, clear_signal)
+                        return
+                    # Moving green clears ONLY the signal's commitment. The
+                    # current decision still contains other braking/limits; no
+                    # launch probe or stale pre-stop throttle is substituted.
+                    from core.longitudinal import write_rejection
+                    reason = write_rejection(moving_clearance_decision,
+                                             context(self.shared_state), time.monotonic())
+                    if not reason and int(truck_telemetry['gear']) > 0:
+                        longitudinal = moving_clearance_decision
+                        throttle, brake = longitudinal['throttle'], longitudinal['brake']
+                        continuing_hold = False
+                        self._service_brake_hold = None
+                        self.shared_state.update_batch({'simple_auto_service_hold': None,
+                            'autopilot_control_state': 'active',
+                            'navigation_status': 'Zelená overená – pokračujem v jazde'})
+                        trace = getattr(self, '_longitudinal_trace', None)
+                        if isinstance(trace, dict):
+                            trace['selected'] = {k:v for k,v in longitudinal.items()
+                                if k not in ('emergency_evidence', 'stopping_evidence', 'lease_dependencies')}
+                            trace['control_state'] = 'active'
+                        logging.info('Moving signal approach released: locked ID %s, generation %s',
+                                     clear_signal['candidate']['id'], clear_signal['generation'])
         if (longitudinal and not longitudinal.get('emergency')
                 and self.shared_state.get('autopilot_control_state') != 'controlled_stop'):
             record = self.shared_state.get('autopilot_intervention')
@@ -3035,7 +3386,9 @@ class UltraPilotEngine:
                                                 'control_intervention_engine': None})
         # Release the opposing held channel BEFORE applying the new positive
         # channel, including when the previous physical frame was braking.
-        self._bind_longitudinal_output('planned_wait' if continuing_hold else 'active', throttle, brake,
+        output_phase = ('planned_wait' if abs(float(truck_telemetry['speed'])) < .05
+                        else 'planned_braking') if continuing_hold else 'active'
+        self._bind_longitudinal_output(output_phase, throttle, brake,
             longitudinal['reason'] if longitudinal else 'legacy exclusive pedal guard')
         if brake > 0.0:
             self.controller.set_throttle(0.0)
@@ -3047,7 +3400,12 @@ class UltraPilotEngine:
                 return
         # Diagnostic binding and the opposing-channel release can outlive a
         # previously valid lease. Validate again immediately before positive I/O.
-        if not check_pedal_boundary():
+        if not check_pedal_boundary(positive_write=True):
+            return
+        if (getattr(self.controller, 'mode', None) == 'SCS_SDK'
+                and not getattr(self.controller.scs, 'connected', False)):
+            self._revoke_simple_auto_launch(truck_telemetry,
+                'longitudinal backend disconnected before pedal write')
             return
         pedal_write_started_at = time.monotonic()
         if brake > 0.0:
@@ -3056,6 +3414,11 @@ class UltraPilotEngine:
         else:
             self.controller.set_throttle(throttle)
         pedal_write_returned_at = time.monotonic()
+        if (getattr(self.controller, 'mode', None) == 'SCS_SDK'
+                and not getattr(self.controller.scs, 'connected', False)):
+            self._revoke_simple_auto_launch(truck_telemetry,
+                'longitudinal backend write failed')
+            return
         if not self.shared_state.get("autopilot_active", False):
             self.controller.release_all()
             self.shared_state.set("longitudinal_command", None)
@@ -3078,6 +3441,52 @@ class UltraPilotEngine:
                 return
             self._service_brake_hold = next_hold
             self.shared_state.set('simple_auto_service_hold', next_hold)
+            destination = (longitudinal.get('stopping_evidence') or {}).get('destination') if longitudinal else None
+            from core.navigation.route import ARRIVAL_RADIUS
+            destination_terminal = ((next_hold or {}).get('destination_lock') or {}).get('terminal_receipt')
+            if (next_hold and destination
+                    and destination_terminal
+                    and 0. < destination['distance_m'] <= min(ARRIVAL_RADIUS, destination_terminal['distance_m'])
+                    and abs(float(truck_telemetry['speed'])) < .05
+                    and int(truck_telemetry['gear']) >= 0
+                    and not next_hold.get('signal_lock')
+                    and not next_hold.get('other_stop_unverified')
+                    and not longitudinal.get('emergency')
+                    and not longitudinal.get('refresh_pending')
+                    and not self.shared_state.get('autopilot_intervention')
+                    and not write_rejection(longitudinal, context(self.shared_state), time.monotonic())):
+                # Only a fresh positive GPS remainder and physically admitted
+                # planned chain can complete. A vanished/zero target is NOT proof.
+                # Release once to the driver; no promise of unattended hill hold.
+                self._bind_longitudinal_output('destination_release', 0., 0., 'positive GPS destination reached at standstill')
+                self.controller.release_all()
+                if not getattr(getattr(self.controller, 'scs', None), 'connected', False):
+                    self._automatic_safety_stop('GPS destination controller release failed')
+                    return
+                self.shared_state.update_batch({'autopilot_active': False,
+                    'autopilot_control_state': 'arrived',
+                    'autopilot_engagement_request': None, 'auto_drive_pending': False,
+                    'longitudinal_command': None, 'simple_auto_service_hold': None,
+                    'navigation_arrival_pending': False,
+                    'navigation_destination_completion': dict(
+                        context=tuple(longitudinal['context']),
+                        sdk_frame_us=truck_telemetry['sdkFrameTimeUs'],
+                        observation_timestamp=truck_telemetry['_control_observation']['observed_at'],
+                        speed_mps=truck_telemetry['speed'],
+                        positive_gps_remainder_m=destination['distance_m'],
+                        terminal_receipt=dict(destination_terminal),
+                        game_consumption_verified=False,
+                        automatic_hill_hold_after_release=False),
+                    'navigation_status': 'Cieľ dosiahnutý – prevezmite držanie vozidla',
+                    CTL_THROTTLE: 0., CTL_BRAKE: 0., CTL_STEERING: 0.,
+                    CTL_SELECT_DRIVE: None})
+                self._service_brake_hold = None
+                self._clear_simple_auto_forward_history()
+                self._drive_engagement = None
+                self._drive_selector_pressed = False
+                self._was_active = False
+                logging.info('Navigation: planned destination stop complete; controls released to driver')
+                return
             if next_hold and next_hold['phase'] == 'holding':
                 if not previous_hold or previous_hold['phase'] != 'holding':
                     logging.info('Planned stop: continuous service brake hold; automatic restart '
@@ -3137,12 +3546,28 @@ class UltraPilotEngine:
         # TurnSignals is the sole persistent owner. The old planner inferred a
         # direction from instantaneous steering correction and is deliberately
         # excluded: lane centring and road curvature are not turn instructions.
-        blinker = ("off" if safety_hazard else
-                   (self.shared_state.get(CTL_BLINKER)
-                    or self.shared_state.get("route_blinker")
-                    or "off"))
-        self.controller.set_blinker(blinker)
-        self.shared_state.set("active_blinker", blinker)
+        hazard_priority = safety_hazard or observed_blinker == 'hazard'
+        explicit_blinker = (None if hazard_priority
+                            else self.shared_state.get(CTL_BLINKER))
+        blinker = (None if hazard_priority else
+                   (explicit_blinker
+                    or self.shared_state.get("route_blinker")))
+        if hazard_priority:
+            self._automatic_blinker_side = None
+        if not safety_hazard and not explicit_blinker:
+            if (blinker in ('left','right') and observed_blinker not in ('off',blinker)
+                    or blinker == 'off' and observed_blinker in ('left','right','hazard')
+                    and observed_blinker != getattr(self,'_automatic_blinker_side',None)):
+                blinker = None  # driver changed the switch after plugin capture
+        if blinker in ("left", "right", "off"):
+            self.controller.set_blinker(blinker)
+            self._automatic_blinker_side = blinker if blinker != 'off' else None
+        else:
+            release_blinker = getattr(self.controller, "release_blinker_pulse", None)
+            if callable(release_blinker):
+                release_blinker()
+        self.shared_state.set("active_blinker", 'hazard' if hazard_priority
+                              else blinker or observed_blinker)
         if self.shared_state.get(CTL_BLINKER):
             self.shared_state.set(CTL_BLINKER, None)
 
@@ -3191,6 +3616,7 @@ class UltraPilotEngine:
     def run_loop(self):
         last_time = time.monotonic()
         while self.running:
+            published_traffic=None
             if self.shared_state.get("app_shutdown_requested", False):
                 break
             current_time = time.monotonic()
@@ -3222,6 +3648,7 @@ class UltraPilotEngine:
                 self._last_autopilot_log_seq = autopilot_seq
                 logging.warning(str(autopilot_event.get(
                     "message", "Autopilot automatically disabled")))
+                self._request_automatic_longitudinal_incident(autopilot_event.get('control_intervention'))
 
             # 1. Consume the latest immutable telemetry frame. Acquisition has
             # its own clock; this route/perception loop must never delay the
@@ -3249,12 +3676,11 @@ class UltraPilotEngine:
                 # is close; the lane snapshot can be only a local corridor.
                 # The autopilot consumes this flag to brake, stop, and then
                 # disengage instead of driving beyond the destination.
-                arrival_pending = bool(
-                    0.0 < route_distance <= 35.0
-                    or (prev_distance is not None and 0.0 < prev_distance <= 35.0
-                        and route_distance <= prev_distance + 5.0))
-                if route_distance > 60.0:
-                    arrival_pending = False
+                from core.longitudinal import CURVE_APPROACH_DECEL_MS2, CURVE_BRAKE_RESPONSE_S, LEASE_S
+                arrival_speed = abs(float(truck.get('speed', 0.)))
+                arrival_budget = (arrival_speed*arrival_speed/(2.*CURVE_APPROACH_DECEL_MS2)
+                    + arrival_speed*(CURVE_BRAKE_RESPONSE_S+LEASE_S))
+                arrival_pending = bool(0. < route_distance <= max(35., arrival_budget))
                 # routeDistance normally decreases while driving and can move
                 # by more than one sparse SDK-node interval between usable
                 # telemetry frames. It is never a destination identity. Only
@@ -3265,7 +3691,7 @@ class UltraPilotEngine:
                 # (or an active job destination) is the gate that tells us a
                 # destination actually exists; never plan from buffer contents
                 # alone.
-                has_game_destination = bool(route_distance > 25.0 or dest_city)
+                has_game_destination = bool(route_distance > 0.0 or dest_city)
                 # Publish destination presence before touching any derived
                 # route geometry.  The map plugin runs in another process and
                 # must be able to suppress a recorded-route replay even while
@@ -3539,7 +3965,6 @@ class UltraPilotEngine:
                 # neither complete coverage/history nor confirmed dimensions,
                 # so it is never promoted to Phase 5D maneuver evidence.
                 try:
-                    from core.sdk.ets2la_data import nearest_light_ahead
                     from core.longitudinal import context as longitudinal_context
                     traffic_binding = longitudinal_context(self.shared_state)
                     traffic = self.ets2la.read_traffic()
@@ -3547,62 +3972,34 @@ class UltraPilotEngine:
                     hdg = truck.get("rotation", 0.0)
                     signal = self._signal_observation(truck, traffic_binding)
                     light = signal.get('candidate') if signal.get('valid') else signal.get('stop_candidate')
-                    if (light is None and not signal.get('prefab_required')
-                            and not getattr(self, '_service_brake_hold', None)):
-                        light = nearest_light_ahead(self.ets2la.read_traffic_lights(), pos, hdg)
-                    # Lead-vehicle following: brake for the nearest car ahead in our lane.
-                    traffic_brake = self._lead_brake(traffic, pos, hdg, truck.get("speed", 0.0))
+                    # A raw nearest head is detection only. Never replace a
+                    # failed directed-passage selection with a control object.
+                    from core.sdk.ets2la_data import nearest_light_ahead
+                    try:
+                        detected_light = (signal.get('unassigned_candidate') or
+                            nearest_light_ahead(self.ets2la.read_traffic_lights(), pos, hdg))
+                    except Exception:
+                        detected_light = None  # Optional display cannot erase a qualified red.
                     traffic_available = bool(self.ets2la.traffic_available)
                     from core.navigation.traffic_producer import capture_traffic
                     maneuver_capture = capture_traffic(self.ets2la,
                         self.shared_state.get("game_session_id"), time.monotonic())
-                    following = self._route_lead_observation(maneuver_capture, truck, traffic_binding)
-                    if (self.shared_state.get('longitudinal_acc_active')
-                            and following['status'] in ('candidate', 'no_candidate_unproven_coverage')):
-                        # Retain crossing protection; route-based lead demand
-                        # uses the existing ACC PID rather than two brake laws.
-                        traffic_brake = self._lead_brake(traffic, pos, hdg,
-                            truck.get('speed', 0.), crossing_only=True)
-                        if following.get('emergency'):
-                            traffic_brake = 1.
-                            self._traffic_brake_basis = dict(kind='protective_route_candidate',
-                                target_id=following.get('target_id'), gap_m=following.get('gap_m'),
-                                reason=following.get('reason'), producer_timestamp=None,
-                                confirmed_route_conflict=False, coverage_confirmed=False)
-                        self.shared_state.set('lead_distance', following.get('gap_m'))
-                    traffic_brake = self._route_crossing_brake(following, traffic_brake)
-                    # Stop on red / go on green.
-                    self.shared_state.update_batch({
-                        "traffic": traffic,
-                        "maneuver_traffic_capture": maneuver_capture,
-                        "traffic_light": light,
-                        "traffic_brake": traffic_brake,
-                        "light_brake": self._light_brake(light),
-                        "traffic_snapshot_valid": traffic_available,
-                        "traffic_snapshot_timestamp": telemetry_timestamp,
-                        "traffic_snapshot_failure": ("" if traffic_available
-                            else "ETS2LA traffic shared-memory buffer unavailable"),
-                    })
-                    from core.longitudinal import publish as publish_longitudinal
-                    traffic_truck = {**truck, "_control_observation": {
-                        "schema_version": 1, "sdk_frame_us": truck.get("sdkFrameTimeUs"),
-                        "observed_at": telemetry_timestamp, "valid": bool(truck.get("pose_valid", False)),
-                    }}
-                    publish_longitudinal(self.shared_state, traffic_truck, "traffic",
-                        binding=traffic_binding,
-                        evidence_valid=bool(traffic_available or light is not None),
-                        traffic_available=traffic_available,
-                        traffic_brake=traffic_brake, light_brake=self._light_brake(light),
-                        light=light, signal=signal, lead_distance=self.shared_state.get("lead_distance"),
-                        following=following,
-                        brake_basis=self._traffic_brake_basis,
-                        dependencies=following.get('deadline_dependencies', ()),
-                        expires_at=following.get('expires_at', float('inf')))
+                    following,traffic_brake = self._traffic_control_observation(
+                        maneuver_capture,truck,traffic_binding,traffic)
+                    traffic_available = following['status'] in ('candidate','no_candidate_unproven_coverage')
+                    published_traffic = self._publish_traffic_control(truck, telemetry_timestamp,
+                        traffic_binding, traffic, maneuver_capture, following, traffic_brake,
+                        signal, detected_light)
                 except Exception as error:
+                    published_traffic=None
                     self.shared_state.set("longitudinal_traffic", None)
                     # Never retain actuator-facing values from an older frame.
                     self.shared_state.update_batch({
                         "traffic": [], "traffic_light": None,
+                        "traffic_light_detected": None,
+                        "traffic_light_relevance": 'unavailable',
+                        "traffic_light_coverage": None,
+                        "traffic_light_selection_reason": str(error),
                         "maneuver_traffic_capture": None,
                         "traffic_brake": 0.0, "light_brake": 0.0,
                         "lead_distance": None,
@@ -3628,6 +4025,9 @@ class UltraPilotEngine:
                     "camera_snapshot": camera_snapshot,
                     "traffic": [],
                     "traffic_light": None,
+                    "traffic_light_detected": None,
+                    "traffic_light_relevance": 'unavailable',
+                    "traffic_light_selection_reason": 'vehicle telemetry unavailable',
                     "traffic_brake": 0.0,
                     "light_brake": 0.0,
                     "lead_distance": None,
@@ -3678,8 +4078,12 @@ class UltraPilotEngine:
                 }
                 telemetry_data = self.shared_state.get("telemetry", {})
 
+                previous_planner_state=getattr(self.planner.current_state,'name','')
                 current_state, voice_alert = self.planner.update(
                     perception_data, telemetry_data, delta_time)
+                if getattr(current_state,'name','')=='AVOID_OBSTACLE' and previous_planner_state!='AVOID_OBSTACLE':
+                    journal=getattr(self.controller,'_pedal_journal',None)
+                    if journal is not None:journal.significant('AVOID_OBSTACLE',published_traffic,time.monotonic())
                 self.shared_state.set("system_state",
                                       getattr(current_state, "name", str(current_state)))
                 self.shared_state.set("planner_blinker",

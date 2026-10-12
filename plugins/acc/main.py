@@ -18,7 +18,7 @@ class Plugin(BasePlugin):
     """
 
     NAME = "acc"
-    VERSION = "1.1.4"
+    VERSION = "1.1.9"
 
     def on_start(self):
         logging.info("ACC Plugin started with bounded speed PID control.")
@@ -41,6 +41,7 @@ class Plugin(BasePlugin):
         self._followed_target = False
         self._following_target_id = None
         self._following_fault = ''
+        self._signal_control_active = False
 
     def on_stop(self):
         logging.info("ACC Plugin stopped.")
@@ -112,6 +113,13 @@ class Plugin(BasePlugin):
         # No cached pedal/target lease is extended. After target loss the
         # existing required-producer guard removes drive and controls stopping.
         # Empty/uncovered buffers cannot prove that the old target departed.
+        from core.acc_following import observed_departure
+        if (strict and self._followed_target and not self._following_fault and traffic is not None
+                and observed_departure(following,self._following_target_id,time.monotonic())):
+            self._followed_target = False
+            self._following_target_id = None
+            self._following_fault = ''
+            following_reason = 'observed lead left route; coverage remains unproven'
         if strict and self._followed_target and following_cap is None:
             self._following_fault = 'ACC target unavailable or unconfirmed departure; driver takeover required'
         self.sdk.set('acc_following_status', following_reason)
@@ -148,6 +156,24 @@ class Plugin(BasePlugin):
             return
         effective_target_speed = base_target_speed
         hard_limits = []
+        from core.longitudinal import destination_stop_control
+        destination_control = destination_stop_control(self.sdk.shared_state, truck)
+        if destination_control:
+            effective_target_speed = min(effective_target_speed, destination_control['cap_ms']*3.6)
+            hard_limits.append(destination_control['cap_ms']*3.6)
+        from core.longitudinal import signal_speed_control
+        signal_control = signal_speed_control(traffic, speed)
+        signal = (traffic or {}).get('signal') or {}
+        candidate = signal.get('candidate') or {}
+        if signal_control is not None:
+            effective_target_speed = min(effective_target_speed, signal_control['cap_ms'] * 3.6)
+            hard_limits.append(signal_control['cap_ms'] * 3.6)
+        if traffic:
+            from core.longitudinal import signal_approach_speed_limit
+            approach_cap=signal_approach_speed_limit(traffic,speed)
+            if approach_cap is not None:
+                effective_target_speed=min(effective_target_speed,approach_cap*3.6)
+                hard_limits.append(approach_cap*3.6)
         # The same proven-distance envelope as Autopilot must constrain this
         # existing PID. Otherwise cruise powers back toward a higher Policy
         # envelope each time the separate curve-brake demand releases.
@@ -229,6 +255,17 @@ class Plugin(BasePlugin):
         if binding != self._control_context or active != self._was_driving:
             self._reset_control()
         self._control_context, self._was_driving = binding, active
+        signal_owns_plan = bool(signal_control and
+            effective_target_speed >= signal_control['cap_ms']*3.6-1e-9)
+        destination_owns_plan = bool(destination_control and
+            effective_target_speed >= destination_control['cap_ms']*3.6-1e-9)
+        if (self._signal_control_active and signal_control is None
+                and signal.get('valid') and candidate.get('color') == 'green'
+                and candidate.get('stop_required') is not True):
+            # Remove only a ceiling that actually constrained this activation.
+            # Engine still requires two locked acquisitions before release.
+            self._reset_control()
+        self._signal_control_active = signal_owns_plan
         externally_braking = (self.sdk.get("system_state") in ("EMERGENCY", "CONTROLLED_STOP", "PAY_TOLL")
             or truck.get("parkBrake") is True
             or (traffic is not None and max(traffic["traffic_brake"], traffic["light_brake"]) > 0)
@@ -268,6 +305,10 @@ class Plugin(BasePlugin):
             if self._control_target - effective_target_speed > 2.:
                 self.speed_pid.reset()  # Old load demand must not fight a new reduction.
             self._control_target = effective_target_speed
+        elif signal_control is not None or destination_control is not None:
+            # The distance trajectory already specifies the current speed.
+            # A second upward target lag would retain a cap from another position.
+            self._control_target = effective_target_speed
         elif not duplicate:
             self._control_target = min(effective_target_speed, self._control_target + 6. * dt)
         self.speed_pid.set_setpoint(self._control_target)
@@ -292,6 +333,7 @@ class Plugin(BasePlugin):
             throttle_val = 0.  # Cruise hysteresis never powers through a hard cap.
 
         over = speed_kmh - effective_target_speed
+        was_speed_braking = self._speed_braking
         if over > 2. or (over > .5 and throttle_output < -.01):
             self._speed_braking = True
         elif throttle_output >= 0:
@@ -305,6 +347,43 @@ class Plugin(BasePlugin):
             # overspeed safety floor above 2 km/h and its ordinary 0.35 maximum.
             brake_power = np.clip(max(-throttle_output * .35,
                                       over / 40.0 if over > 2. else 0.), 0.0, 0.35)
+        if signal_owns_plan or destination_owns_plan:
+            # Same distance/deceleration mapping previously executed by Traffic,
+            # now inside the single speed-control output. The ordinary cruise
+            # 0.35 cap must not weaken a short-distance required stop. Below the
+            # current envelope there is no independent perpetual light brake.
+            from core.longitudinal import signal_stop_brake_request
+            # Reuse the existing 2 km/h pedal hysteresis, not a creep-speed
+            # floor. Keep the positive distance request around its boundary;
+            # release it if a moving vehicle is genuinely below the profile.
+            continuing = was_speed_braking and over >= -2.
+            if destination_owns_plan:
+                from core.longitudinal import stopping_brake_request
+                brake_power = stopping_brake_request(destination_control['distance_m'], speed,
+                    continuing=continuing)
+            else:
+                brake_power = signal_stop_brake_request(candidate, speed, continuing=continuing)
+            self._speed_braking = brake_power > 0.
+            if self._speed_braking:
+                self._signal_stop_started = True
+                throttle_val = 0.
+            elif getattr(self, '_signal_stop_started', False):
+                from core.longitudinal import CURVE_APPROACH_DECEL_MS2, CURVE_BRAKE_RESPONSE_S, LEASE_S
+                # Coast through the normal response-sized profile deficit,
+                # rather than power/brake cycling after every delayed response.
+                # Recovery is still allowed after substantial early slowing.
+                # This uses the declared phase-planning acceleration and response
+                # budget; it is neither a minimum speed nor a pedal floor.
+                selected_cap = destination_control['cap_ms'] if destination_owns_plan else signal_control['cap_ms']
+                coast_allowance = CURVE_APPROACH_DECEL_MS2*(CURVE_BRAKE_RESPONSE_S+LEASE_S)
+                if selected_cap-speed <= coast_allowance:
+                    throttle_val = 0.
+        if signal_owns_plan and throttle_val == 0. and throttle_output > 0.:
+            # Coast/feed-forward braking inhibits a computed positive drive.
+            # Numeric output saturation alone cannot see this mapping. Preserve
+            # negative integral/derivative state; discard only unexecuted drive.
+            self.speed_pid.discard_unexecuted_positive_integral()
+        if self._speed_braking:
             self.sdk.shared_state.set("acc_throttle", 0.0)
             self.sdk.shared_state.set("acc_brake", brake_power)
         else:
@@ -317,10 +396,17 @@ class Plugin(BasePlugin):
                 emergency=False, requested_speed_kmh=base_target_speed,
                 constrained_speed_kmh=effective_target_speed,
                 control_target_kmh=self._control_target,
-                speed_control_reason="speed service brake" if self._speed_braking else "speed tracking",
+                speed_control_reason=("GPS distance service brake" if self._speed_braking
+                    else "GPS distance recovery" if throttle_val > 0 else "GPS distance coast")
+                    if destination_owns_plan else ("signal distance service brake" if self._speed_braking
+                    else "signal distance recovery" if throttle_val > 0 else "signal distance coast")
+                    if signal_owns_plan else "speed service brake" if self._speed_braking else "speed tracking",
                 following_status=following_reason,
                 following_target_id=following.get('target_id') if isinstance(following, dict) else None,
                 following_confirmed=False,
+                signal_stop_control=signal_control is not None,
+                signal_brake_selected=bool(signal_owns_plan and self._speed_braking),
+                destination_brake_selected=bool(destination_owns_plan and self._speed_braking),
                 following_required=self._followed_target,
                 dependencies=[v for v in (
                     traffic if traffic_required(traffic) or self._followed_target else None,
@@ -343,6 +429,8 @@ class Plugin(BasePlugin):
         self._last_observation = None
         self._speed_braking = False
         self._last_requested_drive = 0.
+        self._signal_stop_started = False
+        self._signal_control_active = False
 
     def _publish_pedals(self, truck, binding, throttle, brake, *, valid=True,
                         target=None, reason="speed controller reset"):

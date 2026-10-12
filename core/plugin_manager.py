@@ -64,6 +64,13 @@ def plugin_worker(plugin_class: Type[BasePlugin], plugin_name: str,
             # Allow the UI to enable/disable plugins live via shared state.
             live_enabled = shared_dict.get(f"plugin_enabled.{plugin_name}", None)
             if live_enabled is not None:
+                if plugin_name == 'turnsignals' and bool(live_enabled) != plugin.enabled:
+                    # Persistent indicator ownership must be released when the
+                    # live UI disables its worker, without touching driver inputs.
+                    if live_enabled:
+                        plugin.on_start()
+                    else:
+                        plugin.on_stop()
                 plugin.enabled = bool(live_enabled)
 
             if plugin.enabled:
@@ -122,6 +129,7 @@ class PluginManager:
         # folder -> {class, process, stop_event}
         self.plugins: Dict[str, Dict[str, Any]] = {}
         self._published_processes = None
+        self._deferred_plugins = set()
 
     # --- Discovery ------------------------------------------------------------
     def _find_plugin_class(self, folder: str) -> Type[BasePlugin]:
@@ -155,6 +163,7 @@ class PluginManager:
             if not os.path.exists(os.path.join(full, "main.py")):
                 continue
             if not self._enabled_in_settings(folder):
+                self._deferred_plugins.add(folder)
                 logging.info(f"Plugin '{folder}' disabled in settings, skipping.")
                 continue
             try:
@@ -199,6 +208,25 @@ class PluginManager:
         """Supervise plugin processes; restart any that died unexpectedly."""
         if not self.engine.running:
             return
+        # A UI enable must also start a plugin skipped during discovery. Do not
+        # rescan/import every tick or create duplicate processes on repeated UI
+        # updates. Disabled loaded workers retain the existing live flag path.
+        for folder in tuple(self._deferred_plugins):
+            if self.engine.shared_state.get(f"plugin_enabled.{folder}") is not True:
+                continue
+            self._deferred_plugins.remove(folder)
+            try:
+                plugin_class = self._find_plugin_class(folder)
+                version = plugin_version(plugin_class)
+                self.plugins[folder] = {"class": plugin_class, "version": version,
+                                        "process": None, "stop_event": None}
+                self.engine.shared_state.set("plugin_versions", {
+                    name: entry["version"] for name, entry in self.plugins.items()})
+                self._spawn(folder)
+                logging.info("Loaded enabled plugin: %s v%s", folder, version)
+            except Exception:
+                self.plugins.pop(folder, None)
+                logging.exception("Could not start newly enabled plugin '%s'", folder)
         for folder, entry in self.plugins.items():
             proc = entry["process"]
             stop_event = entry["stop_event"]

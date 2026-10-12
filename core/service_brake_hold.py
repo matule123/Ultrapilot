@@ -5,6 +5,19 @@ prove DLL consumption or hill hold. Only the versioned producer-timed signal
 sidecar can authorize release; legacy semaphore/actor buffers cannot do so.
 """
 import time
+SERVICE_BRAKE_RISE_PER_S=2.5  # existing Autopilot service-pedal limit, not physical jerk
+
+
+def holding_floor(hold,truck,now):
+    """Rise from the actual last write; no zero edge or renewed evidence.
+
+    Comfort never delays a current stronger request/emergency. Observed reverse
+    drift bypasses this ramp; the unchanged motion/R rejection still applies.
+    """
+    current=float(hold['brake']);peak=max(current,float(hold.get('braking_peak',current)))
+    if float(truck['speed'])<0:return peak
+    elapsed=max(0.,min(.1,now-float(hold['returned_at'])))
+    return min(peak,current+SERVICE_BRAKE_RISE_PER_S*elapsed)
 
 from core.transmission_mode import simple_auto_context
 
@@ -22,7 +35,9 @@ def rejection(record, controller, state, truck):
             or tuple(record['command_context']) != context(state)):
         return 'continuous service brake activation or route identity changed'
     current = receipt(controller)
-    if not current.get('positive') or current.get('chain') != record['chain']:
+    approaching = record.get('phase') == 'approaching'
+    if (not current or (approaching and current.get('sequence') != record['write_sequence'])
+            or (not approaching and (not current.get('positive') or current.get('chain') != record['chain']))):
         return 'continuous service brake write interrupted or backend unavailable'
     now = time.monotonic()  # after identity IPC reads; no source retimestamping
     if not 0. <= now-current.get('returned_at', float('-inf')) <= .5:
@@ -44,11 +59,29 @@ def planned_stop(decision):
     traffic = evidence.get('traffic') or {}
     acc = evidence.get('acc') or {}
     policy = evidence.get('policy') or {}
-    return bool(traffic.get('light_brake', 0) > 0
-                or ((traffic.get('light') or {}).get('stop_target_kind') == 'derived_directed_curve_entry'
-                    and (traffic.get('light') or {}).get('color') != 'green')
-                or acc.get('following_status') in ('candidate', 'source_lost')
-                or policy.get('reason') == 'toll stop/payment')
+    signal = traffic.get('signal') or {}
+    candidate = signal.get('candidate') or {}
+    qualified_stop = bool(signal.get('valid')
+        and candidate.get('stop_target_kind') == 'derived_directed_curve_entry'
+        and (candidate.get('color') in ('red','yellow') or candidate.get('stop_required') is True))
+    # A prospective red ahead does not turn an unrelated cruise/curve brake
+    # into a stop-and-wait commitment. Bind the chain to the winning request.
+    return bool((decision.get('source') == 'traffic_light' and traffic.get('light_brake', 0) > 0)
+                or (traffic.get('traffic_brake', 0) > 0 and qualified_stop)
+                or (decision.get('source') == 'acc'
+                    and (acc.get('following_status') in ('candidate', 'source_lost')
+                         or acc.get('signal_brake_selected') is True
+                         or evidence.get('destination_brake_selected') is True))
+                or (decision.get('source') in ('toll', 'policy', 'speed_policy')
+                    and (policy.get('reason') == 'toll stop/payment'
+                         or decision.get('reason') == 'toll stop/payment')))
+
+
+def consumed_stop_target(evidence):
+    """Canonical target from this immutable input, not a later shared slot."""
+    traffic = (evidence or {}).get('traffic') or {}
+    signal = traffic.get('signal') or {}
+    return traffic.get('light') or signal.get('candidate') or signal.get('stop_candidate') or {}
 
 
 def after_write(previous, controller, forward_context, truck, decision, now,
@@ -56,7 +89,10 @@ def after_write(previous, controller, forward_context, truck, decision, now,
     if not decision or decision.get('emergency'):
         return None
     current = receipt(controller)
-    if not current.get('positive'):
+    keep_approach = bool(previous and previous.get('phase') == 'approaching'
+        and tuple(decision.get('context', ())) == tuple(previous['command_context'])
+        and float(truck['speed']) > .05)
+    if not current or (not current.get('positive') and not keep_approach):
         return None
     # Engine has already validated this exact observation with the common
     # transmission rule. An engaged ratio may briefly be zero while the truck
@@ -71,8 +107,12 @@ def after_write(previous, controller, forward_context, truck, decision, now,
         and not history.get('launch_deadline_at')
         and 0. <= now-history.get('last_observed_at', float('-inf')) <= .5
         and now <= history.get('zero_deadline_at', float('-inf')))
-    if previous and current['chain'] == previous['chain']:
+    if previous and (keep_approach or current['chain'] == previous['chain']):
         result = dict(previous)
+        if current['chain'] != previous['chain']:
+            # A permitted moving release is not a continuous terminal witness.
+            # Its old peak must not be presented as written in this new chain.
+            result['braking_peak'] = 0.
     elif (float(truck['speed']) > .05 and (int(truck['gear']) > 0 or zero_forward)
             and truck.get('parkBrake') is False and planned_stop(decision)):
         # Identities are those validated BEFORE this write. Never label a write
@@ -82,31 +122,55 @@ def after_write(previous, controller, forward_context, truck, decision, now,
                       started_frame=truck['sdkFrameTimeUs'], started_at=now,
                       phase='braking', stop_evidence=decision['stopping_evidence'])
         evidence = decision['stopping_evidence']
-        light = (evidence.get('traffic') or {}).get('light') or {}
+        light = consumed_stop_target(evidence)
         result['stop_reason'] = dict(source=decision['source'], reason=decision['reason'],
             signal_id=light.get('id'), signal_color=light.get('color'),
             observation_timestamp=decision['observation_timestamp'])
     else:
         return None
     if 'signal_lock' not in result:
-        signal = ((result['stop_evidence'].get('traffic') or {}).get('signal') or {})
-        if signal.get('valid') and (signal.get('candidate') or {}).get('color') in ('red', 'yellow'):
+        signal = (((decision.get('stopping_evidence') or {}).get('traffic') or {}).get('signal') or {})
+        candidate = signal.get('candidate') or {}
+        original = consumed_stop_target(result['stop_evidence'])
+        if (signal.get('valid') and (candidate.get('color') in ('red', 'yellow') or candidate.get('stop_required') is True)
+                and candidate.get('id') == original.get('id')
+                and candidate.get('passage_key') == original.get('passage_key')
+                and tuple(decision['context']) == tuple(result['command_context'])):
+            # A transient missing head can recover on this SAME authored
+            # passage. Keep the initial stop evidence immutable; bind release
+            # to the new actual observed head, never an inferred green/default.
             result['signal_lock'] = dict(authority=tuple(decision['context']),
                 lifecycle=signal['lifecycle'], generation=signal['generation'],
                 frame_us=signal['frame_us'], observed_at=signal['observed_at'],
-                candidate=dict(signal['candidate']))
+                candidate=dict(candidate))
     # A following/toll stop cannot be cleared by disappearance of its producer.
     evidence = decision.get('stopping_evidence') or {}
     acc = evidence.get('acc') or {}
     traffic = evidence.get('traffic') or {}
     policy = evidence.get('policy') or {}
+    if evidence.get('destination_brake_selected') and evidence.get('destination'):
+        result.setdefault('destination_lock', dict(context=tuple(decision['context']),
+            target_kind=evidence['destination']['target_kind'],
+            sdk_frame_us=decision['sdk_frame_us'],
+            observation_timestamp=decision['observation_timestamp']))
+        result['destination_lock'] = dict(result['destination_lock'])
+        if evidence['destination']['terminal'] and current.get('positive'):
+            result['destination_lock'].setdefault('terminal_receipt', dict(
+                distance_m=evidence['destination']['distance_m'],
+                sdk_frame_us=truck['sdkFrameTimeUs'], returned_at=current['returned_at']))
     result['other_stop_unverified'] = bool(result.get('other_stop_unverified')
         or acc.get('following_status') in ('candidate', 'source_lost')
         or traffic.get('traffic_brake', 0) > 0
         or policy.get('reason') == 'toll stop/payment')
     result.update(brake=current['value'], returned_at=current['returned_at'],
                   write_sequence=current['sequence'], sdk_frame_us=truck['sdkFrameTimeUs'],
+                  chain=current['chain'],
                   game_consumption_verified=False)
+    # The deceleration requirement tends to zero with speed squared. Freezing
+    # its last tiny value is not holding. Retain the strongest actual write in
+    # THIS admitted stop chain, not an arbitrary new pedal constant or an
+    # unexecuted request. It remains a software witness, not verified hill hold.
+    result['braking_peak'] = max(result.get('braking_peak', 0.), current['value'])
     if result.get('signal_lock'):
         result.setdefault('automatic_restart_supported', True)
         result.setdefault('restart_blocker', 'locked signal is not green')
@@ -115,21 +179,83 @@ def after_write(previous, controller, forward_context, truck, decision, now,
             restart_blocker='STOP_CLEARANCE_PRODUCER_TIME_AND_GENERATION_UNAVAILABLE')
     if abs(float(truck['speed'])) < .05:
         result['phase'] = 'holding'
+    elif result.get('signal_lock'):
+        from core.longitudinal import signal_speed_control
+        control = signal_speed_control((decision.get('stopping_evidence') or {}).get('traffic'), truck['speed'])
+        own_profile = ((decision.get('stopping_evidence') or {}).get('acc') or {}).get('signal_stop_control') is True
+        committed_write = bool(control and control.get('brake_chain_required')
+                               and current.get('positive'))
+        if (control and not control['terminal'] and not committed_write and own_profile
+                and (previous is None or previous.get('phase') == 'approaching')
+                and not result.get('other_stop_unverified')):
+            result['phase'] = 'approaching'
+        elif current.get('positive') and (result.get('phase') != 'approaching'
+                or (control and control['terminal']) or committed_write
+                or result.get('other_stop_unverified')):
+            result['phase'] = 'braking'
+    elif result.get('destination_lock'):
+        destination = evidence.get('destination')
+        if (destination and not destination['terminal']
+                and (previous is None or previous.get('phase') == 'approaching')
+                and not result.get('other_stop_unverified')):
+            result['phase'] = 'approaching'
+        elif current.get('positive'):
+            result['phase'] = 'braking'
     return result
+
+
+def profile_approach_allowed(record, decision, truck):
+    """Only a current same-head red distance target permits approach recovery.
+
+    This never clears the signal commitment or grants standstill brake authority.
+    Missing head, green confirmation, other stops and handoff preserve zero drive.
+    """
+    from core.longitudinal import signal_speed_control
+    traffic = (decision.get('stopping_evidence') or {}).get('traffic') or {}
+    signal = traffic.get('signal') or {}
+    light = signal.get('candidate') or {}
+    lock = record.get('signal_lock') or {}
+    acc = (decision.get('stopping_evidence') or {}).get('acc') or {}
+    control = signal_speed_control(traffic, truck['speed'])
+    destination = (decision.get('stopping_evidence') or {}).get('destination')
+    if record.get('destination_lock') and not record.get('signal_lock'):
+        return bool(record.get('phase') == 'approaching' and destination
+            and not destination['terminal'] and float(truck['speed']) > .05
+            and not record.get('other_stop_unverified')
+            and not decision.get('refresh_pending') and not decision.get('emergency')
+            and tuple(decision.get('context', ())) == tuple(record['command_context']))
+    return bool(record.get('phase') == 'approaching' and control and not control['terminal']
+        and float(truck['speed']) > .05 and not record.get('other_stop_unverified')
+        and not decision.get('refresh_pending') and not decision.get('emergency')
+        and tuple(decision.get('context', ())) == tuple(record['command_context'])
+        and signal.get('lifecycle') == lock.get('lifecycle')
+        and light.get('id') == (lock.get('candidate') or {}).get('id')
+        and light.get('passage_key') == (lock.get('candidate') or {}).get('passage_key')
+        and (light.get('color') in ('red', 'yellow') or light.get('stop_required') is True)
+        and acc.get('signal_stop_control') is True
+        and 0. <= time.monotonic()-signal.get('observed_at', float('-inf')) <= .5)
 
 
 def fresh_moving_stop_request(hold, decision, truck):
     """Allow positive pedal adjustment without breaking the acknowledged chain."""
     signal=(((decision.get('stopping_evidence') or {}).get('traffic') or {}).get('signal') or {})
-    candidate=signal.get('candidate') or {}
+    candidate=signal.get('candidate') or signal.get('stop_candidate') or {}
     lock=hold.get('signal_lock') or {}
+    original = consumed_stop_target(hold.get('stop_evidence'))
+    same_authority = tuple(decision.get('context',())) == tuple(hold.get('command_context',()))
+    # Static authored geometry is not a fresh color observation. It can adjust
+    # a still-positive approach brake using the validated command/SDK pair,
+    # but never clear a stop or authorize propulsion.
+    static_target = (not signal.get('valid') and signal.get('prefab_required') is True
+        and candidate.get('head_observed') is False
+        and candidate.get('passage_key') == original.get('passage_key')
+        and bool(original.get('passage_key')))
     return bool(float(truck.get('speed',0.))>.05 and decision.get('brake',0.)>0
-        and signal.get('valid') and candidate.get('stop_target_kind')=='derived_directed_curve_entry'
-        and candidate.get('color') in ('red','yellow')
-        and candidate.get('passage_key') == (lock.get('candidate') or {}).get('passage_key')
-        and tuple(decision.get('context',())) == tuple(lock.get('authority',()))
-        and signal.get('lifecycle') == lock.get('lifecycle')
-        and 0 <= time.monotonic()-signal.get('observed_at',float('-inf')) <= .5)
+        and same_authority and candidate.get('stop_target_kind')=='derived_directed_curve_entry'
+        and (static_target or (signal.get('valid') and (candidate.get('color') in ('red','yellow') or candidate.get('stop_required') is True)
+            and candidate.get('passage_key') == (lock.get('candidate') or {}).get('passage_key')
+            and signal.get('lifecycle') == lock.get('lifecycle')
+            and 0 <= time.monotonic()-signal.get('observed_at',float('-inf')) <= .5)))
 
 
 def clearance(record, state):
@@ -170,6 +296,9 @@ def clearance(record, state):
             reason = 'green observation does not follow the locked red acquisition'
         elif candidate.get('color') != 'green':
             reason = 'locked signal is not green'
+        elif (candidate.get('stop_required') is True
+                or (candidate.get('phase_plan') or {}).get('status') == 'green_dilemma'):
+            reason = 'locked green lacks current phase clearance reserve'
         elif record.get('other_stop_unverified'):
             reason = 'another latched stop reason lacks confirmed clearance'
         else:
@@ -208,6 +337,8 @@ def resume_rejection(witness, state):
                 or signal['candidate']['id'] != witness['candidate']['id']
                 or signal['candidate'].get('passage_key') != witness['candidate'].get('passage_key')
                 or signal['candidate']['color'] != 'green'
+                or signal['candidate'].get('stop_required') is True
+                or (signal['candidate'].get('phase_plan') or {}).get('status') == 'green_dilemma'
                 or signal['generation'] < witness['generation']
                 or signal['frame_us'] < witness['frame_us']
                 or not 0 <= now-signal['observed_at'] <= .5):

@@ -76,7 +76,7 @@ class Plugin(BasePlugin):
     a pile of independent, sometimes-contradictory requests."""
 
     NAME = "drivepolicy"
-    VERSION = "1.1.0"
+    VERSION = "1.1.3"
 
     def on_start(self):
         logging.info("DrivePolicy plugin started.")
@@ -146,6 +146,10 @@ class Plugin(BasePlugin):
 
         # 4. Lead vehicle: hold a ~3 s time-gap.
         traffic, _ = read(self.sdk.shared_state, "traffic", binding=getattr(self, "_longitudinal_binding", None)) if strict else (None, "")
+        if traffic:
+            from core.longitudinal import signal_approach_speed_limit
+            approach_cap=signal_approach_speed_limit(traffic,float(truck['speed']))
+            if approach_cap is not None:limits.append(approach_cap)
         lead = (traffic.get("lead_distance") if traffic else None) if strict else self.sdk.get("lead_distance")
         # Route-aligned following is owned by ACC's existing speed controller;
         # do not add a second distance/3 cap on top of its time-gap law.
@@ -160,18 +164,21 @@ class Plugin(BasePlugin):
 
         # 5. Red/yellow light ahead: ramp to a near-stop as we approach.
         light = (traffic.get("light") if traffic else None) if strict else self.sdk.get("traffic_light")
+        stop_limit = None
         if light:
             color = light.get("color")
             from core.longitudinal import signal_stop_speed_limit
             stop_limit = signal_stop_speed_limit(light, float(truck['speed']))
             if stop_limit is not None:
-                limits.append(stop_limit)
+                pass  # Applied after smoothing the non-signal preference below.
             else:
                 ldist = float(light.get("distance", 999.0) or 999.0)
                 if color in ("red", "yellow") and ldist < 70.0:
                     limits.append(max(0.0, ldist / 4.0))
 
         plan = min(limits) if limits else 25.0
+        from core.longitudinal import signal_speed_control
+        self._signal_speed_control = signal_speed_control(traffic, float(truck['speed']))
         plan = max(0.0, min(plan, 40.0))   # clamp 0..144 km/h
         dependencies = ([traffic] if traffic_required(traffic) else [])
         dependencies.extend(value for limit, value in spatial_limits if limit <= plan)
@@ -191,7 +198,12 @@ class Plugin(BasePlugin):
                 self._planned += (plan - self._planned) * rise
         # A smoothed preference may rise slowly, but cannot override a
         # currently lower hard constraint. No regulator gain is changed.
-        return float(min(self._planned, plan))
+        result = float(min(self._planned, plan))
+        from core.longitudinal import destination_stop_control
+        self._destination_speed_control = destination_stop_control(self.sdk.shared_state, truck)
+        if self._destination_speed_control:
+            result = min(result, self._destination_speed_control['cap_ms'])
+        return min(result, stop_limit) if stop_limit is not None else result
 
     def _compute_aux_brake(self, speed_ms, planned):
         """0..1 aux-brake nudge when we're carrying more speed than the plan."""
@@ -423,10 +435,20 @@ class Plugin(BasePlugin):
         speed_ms = abs(float(truck.get("speed", 0.0) or 0.0))
 
         planned = self._compute_planned_speed(dt, truck)
+        # A qualified stop is tracked by ACC's existing PID. Do not add an
+        # independent auxiliary pedal which resets that same controller. Other
+        # lower plans and unqualified/unknown coverage retain their brakes.
+        control = self._signal_speed_control
+        signal_owns_plan = bool(control and self.sdk.get('longitudinal_acc_active')
+            and control['cap_ms'] <= planned)
+        destination_owns_plan = bool(self._destination_speed_control
+            and self.sdk.get('longitudinal_acc_active')
+            and self._destination_speed_control['cap_ms'] <= planned)
+        aux_brake = 0. if signal_owns_plan or destination_owns_plan else self._compute_aux_brake(speed_ms, planned)
         self.sdk.set("planned_speed_ms", planned)
-        self.sdk.set("aux_brake_request", self._compute_aux_brake(speed_ms, planned))
+        self.sdk.set("aux_brake_request", aux_brake)
         publish(self.sdk.shared_state, truck, "policy", binding=binding,
-                planned_speed_ms=planned, brake=self._compute_aux_brake(speed_ms, planned),
+                planned_speed_ms=planned, brake=aux_brake,
                 dependencies=self._longitudinal_dependencies)
 
         # Smooth the lane offset too so the trailer nudge doesn't twitch.
@@ -437,4 +459,4 @@ class Plugin(BasePlugin):
 
         self.tags.planned_speed_kmh = round(planned * 3.6, 1)
         self.tags.drive_lane_offset = round(self._lane, 2)
-        self.tags.aux_brake = round(self._compute_aux_brake(speed_ms, planned), 2)
+        self.tags.aux_brake = round(aux_brake, 2)

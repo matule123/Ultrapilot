@@ -5,6 +5,30 @@ from PyQt6.QtGui import QPainter, QColor, QFont, QPen, QPolygonF
 from PyQt6.QtCore import Qt, QTimer, QRectF, QPointF
 
 
+def traffic_light_presentation(qualified, detected, coverage, relevance=None):
+    """Presentation only; this cannot assign control or clear a stop."""
+    shown = qualified or detected
+    if not shown:return None,'off','',False
+    detection_only = qualified is None
+    color = shown.get('color','off') if not detection_only else 'off'
+    if detection_only and shown.get('detection_basis') == 'producer_timed_unassigned':
+        try:
+            observed = float(shown['observation_timestamp'])
+            if (math.isfinite(observed) and 0 <= time.monotonic()-observed <= .5
+                    and type(shown['producer_generation']) is int and shown['producer_generation'] > 0
+                    and type(shown['producer_frame_us']) is int and shown['producer_frame_us'] > 0):
+                color = shown.get('color','off')
+        except (KeyError,TypeError,ValueError,OverflowError):pass
+    label = ('Detegovaný – smer nepotvrdený' if detection_only else
+             'Pokrytie semaforov nepotvrdené' if coverage.get('requires_takeover') else
+             'Riadený vjazd – stav nezistený' if shown.get('head_observed') is False else
+             'Semafor trasy' if shown.get('head_observed') or relevance == 'directed_prefab_curve_id_and_placement'
+             else 'Geometrický kandidát')
+    if detection_only and coverage.get('status')=='UNASSIGNED_APPROACH_PENDING':
+        label='Detegovaný vpredu – príslušnosť nepotvrdená, bezpečné priblíženie'
+    return shown,color,label,detection_only
+
+
 class _TopDown(QWidget):
     """Top-down (map-style) view: road ahead + traffic around the truck."""
 
@@ -220,6 +244,9 @@ class _HUDPreview(QWidget):
             "heading": s.get("truck_heading", 0.0) or 0.0,
             "traffic": s.get("traffic", []) or [],
             "light": s.get("traffic_light"),
+            "detected_light": s.get("traffic_light_detected"),
+            "light_relevance": s.get("traffic_light_relevance"),
+            "light_coverage": s.get("traffic_light_coverage") or {},
             "nav_path": (s.get("nav_path", []) or s.get("map_path", []) or []),
             "limit_ms": truck.get("speedLimit", 0.0) or 0.0,
             "lanes": int(s.get("road_lanes", 2) or 2),
@@ -314,8 +341,9 @@ class _HUDPreview(QWidget):
                       {"type": "truck", "width": 2.6, "length": 14.0})
 
         # Traffic light + countdown.
-        if d["light"]:
-            color = d["light"].get("color", "off")
+        shown_light,color,label,detected_only = traffic_light_presentation(
+            d['light'],d['detected_light'],d['light_coverage'],d['light_relevance'])
+        if shown_light:
             cx, cy = view.right() - 66, view.top() + 12
             qp.setPen(Qt.PenStyle.NoPen); qp.setBrush(QColor(20, 24, 30, 235))
             qp.drawRoundedRect(QRectF(cx, cy, 22, 52), 6, 6)
@@ -323,7 +351,10 @@ class _HUDPreview(QWidget):
                                           ("green", "#22C55E"))):
                 qp.setBrush(QColor(cc) if color == cn else QColor(55, 60, 66))
                 qp.drawEllipse(QRectF(cx + 3, cy + 3 + i * 15, 16, 16))
-            tl = d["light"].get("time_left", 0) or 0
+            qp.setPen(QColor('#9CA3AF' if detected_only else '#FFFFFF'))
+            qp.setFont(QFont('Segoe UI', 8))
+            qp.drawText(QRectF(cx-175, cy+55, 225, 28), Qt.AlignmentFlag.AlignRight, label)
+            tl = (shown_light.get("time_left", 0) or 0) if not detected_only else 0
             if tl > 0:
                 qp.setPen(QColor("#FFFFFF")); qp.setFont(QFont("Segoe UI", 14, QFont.Weight.Bold))
                 qp.drawText(QRectF(cx + 26, cy + 2, 56, 20), Qt.AlignmentFlag.AlignLeft,

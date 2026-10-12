@@ -21,6 +21,7 @@ import logging
 import heapq
 import time
 import threading
+import sys
 from collections import OrderedDict
 from dataclasses import replace
 
@@ -33,7 +34,7 @@ from core.navigation.route_diagnostics import (
 )
 from core.navigation.road_look_offsets_159 import LANE_OFFSETS_159
 
-CACHE_VERSION = 14  # retains authored nav-curve semaphore IDs (old cache lacks them)
+CACHE_VERSION = 15  # also retains native placed prefab UID/node ownership
 MAX_PROVEN_LANE_BOUNDARY_GAP_M = 0.75
 MAX_PROVEN_LANE_BOUNDARY_VERTICAL_M = 0.50
 MAX_PROVEN_LANE_BOUNDARY_HEADING_DEG = 15.0
@@ -164,6 +165,7 @@ class RoadNetwork:
         self._prefab_desc = {}   # token -> compact detailed prefab description
         self._prefab_grid = {}   # spatial index of placed prefab instances
         self._prefab_pairs = {}  # unordered endpoint UID pair -> prefab instances
+        self._prefab_ownership = {}
         self._missing_prefab_pairs = {}  # endpoint pair -> missing PPD tokens
         self._prefab_lane_data = {}  # token -> dataset lane/curve connectivity
         self._prefab_map_polygons = {}  # token -> Truckermudgeon map polygons
@@ -175,6 +177,10 @@ class RoadNetwork:
         self._prefab_geometry_cache = OrderedDict()
         self._prefab_geometry_cache_points = 0
         self._prefab_geometry_cache_lock = threading.Lock()
+        self._prefab_topology_cache = OrderedDict()
+        self._prefab_topology_cache_lock = threading.Lock()
+        self._prefab_topology_cache_indices = 0
+        self._prefab_topology_cache_bytes = 0
         self._lane_id_index = {} # LaneId -> LaneSegment (populated lazily)
         self._lane_path_revision = 0
         self.loaded = False
@@ -442,6 +448,7 @@ class RoadNetwork:
                       "_grid", "_seg_grid", "_road_look_token",
                       "_road_length", "road_looks", "_prefab_desc", "_prefab_grid",
                       "_prefab_pairs", "_missing_prefab_pairs",
+                      "_prefab_ownership",
                       "_prefab_lane_data",
                       "_prefab_map_polygons", "loaded"):
                 setattr(self, k, data.get(k, getattr(self, k)))
@@ -477,6 +484,7 @@ class RoadNetwork:
                     "_prefab_desc": self._prefab_desc,
                     "_prefab_grid": self._prefab_grid,
                     "_prefab_pairs": self._prefab_pairs,
+                    "_prefab_ownership": self._prefab_ownership,
                     "_missing_prefab_pairs": self._missing_prefab_pairs,
                     "_prefab_lane_data": self._prefab_lane_data,
                     "_prefab_map_polygons": self._prefab_map_polygons,
@@ -692,6 +700,8 @@ class RoadNetwork:
                         raise ValueError(
                             f"invalid descriptorNodeUids for prefab {token}")
                 instance = (token, uids, origin_index, True)
+                self._prefab_ownership[instance] = dict(prefab_uid=_uid(raw.get('uid')),
+                    native_node_uids=list(raw_uids),origin_node_index=origin_index)
                 x, z = float(raw.get("x", 0)), float(raw.get("y", 0))
                 self._prefab_grid.setdefault(self._cell(x, z), []).append(instance)
                 for i in range(len(uids)):
@@ -705,6 +715,7 @@ class RoadNetwork:
             self._prefab_desc.clear()
             self._prefab_grid.clear()
             self._prefab_pairs.clear()
+            self._prefab_ownership.clear()
             self._missing_prefab_pairs.clear()
             self._prefab_lane_data.clear()
             self._prefab_map_polygons.clear()
@@ -1254,7 +1265,72 @@ class RoadNetwork:
         # nextLines/prevLines edge inside the candidate chain.
         return True
 
+    def _prefab_topology_key(self, kind, instance, start_uid, end_uid):
+        """Exact topology inputs, independent of pose, rank and geometry.
+
+        Avoid allocating recursive closure cycles for every distant prefab on
+        every localization. Cache the enumeration, never a lane selection.
+        Value keys detect in-place PPD repairs; each network owns its cache.
+        """
+        token, uids = instance[:2]
+        desc = self._prefab_desc.get(token)
+        lane = self._prefab_lane_data.get(token)
+        if not desc or not lane:
+            return None
+        ports = tuple((tuple(n['input_lanes']), tuple(n['output_lanes']))
+                      for n in lane['nodes'])
+        links = tuple((int(c.get('nav_node_index', -1)), tuple(c['next_lines']),
+                       tuple(c['prev_lines'])) for c in lane['curves'])
+        return kind, token, tuple(uids), start_uid, end_uid, desc[2], ports, links
+
+    def _cached_prefab_topology(self, key):
+        if key is None:
+            return None
+        with self._prefab_topology_cache_lock:
+            cached = self._prefab_topology_cache.get(key)
+            if cached is not None:
+                self._prefab_topology_cache.move_to_end(key)
+                return list(cached[0])
+        return None
+
+    def _store_prefab_topology(self, key, options):
+        result = tuple(options)
+        size = sum(map(len, result))
+        # Charge keys too: an empty result can still have a large topology.
+        # Shared immutable source objects are conservatively charged in every
+        # entry. Accounting runs only on a miss, outside the cache lock.
+        pending, seen, charged = [key, result], set(), 256
+        while pending:
+            value = pending.pop()
+            if id(value) in seen:
+                continue
+            seen.add(id(value))
+            charged += sys.getsizeof(value)
+            if isinstance(value, tuple):
+                pending.extend(value)
+        # At most 128 signatures, 16,384 curve indices and 1 MiB including
+        # topology keys. Oversized PPDs are evaluated but never retained.
+        if key is not None and size <= 16384 and charged <= 1048576:
+            with self._prefab_topology_cache_lock:
+                old, old_charge = self._prefab_topology_cache.pop(key, ((), 0))
+                self._prefab_topology_cache_indices -= sum(map(len, old))
+                self._prefab_topology_cache_bytes -= old_charge
+                self._prefab_topology_cache[key] = (result, charged)
+                self._prefab_topology_cache_indices += size
+                self._prefab_topology_cache_bytes += charged
+                while (len(self._prefab_topology_cache) > 128 or
+                       self._prefab_topology_cache_indices > 16384 or
+                       self._prefab_topology_cache_bytes > 1048576):
+                    _, (retired, retired_charge) = self._prefab_topology_cache.popitem(last=False)
+                    self._prefab_topology_cache_indices -= sum(map(len, retired))
+                    self._prefab_topology_cache_bytes -= retired_charge
+        return list(result)
+
     def _prefab_connector_options(self, instance, start_uid, end_uid):
+        key = self._prefab_topology_key('representative', instance, start_uid, end_uid)
+        cached = self._cached_prefab_topology(key)
+        if cached is not None:
+            return cached
         token, uids, _origin = instance[:3]
         try:
             start_item, end_item = uids.index(start_uid), uids.index(end_uid)
@@ -1273,13 +1349,15 @@ class RoadNetwork:
             return []
         options = []
 
-        def walk(nav_index, curve_indices, visited):
+        pending = [(start_nav, (), frozenset((start_nav,)))]
+        while pending:
+            nav_index, curve_indices, visited = pending.pop()
             if len(visited) > len(nav_nodes) + 1:
-                return
+                continue
             if nav_index == end_nav:
                 if self._curve_chain_is_valid(lane_data, curve_indices):
                     options.append(tuple(curve_indices))
-                return
+                continue
             for target, indices in nav_nodes[nav_index][2]:
                 if target in visited or not indices:
                     continue
@@ -1313,15 +1391,13 @@ class RoadNetwork:
                     if (indices[0] not in curves[curve_indices[-1]]["next_lines"]
                             or curve_indices[-1] not in curves[indices[0]]["prev_lines"]):
                         continue
-                walk(target, combined, visited | {target})
-
-        walk(start_nav, (), {start_nav})
+                pending.append((target, combined, visited | {target}))
         start_lanes = tuple(lane_data["nodes"][start_item]["input_lanes"])
         end_lanes = tuple(lane_data["nodes"][end_item]["output_lanes"])
         filtered = [indices for indices in options
                     if (not start_lanes or indices[0] in start_lanes)
                     and (not end_lanes or indices[-1] in end_lanes)]
-        return sorted(set(filtered))
+        return self._store_prefab_topology(key, sorted(set(filtered)))
 
     def _prefab_parallel_lane_options(self, instance, start_uid, end_uid):
         """Return PPD-proven parallel lanes for one physical GPS connection.
@@ -1334,6 +1410,10 @@ class RoadNetwork:
         prefabs may continue the same parallel lane only through one exact
         endpoint/heading match on the next GPS-proven physical connection.
         """
+        key = self._prefab_topology_key('sibling', instance, start_uid, end_uid)
+        cached = self._cached_prefab_topology(key)
+        if cached is not None:
+            return cached
         token, uids, _origin = instance[:3]
         try:
             start_item, end_item = (uids.index(start_uid),
@@ -1359,7 +1439,9 @@ class RoadNetwork:
                        for value in node.get("output_lanes", ())}
         options = []
 
-        def walk_lane(curve_index, chain, visited):
+        pending = [(i, (i,), frozenset((i,))) for i in starts if 0 <= i < len(curves)]
+        while pending:
+            curve_index, chain, visited = pending.pop()
             if curve_index in ends:
                 nav_index = int(curves[curve_index].get(
                     "nav_node_index", -1))
@@ -1370,7 +1452,7 @@ class RoadNetwork:
                     candidate = tuple(chain)
                     if self._curve_chain_is_valid(lane_data, candidate):
                         options.append(candidate)
-                return
+                continue
             for next_index in curves[curve_index].get("next_lines", ()):
                 next_index = int(next_index)
                 if (next_index in visited
@@ -1380,13 +1462,9 @@ class RoadNetwork:
                         or curve_index not in curves[next_index].get(
                             "prev_lines", ())):
                     continue
-                walk_lane(next_index, chain + (next_index,),
-                          visited | {next_index})
-
-        for start_curve in starts:
-            if 0 <= start_curve < len(curves):
-                walk_lane(start_curve, (start_curve,), {start_curve})
-        return sorted(set(options))
+                pending.append((next_index, chain + (next_index,),
+                                visited | {next_index}))
+        return self._store_prefab_topology(key, sorted(set(options)))
 
     def _segment_uses_parallel_prefab_sibling(self, segment):
         """Whether ``segment`` is a PPD sibling, not its navNode representative."""

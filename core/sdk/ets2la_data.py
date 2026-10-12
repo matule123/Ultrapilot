@@ -161,7 +161,7 @@ class ETS2LAData:
         """
         return self._traffic_buf is not None
 
-    def read_traffic_lights(self) -> list:
+    def read_traffic_lights(self, *, include_index=False) -> list:
         """Traffic lights in absolute ETS2 world coordinates.
 
         The semaphore buffer stores X/Z relative to signed 512 m map tiles.
@@ -193,8 +193,9 @@ class ETS2LAData:
                 "tile_x": int(tile_x), "tile_z": int(tile_z),
                 "yaw": _yaw(q0, q1, q2, q3),
                 "state": state, "color": _state_color(state),
-                "time_left": time_left, "id": data[b + 12],
+                  "time_left": time_left, "id": data[b + 12],
             })
+            if include_index:out[-1]['source_index']=i
         return out
 
 

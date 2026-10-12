@@ -5,6 +5,7 @@ import time
 import json
 import tempfile
 import threading
+from functools import wraps
 from sdk.base_plugin import BasePlugin
 from core.navigation.route import Route
 from core.steering_calibration import steering_calibration_from_settings
@@ -33,6 +34,34 @@ from core.navigation.navigation_intent import (
 )
 from core.paths import app_dir
 from core.longitudinal import curve_preview_horizon_m
+
+
+def _measure_completed_tick(operation):
+    """Carry one completed tick into the NEXT existing packet, diagnostic only.
+
+    The published packet is immutable. Post-publication work and the scheduling
+    gap belong to a separately sequenced prior tick, never to its SDK timestamp.
+    One small record is replaced locally; no extra SDK/IPC reads or writes.
+    """
+    @wraps(operation)
+    def run(self, *args, **kwargs):
+        previous = getattr(self, '_previous_map_tick_timing', None)
+        started, cpu = time.monotonic(), time.thread_time()
+        record = dict(tick_sequence=(previous or {}).get('tick_sequence', 0)+1,
+            started_at=started, previous_tick_sequence=(previous or {}).get('tick_sequence'),
+            gap_since_previous_tick_s=(started-previous['finished_at'] if previous else None),
+            published_packet=None)
+        self._map_tick_execution = record
+        try:
+            return operation(self, *args, **kwargs)
+        finally:
+            record['finished_at'] = time.monotonic()
+            record['thread_cpu_s'] = time.thread_time()-cpu
+            publication = record['published_packet']
+            record['after_publication_s'] = (record['finished_at']-publication['completed_at']
+                                             if publication is not None else None)
+            self._previous_map_tick_timing = record
+    return run
 
 # routes/ lives next to the app (works both from source and when frozen).
 ROUTES_DIR = os.path.join(app_dir(), "routes")
@@ -69,7 +98,7 @@ class Plugin(BasePlugin):
     """
 
     NAME = "map"
-    VERSION = "1.1.0"
+    VERSION = "1.1.2"
 
     def on_start(self):
         logging.info("Map (navigation) plugin started.")
@@ -427,14 +456,16 @@ class Plugin(BasePlugin):
         and exit headings.  Lane-change segments remain separate because their
         immutable proof already names the requested side.
 
-        Roundabouts are special: the indicator belongs to the *exit*, not to
-        every arc around the island.  The circulation direction proves which
-        side the exit is on (opposite the signed arc direction), so no chord or
-        guessed connector is introduced here.
+        A proven directed circulation component may cross prefab and road
+        boundaries. Its selected exit owns one right-hand instruction with a
+        gate after entry/the preceding exit. Neither total arc rotation nor
+        steering creates that instruction; no centreline is modified.
         """
         points = tuple(getattr(lane_path, "points", ()) or ())
         segments = tuple(getattr(lane_path, "segments", ()) or ())
-        events = []
+        from core.navigation.turn_maneuvers import events as circulation_events
+        events, circulation_owned = circulation_events(
+            getattr(self, 'road_net', None), lane_path, self._lane_id_payload)
 
         def owned_points(start_index, end_index):
             return [point for point in points
@@ -452,6 +483,9 @@ class Plugin(BasePlugin):
 
         index = 0
         while index < len(segments):
+            if index in circulation_owned:
+                index += 1
+                continue
             segment = segments[index]
             proof = getattr(segment, "lane_change", None)
             topology_owned = bool(
@@ -461,9 +495,29 @@ class Plugin(BasePlugin):
                 end_index = index
                 kind = "lane_change"
             elif topology_owned:
+                # A two-port authored connector may curve but has no selected
+                # junction branch. It is not an automatic turn instruction.
+                network = getattr(self, 'road_net', None)
+                lane_data = (getattr(network, '_prefab_lane_data', {}).get(
+                    segment.lane_id.prefab_token) or {})
+                if lane_data and len(lane_data.get('nodes', ())) < 3:
+                    index += 1
+                    continue
+                ports = lane_data.get('nodes', ())
+                if (len(ports) == 3 and all(bool(p.get('input_lanes')) !=
+                        bool(p.get('output_lanes')) for p in ports)):
+                    # An unresolved one-way merge/split is not a turn inferred
+                    # from its bend. Only the proven circulation path above
+                    # nominates an exit for this special topology.
+                    index += 1
+                    continue
                 end_index = index
                 while end_index + 1 < len(segments):
                     following = segments[end_index + 1]
+                    if (end_index+1 in circulation_owned or
+                            (following.lane_id.prefab_token, following.lane_id.road_uid) !=
+                            (segment.lane_id.prefab_token, segment.lane_id.road_uid)):
+                        break
                     if getattr(following, "lane_change", None) is not None:
                         break
                     if not (following.lane_type in ("prefab", "roundabout")
@@ -486,13 +540,14 @@ class Plugin(BasePlugin):
             if proof is not None:
                 direction = str(proof.direction)
             elif kind == "roundabout":
-                if abs(heading_change) < math.radians(12.0):
-                    index = end_index + 1
-                    continue
-                # Positive ETS heading change is a left-circulating island,
-                # therefore its proven exit lies to the right (and vice versa).
-                direction = "right" if heading_change > 0.0 else "left"
+                # Typed single-prefab circulation also indicates its selected
+                # exit, never entry/arc steering or total accumulated angle.
+                direction = "right"
             else:
+                # Side describes the selected authored entry/exit, not every
+                # bend inside that connector or a wrapped total arc rotation.
+                heading_change = ((owned[-1].heading-owned[0].heading+math.pi)
+                                  % (2.*math.pi)-math.pi)
                 if abs(heading_change) < math.radians(22.0):
                     index = end_index + 1
                     continue
@@ -508,8 +563,7 @@ class Plugin(BasePlugin):
             prefab_token = (proof.prefab_token if proof is not None else
                             first_segment.lane_id.prefab_token)
             identity = (
-                kind, direction, int(first_segment.gps_pair_index),
-                int(last_segment.gps_pair_index), str(prefab_token or ""),
+                kind, direction, str(prefab_token or ""),
                 lane_identity(source_id), lane_identity(target_id),
             )
             events.append({
@@ -521,6 +575,7 @@ class Plugin(BasePlugin):
                 # Junction/lane-change indication precedes entry. A roundabout
                 # indication precedes only its proven exit.
                 "signal_s_m": end_s if kind == "roundabout" else start_s,
+                "indication_not_before_s_m": start_s if kind == "roundabout" else None,
                 "direction": direction,
                 "angle_deg": float(math.degrees(heading_change)),
                 "kind": kind,
@@ -886,6 +941,26 @@ class Plugin(BasePlugin):
         except Exception:
             return ()
 
+    def _read_control_lane_snapshot(self):
+        """One private, read-only-by-ownership copy per geometry publication.
+
+        Public SDK reads still return independent mutable copies. Map never
+        mutates a received snapshot: rebase/build create new dictionaries.
+        Re-decoding the full geometry three times per control tick allocated
+        thousands of containers solely to read an unchanged reference. Keep
+        ONE owned copy, invalidate on every publication (including same-build
+        rebases), and retain all later live identity/telemetry validation.
+        Legacy publishers without a token cannot use this cache.
+        """
+        token = self.sdk.get('lane_trajectory_publication_token')
+        cached = getattr(self, '_control_lane_snapshot', None)
+        if token and cached is not None and cached[0] == token:
+            return cached[1]
+        snapshot = self.sdk.get('lane_trajectory', {}) or {}
+        after = self.sdk.get('lane_trajectory_publication_token')
+        self._control_lane_snapshot = (token, snapshot) if token and token == after else None
+        return snapshot
+
     def _rebase_rolling_snapshot(self, snapshot, uids, request_id):
         """Rebind unchanged geometry to any proven continuation window."""
         old_uids = self._normalise_gps_uids(
@@ -1038,7 +1113,7 @@ class Plugin(BasePlugin):
                 self.sdk.get("game_route_node_uids", []) or [])) >= 2:
             return True
         if include_snapshot:
-            snapshot = self.sdk.get("lane_trajectory", {}) or {}
+            snapshot = self._read_control_lane_snapshot()
             if len(self._normalise_gps_uids(
                     snapshot.get("source_gps_uids", []) or [])) >= 2:
                 return True
@@ -1244,7 +1319,7 @@ class Plugin(BasePlugin):
         signature = uids
         rebased_this_tick = False
         if signature != self._lane_signature:
-            current_snapshot = self.sdk.get("lane_trajectory", {}) or {}
+            current_snapshot = self._read_control_lane_snapshot()
             old_window = self._normalise_gps_uids(
                 current_snapshot.get("source_gps_uids", ()) or ())
             observed_class, _observed_overlap, _, _, _ = (
@@ -1343,7 +1418,7 @@ class Plugin(BasePlugin):
         build_uids = self._runtime_gps_window(uids)
         altitude = float(observation_altitude if observation_altitude is not None
                          else self.sdk.get("truck_altitude", 0.0) or 0.0)
-        current = self.sdk.get("lane_trajectory", {}) or {}
+        current = self._read_control_lane_snapshot()
         previous_lane_path = self._lane_path
         build_revision = int(self.sdk.get(
             "lane_trajectory_revision", -1) or -1)
@@ -2401,7 +2476,15 @@ class Plugin(BasePlugin):
                 snapshot, snapshot.get("source_gps_uids", ()),
                 self.sdk.get("nav_recalc_request"))
 
-        latest_snapshot = self.sdk.get("lane_trajectory", {}) or {}
+        # Fixed-size observational detail in the EXISTING packet/replay. No
+        # extra reads, worker or queue; at most the already allowed two attempts.
+        phases = getattr(self, '_reference_phase_times', {})
+        if not _retried:
+            phases['observation_attempts'] = []
+        attempt = {'started_at': time.monotonic(), 'retry': bool(_retried)}
+        phases.setdefault('observation_attempts', []).append(attempt)
+        latest_snapshot = self._read_control_lane_snapshot()
+        attempt['route_snapshot_read_finished_at'] = time.monotonic()
         identity_fields = ("navigation_intent_id", "route_build_id", "revision",
             "source_game_session_id", "source_map_key", "source_dataset_fingerprint",
             "lane_path_fingerprint", "request_id")
@@ -2412,8 +2495,12 @@ class Plugin(BasePlugin):
         if reason:
             self._reject_steering_observation(reason)
             return None
+        attempt['identity_checked_at'] = time.monotonic()
         generation_before = self.sdk.get("telemetry_generation", 0)
         vehicle_observation = self.sdk.get("vehicle_envelope_snapshot", {}) or {}
+        attempt['sdk_snapshot_read_finished_at'] = time.monotonic()
+        attempt['sdk_frame_us'] = vehicle_observation.get('sdk_frame_us')
+        attempt['observation_timestamp'] = vehicle_observation.get('timestamp')
         # Compatibility for pre-frame offline adapters only. Runtime Engine
         # always supplies a session and an explicit SDK frame/timestamp.
         framed = ("sdk_frame_us" in vehicle_observation
@@ -2459,12 +2546,15 @@ class Plugin(BasePlugin):
                 if locator is None:
                     self._reject_steering_observation("fresh LaneLocator is unavailable")
                     return None
+                attempt['localization_started_at'] = time.monotonic()
                 match = locator.locate(
                     xyz, heading, snapshot.get("covered_gps_uids", ())
                     or snapshot.get("source_gps_uids", ()), self._lane_match,
                     authoritative_segments=tuple(self._lane_path.segments))
+                attempt['localization_finished_at'] = time.monotonic()
                 if not self._publish_preserved_snapshot_liveness(snapshot, match):
                     return None
+                attempt['liveness_publish_finished_at'] = time.monotonic()
         else:
             # This branch preserves the existing offline/recorded test API;
             # it is unreachable for a session-bound production observation.
@@ -2479,6 +2569,7 @@ class Plugin(BasePlugin):
         if reason:
             self._reject_steering_observation(reason)
             return None
+        attempt['final_validation_finished_at'] = time.monotonic()
         if (framed and frame != self._last_steering_sdk_frame_us
                 and time.monotonic() - timestamp > STEERING_DYNAMICS_MAX_DT_S):
             # Freshness checked before locate() is not freshness after it.
@@ -2591,10 +2682,12 @@ class Plugin(BasePlugin):
                 steering_frame_us, observation_dt, control_dt_s, observation_timestamp)
 
     # --- Tick -----------------------------------------------------------------
+    @_measure_completed_tick
     def on_tick(self, delta_time: float):
         if not self.enabled:
             return
         map_tick_started_at = time.monotonic()
+        self._reference_phase_times = {}
 
         pos = self.sdk.get("truck_world_pos")
         heading = self.sdk.get("truck_heading", 0.0) or 0.0
@@ -2831,7 +2924,7 @@ class Plugin(BasePlugin):
         else:
             # No recorded route: drive by the downloaded MAP. This is automatic
             # map-based driving — no recording needed.
-            snapshot = self.sdk.get("lane_trajectory", {}) or {}
+            snapshot = self._read_control_lane_snapshot()
             route = self._lane_route
             if (route is not None and len(route) >= 2
                     and self._lane_localization_current
@@ -2879,8 +2972,10 @@ class Plugin(BasePlugin):
                     })
                     self.tags.nav_steering = 0.0
                     return
+                self._reference_phase_times['reference_read_started_at'] = time.monotonic()
                 reference_packet = self.sdk.get(
                     "maneuver_reference_packet", {}) or {}
+                self._reference_phase_times['reference_read_finished_at'] = time.monotonic()
                 evidence_worker = self._maneuver_evidence_worker
                 evidence = evidence_worker.harvest(
                     snapshot, steering_frame_us, time.monotonic())
@@ -2892,11 +2987,13 @@ class Plugin(BasePlugin):
                         "stage5e_observed_traffic": evidence.legacy_traffic,
                     })
                     self._maneuver_evidence_candidate = evidence
+                self._reference_phase_times['evidence_harvest_finished_at'] = time.monotonic()
                 self._maneuver_reference_mux.offer(reference_packet, snapshot)
                 preparation = self._maneuver_reference_mux.preparation_payload()
                 if preparation != getattr(self, "_published_reference_preparation", None):
                     self.sdk.set("maneuver_reference_preparation", preparation)
                     self._published_reference_preparation = preparation
+                self._reference_phase_times['preparation_publish_finished_at'] = time.monotonic()
                 fresh = self._refresh_steering_observation(
                     snapshot, vehicle_observation, delta_time)
                 if fresh is None:
@@ -2920,6 +3017,7 @@ class Plugin(BasePlugin):
                         time.monotonic(), steering_frame_us,
                         bool(self.sdk.get("autopilot_active", False)))
                 reference_finished_at = time.monotonic()
+                self._reference_phase_times['selection_finished_at'] = reference_finished_at
                 reference_payload = active_reference_payload(
                     reference_selection, snapshot, steering_frame_us)
                 if not reference_selection.authority_valid:
@@ -3065,6 +3163,8 @@ class Plugin(BasePlugin):
                     "map_presentation_finished_at": presentation_finished_at,
                     "map_road_type_finished_at": road_type_finished_at,
                     "map_reference_finished_at": reference_finished_at,
+                    "map_reference_phase_times": dict(self._reference_phase_times),
+                    "previous_map_tick_timing": getattr(self, '_previous_map_tick_timing', None),
                     "map_calculation_started_at": calculation_started_at,
                     "sdk_frame_us": vehicle_observation.get("sdk_frame_us"),
                     "observation_interval_s": observation_dt,
@@ -3165,7 +3265,7 @@ class Plugin(BasePlugin):
                     })
                     # Separate receipt is diagnostic only. The bound steering
                     # packet above remains the sole command authority.
-                    self.sdk.shared_state.set("map_steering_publish_receipt", {
+                    publish_receipt = {
                         "sequence": steering_debug.get("calculation_sequence"),
                         "sdk_frame_us": steering_debug.get("sdk_frame_us"),
                         "identity": {key: steering_debug.get(key) for key in (
@@ -3173,7 +3273,12 @@ class Plugin(BasePlugin):
                             "authority_revision", "source_game_session_id",
                             "source_map_key", "source_dataset_fingerprint")},
                         "completed_at": time.monotonic(),
-                    })
+                    }
+                    self._map_tick_execution['published_packet'] = {
+                        **publish_receipt,
+                        'observation_timestamp': steering_debug.get('observation_timestamp'),
+                        'computed_at': steering_debug.get('computed_at')}
+                    self.sdk.shared_state.set("map_steering_publish_receipt", publish_receipt)
                     # Steering used a genuinely refreshed pose after reference
                     # preparation. Longitudinal constraints must use that pose
                     # too, not inherit the nearly spent initial-frame lease.
@@ -3182,10 +3287,14 @@ class Plugin(BasePlugin):
                                                   reuse_prepared=True)
                 # Diagnostic profile/traffic serialization is preparation
                 # for a later tick, never a prerequisite of this fresh packet.
-                evidence_worker.offer(
-                    self.road_net, self._lane_path, snapshot,
-                    self.sdk.get("vehicle_profile_snapshot"),
-                    self.sdk.get("maneuver_traffic_capture"))
+                # Python evaluates arguments before offer checks its single
+                # slot. Fetching two large RPC values for a busy worker merely
+                # discarded them and delayed the next fresh control tick.
+                if evidence_worker.accepting_offer():
+                    evidence_worker.offer(
+                        self.road_net, self._lane_path, snapshot,
+                        self.sdk.get("vehicle_profile_snapshot"),
+                        self.sdk.get("maneuver_traffic_capture"))
                 # Curvature radius (m) of the road ahead — lets the autopilot
                 # anticipate bends (brake before, not during).
                 self.tags.nav_steering = round(steer, 3)

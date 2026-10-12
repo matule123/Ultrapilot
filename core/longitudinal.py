@@ -29,6 +29,74 @@ CURVE_STEERING_SETUP_M = 20.0
 ROUNDABOUT_ENTRY_SPEED_KMH = 35.0
 
 
+def signal_phase_plan(light, truck, observed_at, checked_at):
+    """Only a qualified current phase, never prediction of future green.
+
+    Native time_left is state_time_remaining (float seconds in the existing
+    reader/HUD contract). State 1 goes toward red, state 4 toward green; neither
+    yellow permits departure. Original acquisition age is deducted once.
+    Directed prefab extent and a 20 m unmeasured combination-clearance allowance
+    are conservative planning assumptions, not bumper/conflict measurements.
+    """
+    plan = dict(stop_required=light.get('color') != 'green',
+                status='current_non_green', observed_at=observed_at,
+                native_state=light.get('state'), original_time_left_s=light.get('time_left'))
+    if light.get('color') != 'green': return plan
+    try:
+        timer = float(light['time_left']); age = checked_at-float(observed_at)
+        distance = max(0., float(light['distance']))
+        speed = abs(float(truck['speed']))
+        if (light.get('state') != 8 or not all(math.isfinite(x) for x in (timer,age,distance,speed))
+                or timer<0 or not 0<=age<=LEASE_S):
+            raise ValueError('invalid phase timer')
+        # Legacy/schema-2 lacks native direction proof. Missing authored extent
+        # cannot be represented as zero-length conflict travel.
+        if light.get('scope_schema') != 1:
+            return dict(plan, stop_required=False, status='phase_extent_not_verified')
+        if 'passage_length_m' not in light:
+            return dict(plan, stop_required=True, status='phase_extent_not_verified')
+        length = float(light['passage_length_m']) + 20.
+        cap = min(float(light.get('passage_speed_ms',40.)), float(truck.get('speedLimit') or 40.), 40.)
+        if not math.isfinite(length) or length<=0 or not math.isfinite(cap) or cap<=0:
+            raise ValueError('invalid phase extent')
+        # Forecast from CURRENT speed and the authored passage/road ceiling.
+        # A hypothetical red-stop ceiling must not slow this green forecast to
+        # zero near its entrance: that circular assumption invents a dilemma
+        # even with a long green. Explicit capped acceleration/deceleration uses
+        # the existing 1 m/s² planning assumption, not measured SDK dynamics.
+        travel = distance+light.get('front_allowance_m',0.)+light.get('junction_standoff_m',0.)+length
+        accel = CURVE_APPROACH_DECEL_MS2
+        if speed <= cap:
+            ramp_distance = (cap*cap-speed*speed)/(2.*accel)
+            eta = ((math.sqrt(speed*speed+2.*accel*travel)-speed)/accel
+                if travel<=ramp_distance else (cap-speed)/accel+(travel-ramp_distance)/cap)
+        else:
+            ramp_distance = (speed*speed-cap*cap)/(2.*accel)
+            eta = ((speed-math.sqrt(max(cap*cap,speed*speed-2.*accel*travel)))/accel
+                if travel<=ramp_distance else (speed-cap)/accel+(travel-ramp_distance)/cap)
+        remaining = max(0.,timer-age)
+        required = eta+CURVE_BRAKE_RESPONSE_S+LEASE_S
+        reserve = speed*1.5+speed*speed/(2.*CURVE_APPROACH_DECEL_MS2)
+        # The preferred envelope is the point at which braking SHOULD start,
+        # not proof that stopping has already become impossible. Using it as
+        # the dilemma boundary suppresses anticipation precisely when its
+        # speed ceiling first asks for deceleration. The existing yellow-light
+        # 4 m/s² full-brake planning bound is separate; neither is measured grip.
+        minimum_reserve = speed*1.5+speed*speed/(2.*4.)
+        stop = remaining < required
+        # Do not impose a new anticipatory hard stop inside the existing
+        # full-brake planning reserve on a CURRENT green. This is an explicit
+        # dilemma assumption, not permission to pass a later red.
+        dilemma = stop and speed>.5 and distance<minimum_reserve
+        return dict(plan, stop_required=stop and not dilemma,
+            status='green_dilemma' if dilemma else 'ending_green_stop' if stop else 'green_reserve_sufficient',
+            remaining_s=remaining, required_clearance_s=required,
+            travel_time_s=eta, clearance_allowance_m=20., stopping_reserve_m=reserve,
+            minimum_planning_reserve_m=minimum_reserve)
+    except (KeyError, TypeError, ValueError, OverflowError):
+        return dict(plan, stop_required=True, status='phase_timer_invalid')
+
+
 def signal_stop_speed_limit(light, speed_ms):
     """Derived target already includes front allowance and junction stand-off.
 
@@ -37,9 +105,15 @@ def signal_stop_speed_limit(light, speed_ms):
     are conservative planning allowances, not a measured ETS2 brake model.
     """
     if (not isinstance(light, dict) or light.get('stop_target_kind') != 'derived_directed_curve_entry'
-            or light.get('color') not in ('red', 'yellow', 'unknown', 'off', 'sleep')):
+            or not (light.get('stop_required') is True
+                    or light.get('color') in ('red', 'yellow', 'unknown', 'off', 'sleep'))):
         return None
-    distance = number(light['distance'], -1e6, 1e6)
+    return stopping_speed_ceiling(light['distance'], speed_ms)
+
+
+def stopping_speed_ceiling(distance_m, speed_ms):
+    """Shared distance envelope, independent of signal color/ownership."""
+    distance = number(distance_m, -1e6, 1e7)
     speed = number(abs(float(speed_ms)), 0., 100.)
     usable = max(0., distance-speed*(CURVE_BRAKE_RESPONSE_S+LEASE_S))
     return math.sqrt(2.*CURVE_APPROACH_DECEL_MS2*usable)
@@ -55,14 +129,104 @@ def signal_stop_brake_request(light, speed_ms, *, continuing=False):
     cap = signal_stop_speed_limit(light, speed_ms)
     if cap is None:
         return 0.
-    speed = abs(float(speed_ms));distance = float(light['distance'])
-    if distance <= 0. or (speed < .5 and distance <= 1.5):
+    return stopping_brake_request(light['distance'], speed_ms, continuing=continuing)
+
+
+def stopping_brake_continuity_required(distance_m, speed_ms):
+    """Existing slow terminal-write zone, separate from an exhausted envelope.
+
+    This is NOT permission to seed a brake at standstill. Only an actual
+    acknowledged forward-started positive write can own the continuing chain.
+    """
+    return abs(float(speed_ms)) < .5 and float(distance_m) <= 1.5
+
+
+def stopping_brake_request(distance_m, speed_ms, *, continuing=False):
+    """Same feed-forward for an already qualified planned stop."""
+    cap = stopping_speed_ceiling(distance_m, speed_ms)
+    speed = abs(float(speed_ms));distance = float(distance_m)
+    terminal_approach = stopping_brake_continuity_required(distance, speed)
+    if cap == 0. or distance <= 0. or (terminal_approach and speed == 0.):
+        # Exhausted reserve/target retains full demand. At terminal standstill
+        # the v² request must not disappear either; Engine still requires its
+        # own brake ownership/hold authorization before any physical write.
         return 1.
-    if speed <= cap and not continuing:
+    # A low measured speed inside 1.5 m is NOT an exhausted envelope:
+    # e.g. v=.39, d=1.49 still has a positive 1.35 m/s ceiling. A full pedal
+    # there invents an earlier stop, opposed to the same distance trajectory.
+    # Continue its calculated positive brake; acknowledged standstill holding
+    # is owned by service_brake_hold, never by a new distance-only brake edge.
+    # Removing the full-pedal jump must not also remove the FIRST positive
+    # brake at a slow red approach. Without that write the physical service
+    # chain never starts; ACC can propel the truck and gear=0 then rejects the
+    # subsequent stop. Use the same distance demand, not a new full-brake edge.
+    # This is only a pedal request: Engine still owns standstill authorization.
+    if speed <= cap and not continuing and not terminal_approach:
         return 0.
     usable = max(.5, distance-speed*(CURVE_BRAKE_RESPONSE_S+LEASE_S))
     required_decel = speed*speed/(2.*usable)
     return min(1.,required_decel/4.)
+
+
+def signal_speed_control(traffic, speed_ms):
+    """Qualified distance constraint owned by the existing speed PID.
+
+    No inferred color/owner. Unknown coverage keeps its independent protective
+    brake. The terminal zone uses the same response/age and near-stop reserve
+    already used by the stop envelope, not a new target offset or speed floor.
+    """
+    signal = (traffic or {}).get('signal') or {}
+    light = (traffic or {}).get('light') or {}
+    candidate = signal.get('candidate') or {}
+    if (not signal.get('valid') or not light.get('passage_key')
+            or candidate.get('id') != light.get('id')
+            or candidate.get('passage_key') != light.get('passage_key')):
+        return None
+    cap = signal_stop_speed_limit(candidate, speed_ms)
+    if cap is None:
+        return None
+    # A nonzero envelope is still an approach, even inside the old +1.5 m
+    # band. That band used to reset ACC via an independent Traffic pedal and
+    # permanently latch a tiny brake before the actual stopping reserve.
+    return dict(cap_ms=cap, terminal=cap == 0.,
+        brake_chain_required=stopping_brake_continuity_required(light['distance'],speed_ms),
+        passage_key=light['passage_key'])
+
+
+def destination_stop_control(state, truck):
+    """A positive GPS remainder on this observation, never inferred arrival.
+
+    Zero cannot distinguish manual removal, automatic cancellation or loss.
+    No cached distance is reissued and no local corridor end is a destination.
+    """
+    try:
+        distance = number(truck['routeDistance'], 0., 1e7)
+        if distance <= 0.:
+            return None
+        if (state.get('navigation_source') != 'gps_lane'
+                or state.get('game_gps_navigation_active') is not True):
+            return None
+        cap = stopping_speed_ceiling(distance, truck['speed'])
+        return dict(distance_m=distance, cap_ms=cap,
+                    terminal=distance <= abs(float(truck['speed'])) *
+                        (CURVE_BRAKE_RESPONSE_S+LEASE_S)+1.5,
+                    target_kind='positive_scs_gps_remainder',
+                    stop_line_verified=False)
+    except (KeyError, TypeError, ValueError, OverflowError):
+        return None
+
+
+def signal_approach_speed_limit(traffic, speed_ms):
+    """Unresolved owned entry uses the SAME existing stopping envelope.
+
+    This is a protective ceiling, not red/green qualification or clearance.
+    The original signal lease still bounds it and the selector escalates to
+    takeover before its stopping reserve is exhausted.
+    """
+    signal=(traffic or {}).get('signal') or {}
+    coverage=signal.get('coverage') or {}
+    if coverage.get('requires_approach') is not True:return None
+    return signal_stop_speed_limit(coverage.get('approach_target'),speed_ms)
 
 
 def planned_braking_input(state):
@@ -85,13 +249,14 @@ def planned_braking_input(state):
         return False
     light_brake, traffic_brake, acc_brake, policy_brake = values
     light = (traffic or {}).get('light') or {}
-    signal_stop = bool(light.get('color') in ('red', 'yellow', 'unknown', 'off', 'sleep')
+    signal_stop = bool((light.get('stop_required') is True or light.get('color') in ('red', 'yellow', 'unknown', 'off', 'sleep'))
         and (light_brake > 0
              or light.get('stop_target_kind') == 'derived_directed_curve_entry'))
     traffic_stop = signal_stop or bool(traffic_brake > 0
         or ((traffic or {}).get('following') or {}).get('status') == 'candidate'
         )
-    policy_stop = (policy or {}).get('reason') == 'toll stop/payment'
+    policy_stop = ((policy or {}).get('reason') == 'toll stop/payment'
+        or (acc or {}).get('destination_brake_selected') is True)
     required = [p for p,used in ((traffic,traffic_stop),(policy,policy_stop),(acc,acc_brake>0)) if p and used]
     current = context(state)
     checked_at = time.monotonic()
@@ -201,12 +366,42 @@ def traffic_required(value):
     """
     if not value:
         return False
+    if not isinstance(value, dict):
+        return True  # Malformed published evidence must not escape validation.
     following = value.get('following') or {}
     light = value.get('light') or {}
-    return bool(max(value.get('traffic_brake', 0.), value.get('light_brake', 0.)) > 0
+    if not isinstance(following,dict) or not isinstance(light,dict):
+        return True
+    try:
+        demand = max(number(value.get('traffic_brake', 0.)), number(value.get('light_brake', 0.))) > 0
+    except (TypeError, ValueError, OverflowError):
+        return True
+    return bool(demand
+        or signal_coverage_required(value)
+        or signal_approach_required(value)
         or following.get('status') == 'candidate' or value.get('lead_distance')
         or light.get('color') in ('red', 'yellow')
         or light.get('stop_target_kind') == 'derived_directed_curve_entry')
+
+
+def signal_coverage_required(value):
+    if not isinstance(value,dict) or not isinstance(value.get('signal'),dict):
+        return False
+    coverage = value['signal'].get('coverage') or {}
+    return isinstance(coverage,dict) and coverage.get('requires_takeover') is True
+
+
+def signal_approach_required(value):
+    if not isinstance(value,dict) or not isinstance(value.get('signal'),dict):return False
+    coverage=value['signal'].get('coverage') or {}
+    return isinstance(coverage,dict) and coverage.get('requires_approach') is True
+
+
+def signal_coverage_rejection(value):
+    if not signal_coverage_required(value):
+        return ''
+    return str(value['signal']['coverage'].get('reason') or
+               'signal regulation coverage unverified; driver takeover required')
 
 
 def packet(state, truck, source, *, binding=None, evidence_valid=True, **values):
@@ -219,7 +414,8 @@ def packet(state, truck, source, *, binding=None, evidence_valid=True, **values)
     inputs = [dependency(v) for v in values.pop('dependencies', ()) if v is not None]
     signal_stamp = None
     signal = values.get('signal')
-    if source == 'traffic' and isinstance(signal,dict) and signal.get('valid') is True:
+    if source == 'traffic' and isinstance(signal,dict) and (
+            signal.get('valid') is True or signal_coverage_required(values) or signal_approach_required(values)):
         # The truck's fresh observation cannot renew a previously acquired
         # red/green. Keep the producer render-frame/time separate from the
         # command's SDK frame and carry its original deadline to the writer.
@@ -295,6 +491,20 @@ def rejection_details(value, binding, now):
         'computed_at', 'expires_at', 'valid', 'source', 'decision_source', 'reason',
         'deadline_basis', 'handoff_required', 'remaining_at_computation_s')})
     actual = value.get('context')
+    if value.get('source') == 'traffic':
+        following = value.get('following') or {}
+        signal = value.get('signal') or {}
+        following = following if isinstance(following,dict) else {}
+        signal = signal if isinstance(signal,dict) else {}
+        result['traffic_comparison'] = dict(
+            following_status=following.get('status'), actor_identity=following.get('actor_identity'),
+            departure=following.get('departure'),
+            availability=value.get('traffic_availability'),
+            signal_valid=signal.get('valid'), signal_reason=signal.get('reason'),
+            signal_observed_at=signal.get('observed_at'), signal_generation=signal.get('generation'),
+            signal_frame_us=signal.get('frame_us'),
+            signal_requires_takeover=signal_coverage_required(value),
+            traffic_brake=value.get('traffic_brake'), light_brake=value.get('light_brake'))
     result['actual_context'] = actual
     if isinstance(actual, (tuple, list)):
         result['different_fields'] = [name for i, name in enumerate(fields)
@@ -321,18 +531,116 @@ def write_rejection(value, binding, now):
     return ''
 
 
+def signal_drive_write_guard(state, truck, value, binding, *, diagnostic=None,
+                            rejection_info=None):
+    """A newer distance ceiling may revoke drive, never authorize it.
+
+    One source read at the positive-drive boundary reuses the ordinary traffic
+    contract. It cannot renew the pinned decision or manufacture a new brake
+    chain; the next controller tick owns the updated service-brake trajectory.
+    """
+    traffic, reason = read(state, 'traffic', binding=binding,
+                           diagnostic=diagnostic, rejection_info=rejection_info)
+    if reason or traffic is None:
+        return value, reason
+    control = signal_speed_control(traffic, float(truck['speed']))
+    cap = signal_approach_speed_limit(traffic, float(truck['speed']))
+    if control is not None:
+        cap = min(cap, control['cap_ms']) if cap is not None else control['cap_ms']
+    destination = destination_stop_control(state, truck)
+    if destination:
+        cap = min(cap, destination['cap_ms']) if cap is not None else destination['cap_ms']
+    if cap is None or float(truck['speed']) <= cap:
+        return value, ''
+    result = dict(value, throttle=0., source='speed_constraint',
+                  reason='current signal ceiling inhibits drive before write')
+    result['lease_dependencies'] = [*value.get('lease_dependencies', ()), dependency(traffic)]
+    if traffic['expires_at'] < value['expires_at']:
+        result.update(expires_at=traffic['expires_at'],
+                      deadline_basis=dependency(traffic)['deadline_basis'])
+    if diagnostic is not None:
+        from core.navigation.longitudinal_diagnostics import bounded_input
+        diagnostic['signal_write_guard'] = bounded_input(traffic)
+        diagnostic.setdefault('inputs', {})['traffic'] = diagnostic['signal_write_guard']
+        diagnostic['selected'] = {k: v for k, v in result.items()
+            if k not in ('emergency_evidence', 'stopping_evidence', 'lease_dependencies')}
+    return result, ''
+
+
 def publish(state, truck, source, **values):
     value = packet(state, truck, source, **values)
     state.set("longitudinal_" + source, value)
     return value
 
 
+def initialization_record(state, activation, started_at, deadline):
+    """Engine's existing first-command/launch bound, never an input lease."""
+    return dict(context=(activation, *context(state)[1:]), started_at=started_at,
+                expires_at=deadline)
+
+
+def initialization_request(state, binding, now):
+    value = state.get('longitudinal_initialization')
+    if (not isinstance(value, dict) or tuple(value.get('context', ())) != tuple(binding)
+            or tuple(binding) != context(state)
+            or not (state.get('autopilot_active') or state.get('auto_drive_pending'))
+            or state.get('autopilot_control_state') == 'controlled_stop'):
+        return None
+    try:
+        if not 0 < float(value['started_at']) <= now <= float(value['expires_at']):
+            return None
+    except (KeyError, TypeError, ValueError, OverflowError):
+        return None
+    return value
+
+
+def _initialization_input_reason(state, source, value, binding, now, reason):
+    """Only an otherwise valid old activation may wait; never consume it.
+
+    Validate against its OWN original identity/time before classifying the
+    scheduling transition. All non-activation authority fields must agree.
+    """
+    if reason != 'longitudinal identity or activation changed' or not isinstance(value, dict):
+        return reason
+    original = value.get('context')
+    if (not isinstance(original, (tuple,list)) or len(original) != len(binding)
+            or original[0] == binding[0] or tuple(original[1:]) != tuple(binding[1:])
+            or value.get('source') != source):
+        return reason
+    request = state.get('longitudinal_initialization')
+    if (isinstance(request,dict) and tuple(request.get('context', ())) == tuple(binding)
+            and isinstance(request.get('expires_at'), (int,float))
+            and now > request['expires_at']):
+        return 'longitudinal initialization timed out waiting for ' + source
+    original_failure = rejection(value, original, now)
+    if original_failure:
+        return original_failure  # Stale/future/invalid data are never benign.
+    try:
+        for field in {'traffic':('traffic_brake','light_brake'),
+                      'acc':('throttle','brake'), 'policy':('brake','planned_speed_ms')}.get(source, ()):
+            number(value[field], 0., 200. if field=='planned_speed_ms' else 1.)
+        if source == 'traffic' and traffic_contract_rejection(value):
+            return reason
+    except (KeyError,TypeError,ValueError,OverflowError):
+        return reason
+    if initialization_request(state, binding, now):
+        return 'longitudinal initialization pending'
+    return reason
+
+
 def read(state, source, now=None, *, required=False, binding=None, diagnostic=None, rejection_info=None):
     """One IPC read per producer, never combine scalar throttle/brake reads."""
     value = state.get("longitudinal_" + source)
+    explicit_required = required
+    if source == 'traffic' and traffic_required(value):
+        required = True
     compared_binding = context(state) if binding is None else binding
     checked_at = time.monotonic() if now is None else now
     reason = rejection(value, compared_binding, checked_at)
+    original_reason = reason
+    reason = _initialization_input_reason(state, source, value, compared_binding, checked_at, reason)
+    if reason != original_reason:
+        required = True  # An old optional packet must not silently permit launch.
     if reason in ('longitudinal decision needs refresh', 'longitudinal observation is stale or incoherent'):
         # One bounded reread: publication may have overtaken the first RPC.
         # Validate the returned immutable value after reading, never retimestamp.
@@ -357,17 +665,80 @@ def read(state, source, now=None, *, required=False, binding=None, diagnostic=No
                     number(value[key], 0., 200.)
         except (KeyError, TypeError, ValueError, OverflowError):
             reason = "invalid longitudinal producer values"
+    coverage_reason = signal_coverage_rejection(value) if not reason and source == 'traffic' else ''
+    if not reason and source == 'traffic':
+        try:
+            reason = traffic_contract_rejection(value, required=explicit_required)
+        except (KeyError, TypeError, ValueError, OverflowError):
+            reason = 'invalid traffic evidence roles'
+    if coverage_reason and reason.startswith('traffic actor evidence unavailable:'):
+        # A valid envelope with unqualified regulation has its own takeover
+        # cause, independent of unrelated optional actor identity failures.
+        reason = ''
     if diagnostic is not None:
         from core.navigation.longitudinal_diagnostics import bounded_input
-        diagnostic.setdefault('input_rejections', {})[source] = reason
-        if reason:
+        diagnostic.setdefault('input_rejections', {})[source] = reason or coverage_reason
+        if reason or coverage_reason:
             diagnostic.setdefault('rejected_inputs', {})[source] = bounded_input(value)
-    if reason:
+    if reason or coverage_reason:
         if required and rejection_info is not None and not rejection_info:
             rejection_info.update(rejection_details(value, compared_binding, checked_at))
             rejection_info['rejected_source'] = source
+            rejection_info['rejection_cause'] = reason or coverage_reason
+            if source == 'traffic' and signal_coverage_required(value):
+                from core.sdk.signal_snapshot import compact
+                rejection_info['signal'] = compact(value['signal'])
+    if reason:
         return None, (source + ": " + reason if required else "")
-    return value, ""
+    # Valid urgent brake evidence remains available to the existing safety
+    # stop, while the authoritative owners reject propulsion/clearance.
+    return value, (source + ': ' + coverage_reason if coverage_reason else '')
+
+
+def traffic_contract_rejection(value, *, required=False):
+    """Validate new separate evidence roles; legacy valid-bit guards remain.
+
+    Unknown optional actors create no demand and no clearance. Required target
+    loss is also enforced by ACC/Engine's existing following latch; a signal
+    stop/hold cannot be cleared by an actor feed becoming empty/unusable.
+    """
+    availability = value.get('traffic_availability')
+    if signal_approach_required(value):
+        signal=value['signal'];coverage=signal['coverage'];target=coverage.get('approach_target')
+        if (not isinstance(target,dict) or target.get('color')!='unknown'
+                or target.get('stop_target_kind')!='derived_directed_curve_entry'
+                or not isinstance(target.get('passage_key'),str) or not target['passage_key']
+                or signal_approach_speed_limit(value,0.) is None
+                or not 0 < number(signal.get('observed_at'),0.,1e12) <= value['computed_at']
+                or value['expires_at'] > signal['observed_at']+LEASE_S
+                or any(type(signal.get(k)) is not int or signal[k]<=0
+                       for k in ('generation','frame_us','lifecycle'))):
+            return 'invalid unresolved signal approach target or source lease'
+    if availability is None:
+        return ''  # Existing legacy producers still require their valid bit.
+    following, signal = value.get('following') or {}, value.get('signal') or {}
+    if not isinstance(following,dict) or not isinstance(signal,dict):
+        return 'invalid traffic evidence roles'
+    if (not isinstance(availability,dict) or availability.get('schema_version')!=1
+            or type(availability.get('actors_usable')) is not bool):
+        return 'invalid traffic availability contract'
+    usable = availability['actors_usable']
+    if usable != (following.get('status') in ('candidate','no_candidate_unproven_coverage')):
+        return 'incoherent traffic actor availability'
+    if usable and (availability.get('buffers_present') is not True
+            or availability.get('stable_read') is not True
+            or not 0 < number(availability.get('receiver_time'),0.,1e12) <= value['computed_at']
+            or value['expires_at'] > availability['receiver_time']+LEASE_S):
+        return 'incoherent traffic receiver capture'
+    if not usable and number(value['traffic_brake']) > 0:
+        return 'traffic braking lacks usable actor evidence'
+    light = value.get('light')
+    control = signal.get('candidate') if signal.get('valid') is True else signal.get('stop_candidate')
+    if number(value['light_brake']) > 0 and (not isinstance(light,dict) or light!=control):
+        return 'signal braking lacks qualified control evidence'
+    if required and not usable and not isinstance(control,dict) and not signal_approach_required(value):
+        return 'traffic actor evidence unavailable: ' + str(following.get('status') or 'missing')
+    return ''
 
 
 def choose(throttle, requests, *, drive_source="cruise"):
@@ -410,6 +781,17 @@ def finalize(state, truck, throttle, brake, decision, binding):
                    expires_at=decision.get("expires_at", float("inf")))
     # Manager.dict assigns this complete dictionary as one value. Scalars are
     # compatibility/UI mirrors; the production Engine never mixes them.
+    observed = truck.get('_control_observation') or {}
+    trace = decision.get('producer_trace')
+    if isinstance(trace, dict):
+        value['producer_trace'] = dict(trace, truck=dict(
+            sdk_frame_us=truck.get('sdkFrameTimeUs'), observation_timestamp=observed.get('observed_at'),
+            observation_valid=observed.get('valid'), gear=truck.get('gear'), speed_mps=truck.get('speed')),
+            decision_sequence=decision.get('diagnostic_sequence'))
+        eco = decision.get('eco_observation')
+        if isinstance(eco,dict):
+            from core.navigation.longitudinal_diagnostics import bounded_input
+            value['producer_trace']['eco'] = bounded_input(eco)
     state.set(COMMAND_KEY, value)
     return value
 
@@ -425,6 +807,12 @@ def refresh_handoff(state, truck, value, binding, reason):
     now = time.monotonic()
     if reason.partition(': ')[0] in ('acc', 'policy', 'traffic'):
         reason = reason.partition(': ')[2]
+    if reason == 'longitudinal initialization pending':
+        request = initialization_request(state, binding, now)
+        if (request and not vehicle_control_observation_rejection(state, truck, now)
+                and truck.get('gear', -1) >= 0 and truck.get('speed', -1.) >= -.10):
+            return request
+        return None
     if (reason not in ('longitudinal decision needs refresh',
                        'longitudinal observation is stale or incoherent',
                        'longitudinal input lease expired before write')
@@ -444,7 +832,8 @@ def refresh_handoff(state, truck, value, binding, reason):
         same_request = (isinstance(current, dict)
             and tuple(current.get('context', ())) == tuple(binding))
         if source == 'curve':
-            fresh = curve_input(state, binding=binding)
+            fresh = curve_input(state, binding=binding,
+                handoff_deadline=expiry if now <= expiry else None)
         elif source == 'route_projection':
             fresh = projection_input(state, binding=binding)
         elif source in ('road', 'traffic'):
@@ -486,7 +875,9 @@ def refresh_handoff(state, truck, value, binding, reason):
         else:
             return None
         newer = fresh and fresh['expires_at'] > expiry and fresh['expires_at']-now >= HANDOFF_RESERVE_S
-        expiring = fresh and fresh['expires_at'] == expiry and now <= expiry
+        expiring = (fresh and fresh['expires_at'] == expiry and now <= expiry
+            and (source != 'curve' or (fresh['sdk_frame_us'] == basis.get('sdk_frame_us')
+                and fresh['observation_timestamp'] == basis.get('observation_timestamp'))))
         if not (newer or expiring or same_request and now <= current['expires_at']):
             return None
     except (KeyError, TypeError, ValueError, OverflowError):
@@ -652,7 +1043,10 @@ def _engine_decision(state, truck, now=None, *, diagnostic=None, rejection_info=
     # Engine-owned traffic floors bypass a slow/unavailable Autopilot tick.
     # Unknown traffic is not free-space evidence. An unavailable legacy sensor
     # supplies no new brake request; the prior command still has its short lease.
-    traffic, _ = read(state, "traffic", now, binding=binding, diagnostic=diagnostic)
+    traffic, traffic_reason = read(state, "traffic", now, binding=binding, diagnostic=diagnostic,
+        rejection_info=rejection_info)
+    if traffic_reason:
+        return reject(traffic_reason)
     current_acc, acc_reason = read(state, "acc", now, binding=binding,
         required=bool(state.get("longitudinal_acc_active")), diagnostic=diagnostic,
         rejection_info=rejection_info)
@@ -668,22 +1062,43 @@ def _engine_decision(state, truck, now=None, *, diagnostic=None, rejection_info=
     if acc_reason or policy_reason:
         return reject(acc_reason or policy_reason)
     following = traffic.get('following') if traffic else None
+    observed_lead_departure = False
     if current_acc and current_acc.get('following_required') is True:
         # Target loss is not clear-road evidence, including between ACC ticks.
         # The old candidate cannot outlive its source's original short lease.
-        if not isinstance(following, dict) or following.get('status') != 'candidate':
+        from core.acc_following import observed_departure
+        candidate_present = isinstance(following, dict) and following.get('status') == 'candidate'
+        observed_lead_departure = observed_departure(
+            following, current_acc.get('following_target_id'), decision_time())
+        if not candidate_present and not observed_lead_departure:
             result = reject('ACC target unavailable or unconfirmed departure', traffic)
             if rejection_info is not None:
                 rejection_info['following_target_id'] = current_acc.get('following_target_id')
                 rejection_info['following_status'] = following.get('status') if isinstance(following, dict) else None
                 rejection_info['following_confirmed'] = current_acc.get('following_confirmed')
             return result
-        try:
-            cap = number(following['speed_cap_mps'], 0., 140.)
-            if float(truck['speed']) > cap:
-                throttle = 0.
-        except (KeyError, TypeError, ValueError, OverflowError):
-            return reject('invalid ACC following constraint', traffic)
+        if candidate_present:
+            try:
+                cap = number(following['speed_cap_mps'], 0., 140.)
+                if float(truck['speed']) > cap:
+                    throttle = 0.
+            except (KeyError, TypeError, ValueError, OverflowError):
+                return reject('invalid ACC following constraint', traffic)
+        else:
+            # The new Traffic receipt can precede ACC's next independent tick.
+            # It has no following cap; do not fabricate one or apply old drive.
+            # Current braking/emergency floors remain effective below.
+            throttle = 0.
+    if traffic:
+        approach_cap=signal_approach_speed_limit(traffic,float(truck['speed']))
+        qualified = signal_speed_control(traffic, float(truck['speed']))
+        if qualified is not None:
+            approach_cap = min(qualified['cap_ms'], approach_cap) if approach_cap is not None else qualified['cap_ms']
+        if approach_cap is not None and float(truck['speed'])>approach_cap:
+            throttle=0.  # Fresh lower ceiling also wins between producer ticks.
+    destination = destination_stop_control(state, truck)
+    if destination and float(truck['speed']) > destination['cap_ms']:
+        throttle = 0.
     requests = [(value.get("decision_source", "autopilot"),
                  "emergency" if value.get("emergency") else "acc", brake)]
     pending_service = False
@@ -717,10 +1132,12 @@ def _engine_decision(state, truck, now=None, *, diagnostic=None, rejection_info=
         result = choose(throttle, requests, drive_source=value.get("decision_source", "autopilot"))
     except (KeyError, TypeError, ValueError, OverflowError):
         return reject("invalid longitudinal safety demand")
+    if result['source'] == value['decision_source'] and not result['emergency']:
+        result['reason'] = value['reason']  # preserve the selected producer's cause
     if binding != context(state):
         return reject("longitudinal identity changed during arbitration", value, context(state))
     dependencies = [value]
-    if traffic_required(traffic):
+    if traffic_required(traffic) or observed_lead_departure:
         dependencies.append(traffic)
     if current_acc and (current_acc['brake'] > 0 or current_acc['throttle'] == 0):
         dependencies.append(current_acc)
@@ -738,9 +1155,19 @@ def _engine_decision(state, truck, now=None, *, diagnostic=None, rejection_info=
         result.update(source=pending_source, reason="service brake pending autopilot ramp")
     elif pending_source == "acc_coast" and result["brake"] == 0 and not result["emergency"]:
         result.update(source="acc", reason="current ACC coast request")
+    if observed_lead_departure and not candidate_present and result['brake'] == 0 and not result['emergency']:
+        result.update(source='acc', reason='observed lead departure; awaiting current ACC decision')
     ceiling, _ = speed_ceiling(state, binding=binding, diagnostic=diagnostic)
     if ceiling is not None and float(truck.get("speed", 0.)) > ceiling and result["throttle"] > 0:
         result.update(throttle=0., source="speed_constraint", reason="speed ceiling coast")
+    phase = ((traffic or {}).get('light') or {}).get('phase_plan') or {}
+    if phase.get('status') == 'green_dilemma' and not result['emergency'] and result['brake'] == 0:
+        # The current green does not have a demonstrated clearance reserve,
+        # while the planning stop bound is already exhausted. Do not add drive
+        # or invent a future green. Existing red/emergency demands still win;
+        # this explicit coast is not certification of physical stop feasibility.
+        result.update(throttle=0., source='traffic_signal_phase',
+                      reason='current green planning dilemma; coast without clearance proof')
     # Recheck the SAME consumed snapshots after all IPC work. This also rejects
     # a decision that expires in transit instead of returning it as actionable.
     checked_at = decision_time()
@@ -749,7 +1176,7 @@ def _engine_decision(state, truck, now=None, *, diagnostic=None, rejection_info=
     if not reason:
         reason = rejection(value, binding, checked_at)
     if not reason:
-        for source, consumed in (("traffic", traffic if traffic_required(traffic) else None),
+        for source, consumed in (("traffic", traffic if traffic_required(traffic) or observed_lead_departure else None),
                                  ("acc", current_acc), ("policy", policy)):
             if consumed is not None:
                 failure = rejection(consumed, binding, checked_at)
@@ -768,21 +1195,30 @@ def _engine_decision(state, truck, now=None, *, diagnostic=None, rejection_info=
                 'observation_timestamp', 'traffic_brake', 'following', 'brake_basis')},
             source=value['decision_source'], source_observation_timestamp=value['observation_timestamp']),
             limit=8192)[0]
-    if result['brake'] > 0:
+    if result['brake'] > 0 or traffic_required(traffic) or destination:
         # Runtime stop witness, separate from the lossy diagnostic byte budget.
         # Only fixed scalar fields from the SAME consumed packets are retained;
         # no actor arrays, display geometry or later scalar IPC reads. A passive
         # journal may omit oversized data, but cannot erase the reason required
         # to establish continuous service braking in the physical control path.
+        # Keep a recovered same-head observation even when its moving approach
+        # profile requests zero brake. Engine's already acknowledged chain must
+        # see that receipt to acquire clearance or release below the envelope.
         stop = dict(
             source=result['source'], reason=result['reason'], brake=result['brake'],
             traffic=traffic and {k: traffic.get(k) for k in ('sdk_frame_us',
                 'observation_timestamp', 'traffic_brake', 'light_brake')},
             acc=current_acc and {k: current_acc.get(k) for k in ('sdk_frame_us',
-                'observation_timestamp', 'brake', 'following_status')},
+                'observation_timestamp', 'brake', 'following_status', 'signal_stop_control',
+                'signal_brake_selected')},
             policy=policy and {k: policy.get(k) for k in ('sdk_frame_us',
                 'observation_timestamp', 'brake', 'reason')},
             source_observation_timestamp=value['observation_timestamp'])
+        if destination:
+            stop['destination'] = {k: destination[k] for k in
+                ('distance_m', 'cap_ms', 'terminal', 'target_kind', 'stop_line_verified')}
+            stop['destination_brake_selected'] = bool(current_acc and
+                current_acc.get('destination_brake_selected') is True)
         # Keep the original producer receipt without duplicating route identity
         # or display fields; the command envelope already binds that identity.
         signal = (traffic or {}).get('signal')
@@ -837,7 +1273,7 @@ def projection_input(state, *, binding=None, debug=None):
     return result
 
 
-def curve_input(state, *, binding=None):
+def curve_input(state, *, binding=None, handoff_deadline=None):
     """Read curvature from the same immutable, identified Map calculation.
 
     No scalar pairing and no new observation time for an old curve profile.
@@ -864,7 +1300,21 @@ def curve_input(state, *, binding=None):
         distance = number(profile["distance_m"], 0., 1e12)
     except (KeyError, TypeError, ValueError, OverflowError):
         return None
-    if radius <= 0 or rejection(candidate, context(state), time.monotonic()):
+    checked_at = time.monotonic()
+    failure = rejection(candidate, context(state), checked_at)
+    # A zero-drive transition may have begun on still-valid evidence and lose
+    # the last few milliseconds during its own RPC. Only the EXACT leaf of
+    # that deadline may witness the transition, within the existing 100 ms
+    # bound. It is never returned to the planner as an executable constraint
+    # and never renews an observation, deadline or propulsion command.
+    transition_leaf = (handoff_deadline is not None
+        and failure == 'longitudinal observation is stale or incoherent'
+        and candidate['expires_at'] == handoff_deadline
+        and 0 < candidate['observation_timestamp'] <= candidate['computed_at'] <= checked_at
+        and handoff_deadline < checked_at <= handoff_deadline+HANDOFF_WAIT_S
+        and type(candidate['sdk_frame_us']) is int and candidate['sdk_frame_us'] > 0
+        and tuple(candidate['context']) == tuple(context(state)))
+    if radius <= 0 or failure and not transition_leaf:
         return None
     result = dict(candidate, source='curve', radius_m=radius, distance_m=distance)
     result['deadline_basis'] = dict(source='curve', kind='spatial_observation',

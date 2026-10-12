@@ -7,13 +7,15 @@ publisher freshness. Only lower speed demands are generated here, never pedals.
 import bisect
 import math
 import struct
+import hashlib
 
-from core.sdk.ets2la_data import _TRAFFIC_FMT, _PARKED_FMT, _yaw
+from core.sdk.ets2la_data import _TRAFFIC_FMT, _PARKED_FMT, _TRAFFIC_SIZE, _PARKED_SIZE, _yaw
 
 MIN_GAP_M = 12.
 HEADWAY_S = 2.
 HORIZON_M = 120.
 LATERAL_GATE_M = 1.2  # centreline relevance, NOT a physical corridor width
+PROTECTIVE_REFERENCE_GATE_M = 2.6  # existing legacy caution band, NOT lane ownership
 HEIGHT_GATE_M = 1.5  # uncertain chassis/path origins, NOT deck certification
 RETENTION_M = 2.
 
@@ -33,9 +35,9 @@ def observation(capture, now):
         result['status'] = 'changing_buffers'
         return result
     try:
-        for source, data, stride in (
-                ('moving', struct.unpack(_TRAFFIC_FMT, capture.moving), 46),
-                ('parked', struct.unpack(_PARKED_FMT, capture.parked), 12)):
+        for source, data, stride, raw, record_size in (
+                ('moving', struct.unpack(_TRAFFIC_FMT, capture.moving), 46, capture.moving, _TRAFFIC_SIZE//40),
+                ('parked', struct.unpack(_PARKED_FMT, capture.parked), 12, capture.parked, _PARKED_SIZE//40)):
             for i in range(40):
                 r = data[i*stride:(i+1)*stride]
                 if r[0] == 0 and r[2] == 0:
@@ -44,21 +46,64 @@ def observation(capture, now):
                 if not all(math.isfinite(v) for v in r[:12]) or not .9 <= sum(v*v for v in q) <= 1.1:
                     result['status'] = 'invalid_actor'
                     return result
+                bodies = [dict(x=r[0], y=r[1], z=r[2], yaw=_yaw(*q), dimensions_whl=tuple(r[7:10]))]
+                count = int(r[12]) if source == 'moving' else 0
+                if not 0 <= count <= 3:
+                    result['status'] = 'invalid_actor'
+                    return result
+                for j in range(count):
+                    body = r[16+j*10:26+j*10]
+                    if (not all(math.isfinite(v) for v in body)
+                            or not .9 <= sum(v*v for v in body[3:7]) <= 1.1):
+                        result['status'] = 'invalid_actor'
+                        return result
+                    bodies.append(dict(x=body[0], y=body[1], z=body[2], yaw=_yaw(*body[3:7]),
+                                       dimensions_whl=tuple(body[7:10])))
                 result['actors'].append(dict(id=int(r[13] if source == 'moving' else r[10]),
                     x=r[0], y=r[1], z=r[2], yaw=_yaw(*q),
                     speed=r[10] if source == 'moving' else 0.,
                     speed_source='buffer' if source == 'moving' else 'parked_classification',
-                    dimensions_whl=tuple(r[7:10]), source=source))
+                    dimensions_whl=tuple(r[7:10]), source=source, slot=i, bodies=bodies,
+                    record_fingerprint=hashlib.sha256(raw[i*record_size:(i+1)*record_size]).hexdigest()))
     except (ValueError, struct.error):
         result['status'] = 'invalid_buffer'
         return result
-    ids = [a['id'] for a in result['actors']]
+    identity = actor_identity(result['actors'])
+    result['actor_identity'] = identity
     # Moving/parked overlap is ambiguous, not resolved by list order.
-    if len(ids) != len(set(ids)):
+    if identity['missing_count'] or identity['duplicate_count']:
         result['status'] = 'ambiguous_actor_id'
         return result
-    result['status'] = 'observed' if ids else 'empty_unproven_coverage'
+    result['status'] = 'observed' if result['actors'] else 'empty_unproven_coverage'
     return result
+
+
+def actor_identity(actors):
+    """Bounded diagnosis, never guessed IDs or content-based deduplication.
+
+    The native ABI carries a signed short allocated by a pointer map. It does
+    not carry the pointer or a cross-buffer generation. Equal values in two
+    slots therefore cannot prove one source object, even if poses match.
+    """
+    seen, missing, duplicates, examples = {}, 0, 0, []
+    for actor in actors:
+        aid = actor.get('id')
+        invalid = type(aid) is not int or not -32768 <= aid <= 32767 or aid in (0,-1)
+        previous = seen.get(aid) if not invalid else None
+        if invalid: missing += 1
+        elif previous is not None: duplicates += 1
+        else: seen[aid] = actor
+        if (invalid or previous is not None) and len(examples) < 4:
+            examples.append(dict(id=aid, source=actor.get('source'), slot=actor.get('slot'),
+                prior_source=previous.get('source') if previous else None,
+                prior_slot=previous.get('slot') if previous else None,
+                position_xyz=[actor.get(k) for k in ('x','y','z')], yaw=actor.get('yaw'),
+                prior_position_xyz=[previous.get(k) for k in ('x','y','z')] if previous else None,
+                same_source_record=False,
+                equal_decoded_values=(all(actor.get(k)==previous.get(k) for k in
+                    ('x','y','z','yaw','speed','dimensions_whl','source')) if previous else None)))
+    return dict(missing_count=missing, duplicate_count=duplicates, examples=examples,
+        omitted_examples=max(0,missing+duplicates-len(examples)))
 
 
 class RouteLeadSelector:
@@ -69,9 +114,13 @@ class RouteLeadSelector:
         self.arcs = ()
         self.edges = ()
         self.target_id = None
+        self._last_target_observation = None
+        self._departure_observation = None
 
     def reset(self):
         self.target_id = None
+        self._last_target_observation = None
+        self._departure_observation = None
 
     def prepare(self, points, binding):
         if binding == self.binding:
@@ -93,7 +142,7 @@ class RouteLeadSelector:
             arcs.append(arcs[-1]+length)
         self.points, self.arcs, self.edges, self.binding = pts, tuple(arcs), tuple(edges), binding
 
-    def _project(self, actor, low, high):
+    def _project(self, actor, low, high, *, aligned=True):
         x, y, z, yaw = (float(actor[k]) for k in ('x', 'y', 'z', 'yaw'))
         if not all(math.isfinite(v) for v in (x, y, z, yaw)):
             return None
@@ -107,7 +156,7 @@ class RouteLeadSelector:
         for i in range(first, last):
             ax, ay, az, dx, dy, dz, length, inverse, inverse2, start = self.edges[i]
             alignment = (forward_x*dx+forward_z*dz)*inverse
-            if alignment < minimum_alignment:
+            if aligned and alignment < minimum_alignment:
                 continue
             offset_x, offset_z = x-ax, z-az
             raw_t = (offset_x*dx+offset_z*dz)*inverse2
@@ -127,7 +176,55 @@ class RouteLeadSelector:
             return None  # repeated loop/crossing occurrence cannot be resolved
         return best
 
-    def select(self, actors, truck, progress):
+    def _departure(self, actors, ego, receiver_time):
+        previous = self._last_target_observation
+        if previous is None or receiver_time is None:
+            return None
+        old, at = previous
+        if not 0 < receiver_time-at <= .5:
+            return None
+        actor = next((a for a in actors if a['id'] == old['id']), None)
+        if (actor is None or actor.get('source') != old.get('source')
+                or actor.get('slot') != old.get('slot')
+                or not actor.get('record_fingerprint')
+                or actor['record_fingerprint'] == old.get('record_fingerprint')):
+            return None  # absent/unchanged/reassigned records are not departure
+        speed = actor.get('speed')
+        if not isinstance(speed, (int, float)) or not math.isfinite(speed) or not 0 <= speed <= 70.:
+            return None  # the same kinematics contract as ordinary candidates
+        cached = self._departure_observation
+        if cached and cached['record'] == actor['record_fingerprint']:
+            # Re-reading this changed record cannot renew its first witnessed
+            # receiver time. There is still no native producer timestamp.
+            return cached if 0 <= receiver_time-cached['receiver_time'] <= .5 else None
+        clearances = []
+        for body in actor.get('bodies', ()):
+            dims = body.get('dimensions_whl') or ()
+            if len(dims) != 3 or not all(math.isfinite(v) and v > 0 for v in dims):
+                return None
+            projected = self._project(body, max(0., ego[1]-20.), ego[1]+HORIZON_M, aligned=False)
+            if projected is None:
+                return None  # outside observed route range / ambiguous occurrence
+            # Native TrafficProcessor packs get_center_coords(placement, aabox)
+            # and abs(end-start) dimensions for tractor and trailers. The raw
+            # box's half-diagonal bounds any heading; its physical accuracy and
+            # traffic producer freshness still are not certified by this ABI.
+            clearances.append(projected[0]-.5*math.hypot(dims[0],dims[2]))
+        if not clearances or min(clearances) <= PROTECTIVE_REFERENCE_GATE_M:
+            return None
+        proof = dict(schema_version=1, target_id=str(old['id']),
+            status='observed_body_outside_route', confirmed=False,
+            observation_kind='changed_receiver_record_not_producer_timestamp',
+            previous_receiver_time=at, receiver_time=receiver_time,
+            previous_record=old['record_fingerprint'], record=actor['record_fingerprint'],
+            previous_position_xyz=[old[k] for k in ('x','y','z')],
+            position_xyz=[actor[k] for k in ('x','y','z')],
+            minimum_body_reference_clearance_m=min(clearances),
+            source=actor['source'], slot=actor['slot'], coverage_confirmed=False)
+        self._departure_observation = proof
+        return proof
+
+    def select(self, actors, truck, progress, *, receiver_time=None):
         if not math.isfinite(progress) or not 0 <= progress <= self.arcs[-1]:
             return dict(status='invalid_route_progress', confirmed=False)
         if len(actors) > 80:
@@ -136,25 +233,36 @@ class RouteLeadSelector:
         if ego is None or ego[0] > LATERAL_GATE_M:
             return dict(status='route_localization_unavailable', confirmed=False)
         candidates = []
-        ids = [a.get('id') for a in actors]
-        if any(i is None for i in ids) or len(ids) != len(set(ids)):
-            return dict(status='ambiguous_actor_id', confirmed=False)
+        protective = []
+        identity = actor_identity(actors)
+        if identity['missing_count'] or identity['duplicate_count']:
+            return dict(status='ambiguous_actor_id', confirmed=False, actor_identity=identity)
+        departure = self._departure(actors, ego, receiver_time)
         for actor in actors:
             try:
                 speed = float(actor['speed'])
                 if not math.isfinite(speed) or not 0 <= speed <= 70.:
                     continue
                 projected = self._project(actor, max(0., ego[1]-5.), ego[1]+HORIZON_M)
-                if projected is None or projected[0] > LATERAL_GATE_M:
+                if projected is None or projected[0] > PROTECTIVE_REFERENCE_GATE_M:
                     continue
                 gap = projected[1]-ego[1]
                 if gap < 0.:
                     continue
-                candidates.append((gap, str(actor['id']), speed))
+                if projected[0] <= LATERAL_GATE_M:
+                    candidates.append((gap, str(actor['id']), speed))
+                else:
+                    protective.append((gap,str(actor['id']),speed))
             except (KeyError, TypeError, ValueError, OverflowError):
                 continue
+        caution = [following_demand(c[0],c[2],float(truck['speed']),include_brake=True) for c in protective]
+        caution_brake = max((c['protective_brake'] for c in caution),default=0.)
+        caution_fields = dict(unassigned_protective_brake=caution_brake,
+            protective_target_id=min(protective)[1] if protective else None,
+            departure=departure)
         if not candidates:
-            return dict(status='no_candidate_unproven_coverage', confirmed=False)
+            return dict(status='no_candidate_unproven_coverage', confirmed=False,
+                protective_brake=caution_brake, emergency=any(c['emergency'] for c in caution),**caution_fields)
         candidates.sort()
         nearest = candidates[0]
         retained = next((c for c in candidates if c[1] == self.target_id), None)
@@ -162,12 +270,18 @@ class RouteLeadSelector:
         # Retention changes attribution only: all relevant candidates always cap
         # speed and emergency response, so a closer cut-in is never hidden.
         self.target_id = selected[1]
-        constraints = [following_demand(c[0], c[2], float(truck['speed'])) for c in candidates]
+        if receiver_time is not None:
+            actor = next(a for a in actors if str(a['id']) == selected[1])
+            self._last_target_observation = (dict(actor), receiver_time)
+            self._departure_observation = None
+        constraints = [following_demand(c[0], c[2], float(truck['speed']),include_brake=True) for c in candidates]
         return dict(status='candidate', target_id=selected[1], gap_m=selected[0],
                     speed_mps=selected[2], confirmed=False,
                     gap_kind='route_reference_points',
                     speed_cap_mps=min(c['speed_cap_mps'] for c in constraints),
-                    emergency=any(c['emergency'] for c in constraints),
+                    emergency=any(c['emergency'] for c in constraints+caution),
+                    protective_brake=max([c['protective_brake'] for c in constraints]+[caution_brake]),
+                    **caution_fields,
                     reason='projected receiver observation; publisher freshness and lane membership unproven')
 
     def crossing(self, actors, truck, progress):
@@ -193,50 +307,56 @@ class RouteLeadSelector:
             last = min(len(self.edges), bisect.bisect_left(self.arcs, ego[1]+HORIZON_M)+1)
             if last-first > 512:
                 raise ValueError('unsupported edge count')
-            ids = [a.get('id') for a in actors]
-            if any(i is None for i in ids) or len(set(ids)) != len(ids):
+            identity = actor_identity(actors)
+            if identity['missing_count'] or identity['duplicate_count']:
                 raise ValueError('ambiguous actor identity')
-            for actor in actors:
-                x,y,z,yaw,v = (float(actor[k]) for k in ('x','y','z','yaw','speed'))
-                if not all(math.isfinite(n) for n in (x,y,z,yaw,v)) or not 0 <= v <= 70.:
-                    raise ValueError('invalid actor kinematics')
-                if v <= .1:
-                    continue  # standing actors remain the lead/obstacle path
-                lead = self._project(actor,max(0.,ego[1]-5.),ego[1]+HORIZON_M)
-                if lead is not None and lead[0] <= LATERAL_GATE_M:
-                    continue  # directed same-lane lead already uses ACC
-                vx,vz = -math.sin(yaw)*v, -math.cos(yaw)*v
-                candidates = []
-                for i in range(first,last):
-                    ax,ay,az,dx,dy,dz,length,inv,_,start = self.edges[i]
-                    den = vx*dz-vz*dx
-                    if abs(den)*inv/v < math.sin(math.radians(20.)):
-                        continue  # parallel/oncoming reference is not crossing
-                    ox,oz = ax-x,az-z
-                    t = (ox*dz-oz*dx)/den
-                    u = (ox*vz-oz*vx)/den
-                    distance = start+u*length-ego[1]
-                    if not (0 <= t <= 8. and 0 <= u <= 1. and 0 <= distance <= HORIZON_M
-                            and abs(y-ay-u*dy) <= HEIGHT_GATE_M):
-                        continue
-                    earliest = (math.sqrt(speed*speed+4.*distance)-speed)/2.
-                    latest = distance/speed if speed > .1 else float('inf')
-                    # The immutable buffer dimensions remain explicitly raw;
-                    # no cab/trailer outline or bumper distance is invented.
-                    dims = actor.get('dimensions_whl')
-                    body_time = (float(dims[2])/(2*v) if dims and len(dims)==3
-                        and all(math.isfinite(float(n)) and n > 0 for n in dims) else 0.)
-                    if earliest > t+HEADWAY_S+body_time or latest < t-HEADWAY_S-body_time:
-                        continue
-                    urgency = min(t,earliest)
-                    brake = 1. if urgency <= 1. else ((5.-min(5.,urgency))/4.)**2
-                    candidates.append(dict(id=actor['id'], route_progress_m=start+u*length,
-                        distance_m=distance, actor_arrival_s=t, ego_arrival_earliest_s=earliest,
-                        ego_arrival_latest_s=latest if math.isfinite(latest) else None,
-                        reserve_s=HEADWAY_S, assumed_ego_acceleration_mps2=2.,
-                        dimensions_whl=dims, brake=brake))
-                if candidates:
-                    result['conflicts'].append(max(candidates,key=lambda c:c['brake']))
+            for original in actors:
+                for body_index, body in enumerate(original.get('bodies') or [original]):
+                    actor = dict(original, **body)
+                    x,y,z,yaw,v = (float(actor[k]) for k in ('x','y','z','yaw','speed'))
+                    if not all(math.isfinite(n) for n in (x,y,z,yaw,v)) or not 0 <= v <= 70.:
+                        raise ValueError('invalid actor kinematics')
+                    if v <= .1:
+                        continue  # standing actors remain the lead/obstacle path
+                    lead = self._project(actor,max(0.,ego[1]-5.),ego[1]+HORIZON_M)
+                    if lead is not None and lead[0] <= LATERAL_GATE_M:
+                        continue  # directed same-lane lead already uses ACC
+                    vx,vz = -math.sin(yaw)*v, -math.cos(yaw)*v
+                    candidates = []
+                    for i in range(first,last):
+                        ax,ay,az,dx,dy,dz,length,inv,_,start = self.edges[i]
+                        den = vx*dz-vz*dx
+                        if abs(den)*inv/v < math.sin(math.radians(20.)):
+                            continue  # parallel/oncoming reference is not crossing
+                        ox,oz = ax-x,az-z
+                        t = (ox*dz-oz*dx)/den
+                        u = (ox*vz-oz*vx)/den
+                        distance = start+u*length-ego[1]
+                        if not (0 <= t <= 8. and 0 <= u <= 1. and 0 <= distance <= HORIZON_M
+                                and abs(y-ay-u*dy) <= HEIGHT_GATE_M):
+                            continue
+                        earliest = (math.sqrt(speed*speed+4.*distance)-speed)/2.
+                        latest = distance/speed if speed > .1 else float('inf')
+                        # The immutable buffer dimensions remain explicitly raw;
+                        # no cab/trailer outline or bumper distance is invented.
+                        dims = actor.get('dimensions_whl')
+                        body_time = (float(dims[2])/(2*v) if dims and len(dims)==3
+                            and all(math.isfinite(float(n)) and n > 0 for n in dims) else 0.)
+                        if earliest > t+HEADWAY_S+body_time or latest < t-HEADWAY_S-body_time:
+                            continue
+                        urgency = min(t,earliest)
+                        brake = 1. if urgency <= 1. else ((5.-min(5.,urgency))/4.)**2
+                        candidates.append(dict(id=actor['id'], route_progress_m=start+u*length,
+                            distance_m=distance, actor_arrival_s=t, ego_arrival_earliest_s=earliest,
+                            ego_arrival_latest_s=latest if math.isfinite(latest) else None,
+                            reserve_s=HEADWAY_S, assumed_ego_acceleration_mps2=2.,
+                            dimensions_whl=dims, brake=brake))
+                    if candidates:
+                        conflict = max(candidates,key=lambda c:c['brake'])
+                        conflict.update(body_index=body_index,
+                            motion_model='constant_tractor_speed_raw_body_heading',
+                            ego_body_envelope_confirmed=False)
+                        result['conflicts'].append(conflict)
             result['conflicts'].sort(key=lambda c:(c['actor_arrival_s'],str(c['id'])))
             result['brake'] = max((c['brake'] for c in result['conflicts']),default=0.)
             if result['conflicts']:
@@ -246,7 +366,29 @@ class RouteLeadSelector:
         return result
 
 
-def following_demand(gap_m, lead_speed_mps, ego_speed_mps):
+def observed_departure(following, target_id, now):
+    """Release only the acquired lead dependency, never certify an empty road.
+
+    Same contract as protective candidates: changed, uniquely decoded receiver
+    records. Producer freshness/coverage are still unproven. Parent packet must
+    already pass identity, vehicle and original lease checks in read().
+    """
+    proof = following.get('departure') if isinstance(following, dict) else None
+    try:
+        return bool(isinstance(proof,dict) and proof.get('schema_version') == 1
+            and proof.get('status') == 'observed_body_outside_route'
+            and proof.get('target_id') == target_id and target_id
+            and proof.get('record') and proof.get('previous_record')
+            and proof['record'] != proof['previous_record']
+            and 0 < proof['receiver_time']-proof['previous_receiver_time'] <= .5
+            and 0 <= now-proof['receiver_time'] <= .5
+            and math.isfinite(proof['minimum_body_reference_clearance_m'])
+            and proof['minimum_body_reference_clearance_m'] > PROTECTIVE_REFERENCE_GATE_M)
+    except (KeyError, TypeError, ValueError, OverflowError):
+        return False
+
+
+def following_demand(gap_m, lead_speed_mps, ego_speed_mps, *, include_brake=False):
     """Time-gap speed constraint for the existing PID, not another controller."""
     if not all(math.isfinite(v) and v >= 0 for v in (gap_m, lead_speed_mps, ego_speed_mps)):
         raise ValueError('invalid following kinematics')
@@ -263,4 +405,6 @@ def following_demand(gap_m, lead_speed_mps, ego_speed_mps):
     else:
         legacy_demand = max(0., 1.-safety_gap/40.)
     emergency = legacy_demand > .7
-    return dict(speed_cap_mps=cap, desired_gap_m=desired, emergency=emergency)
+    result=dict(speed_cap_mps=cap, desired_gap_m=desired, emergency=emergency)
+    if include_brake:result['protective_brake']=legacy_demand
+    return result

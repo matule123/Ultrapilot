@@ -34,7 +34,8 @@ MIN_LANE_TRAJECTORY_CONFIDENCE = CONFIDENCE_THRESHOLD
 # validated built trajectories (0.970-0.980). Exactly 0.72 is accepted.
 VISION_STEER_FOLLOW_BLEND = 0.72  # used only without authoritative GPS geometry
 VISION_DEADZONE = 0.03       # ignore vision lane offset noise below this
-BRAKE_RAMP_UP = 2.5          # service-pedal rise input/s, not a physical jerk bound
+from core.service_brake_hold import SERVICE_BRAKE_RISE_PER_S
+BRAKE_RAMP_UP = SERVICE_BRAKE_RISE_PER_S  # one existing service-pedal limit
 BRAKE_RAMP_DOWN = 4.0        # brake releases faster than it engages
 BRAKE_MIN_HOLD = 0.04        # below this, treat brake as zero (avoid flutter)
 THROTTLE_RAMP = 0.8          # ordinary rise input/s; withdrawal is immediate
@@ -487,7 +488,7 @@ class Plugin(BasePlugin):
     """
 
     NAME = "autopilot"
-    VERSION = "1.2.2"
+    VERSION = "1.3.4"
 
     def on_start(self):
         logging.info("Autopilot Plugin started (Phase 1 tuning).")
@@ -537,6 +538,9 @@ class Plugin(BasePlugin):
             executor.stop()
         self._export_passive_steering_timing("plugin_stop")
         self._export_steering_replay("plugin_stop")
+        writer = getattr(self,'_replay_export_writer',None)
+        if writer is not None:
+            writer.wait(5.)
         logging.info("Autopilot Plugin stopped.")
         self.enabled = False
 
@@ -615,6 +619,8 @@ class Plugin(BasePlugin):
         from core.longitudinal import read
         strict = self.sdk.shared_state.get("longitudinal_control_schema") == 1
         eco, _ = read(self.sdk.shared_state, "eco") if strict else (None, "")
+        if isinstance(getattr(self,'_longitudinal_decision',None),dict):
+            self._longitudinal_decision['eco_observation'] = eco
         if eco or (not strict and self.sdk.shared_state.get("eco_active", False)):
             alpha = float(eco["smoothing"] if eco else self.sdk.shared_state.get("eco_smoothing", 0.15))
             if not math.isfinite(alpha) or not 0.0 <= alpha <= 1.0:
@@ -645,7 +651,7 @@ class Plugin(BasePlugin):
             # request or replace the driver's explicit manual-off message.
             return
         terminal_reason = str(reason or "unknown safety reason")
-        record_control_fault(self.sdk.shared_state, "autopilot", terminal_reason)
+        fault = record_control_fault(self.sdk.shared_state, "autopilot", terminal_reason)
         reason = first_control_fault(self.sdk.shared_state, terminal_reason)
         display_reason = (
             f"jazda dopredu nebola potvrdená ({reason})"
@@ -663,6 +669,7 @@ class Plugin(BasePlugin):
                 "seq": seq,
                 "level": "WARNING",
                 "message": f"Autopilot automatically disabled: {reason}",
+                "control_intervention": fault,
             },
         })
         # File I/O is deliberately after the atomic safety transition. A slow
@@ -689,22 +696,26 @@ class Plugin(BasePlugin):
         }
 
     def _export_steering_replay(self, event, detail=""):
-        replay = getattr(self, "_steering_replay", None)
+        replay = (getattr(self,'_sealed_steering_replay',None)
+                  or getattr(self, "_steering_replay", None))
         if replay is None or len(replay) == 0:
             return None
         try:
             directory = os.path.join(app_dir(), "route-diagnostics")
             from core.control_timing import first_control_fault_record
             first = first_control_fault_record(self.sdk.shared_state)
-            path = replay.export(
-                directory, reason=event,
-                identity={**self._steering_replay_identity(),
-                          "detail": str(detail or ""),
-                          "control_intervention": first})
-            logging.info(
-                "Dense steering replay exported: samples=%d reason=%s path=%s",
-                len(replay), event, path)
-            return path
+            from core.steering_replay import AsyncReplayExporter
+            writer = getattr(self,'_replay_export_writer',None)
+            if writer is None:
+                writer = self._replay_export_writer = AsyncReplayExporter()
+            identity = {**self._steering_replay_identity(),
+                        'detail':str(detail or ''),'control_intervention':first}
+            def export():
+                path = replay.export(directory,reason=event,identity=identity)
+                logging.info('Dense steering replay exported: samples=%d reason=%s path=%s',
+                             len(replay),event,path)
+                return path
+            return writer.submit(export)
         except Exception as error:
             # Diagnostics must never change control or prevent shutdown.
             logging.warning("Dense steering replay export failed: %s", error)
@@ -719,10 +730,13 @@ class Plugin(BasePlugin):
                 capacity = 3600
         except (TypeError, ValueError, OverflowError):
             capacity = 3600 if replay is not None else None
-        path = self._export_steering_replay(event, detail)
         if capacity is not None:
             self._steering_replay = SteeringReplayBuffer(capacity)
-        return path
+        self._sealed_steering_replay = replay
+        try:
+            return self._export_steering_replay(event, detail)
+        finally:
+            self._sealed_steering_replay = None
 
     def _export_passive_steering_timing(self, event):
         trace = getattr(self, "_passive_steering_timing", None)
@@ -803,6 +817,8 @@ class Plugin(BasePlugin):
                 "map_road_type_finished_at"),
             "map_reference_finished_at": packet.get(
                 "map_reference_finished_at"),
+            "map_reference_phase_times": packet.get("map_reference_phase_times"),
+            "previous_map_tick_timing": packet.get("previous_map_tick_timing"),
             "map_calculation_started_at": packet.get(
                 "map_calculation_started_at"),
             "computed_at": packet.get("computed_at"),
@@ -881,6 +897,8 @@ class Plugin(BasePlugin):
                 "map_road_type_finished_at"),
             "map_reference_finished_at": accepted.get(
                 "map_reference_finished_at"),
+            "map_reference_phase_times": accepted.get("map_reference_phase_times"),
+            "previous_map_tick_timing": accepted.get("previous_map_tick_timing"),
             "map_calculation_started_at": accepted.get(
                 "map_calculation_started_at"),
             "map_packet_publish_started_at": accepted.get(
@@ -1039,6 +1057,7 @@ class Plugin(BasePlugin):
         from core.longitudinal import context, finalize, COMMAND_KEY
         self._longitudinal_binding = context(self.sdk.shared_state)
         self._longitudinal_decision = {"source": "autopilot", "reason": "autopilot state"}
+        self._longitudinal_diagnostic_sequence = getattr(self, '_longitudinal_diagnostic_sequence', 0)+1
         self._longitudinal_truck = {}
         self._passive_timing_input = None
         self._launch_tick = None
@@ -1046,6 +1065,7 @@ class Plugin(BasePlugin):
         try:
             self._control_tick(delta_time)
             if self.sdk.shared_state.get("autopilot_active", False):
+                self._longitudinal_decision['diagnostic_sequence'] = self._longitudinal_diagnostic_sequence
                 finalize(self.sdk.shared_state, self._longitudinal_truck,
                          self._last_throttle, self._last_brake,
                          self._longitudinal_decision, self._longitudinal_binding)
@@ -1294,7 +1314,8 @@ class Plugin(BasePlugin):
                 from core.control_timing import first_control_fault_record
                 first = first_control_fault_record(self.sdk.shared_state)
                 self._export_and_rotate_steering_replay(
-                    'automatic_disable' if first else 'manual_disable',
+                    'automatic_disable' if first else 'destination_reached'
+                    if self.sdk.shared_state.get('autopilot_control_state') == 'arrived' else 'manual_disable',
                     first['reason'] if first else '')
         if not autopilot_engaged or not was_active:
             self._reset_steering_dynamics(observed_game_steering)
@@ -1320,7 +1341,8 @@ class Plugin(BasePlugin):
         # validation. With gear 0/-1 those branches used to return first.
         arrival_pending = bool(self.sdk.shared_state.get(
             "navigation_arrival_pending", False))
-        if arrival_pending and autopilot_engaged:
+        if (arrival_pending and autopilot_engaged
+                and self.sdk.shared_state.get('longitudinal_control_schema') != 1):
             self.sdk.controller.set_throttle(0.0)
             self._last_throttle = 0.0
             self._last_steering = self._ramp_steering(0.0, dt)
@@ -1428,13 +1450,26 @@ class Plugin(BasePlugin):
         # time-limited evidence and the same rule as the physical output gate.
         ratio_reason = "forward gear is no longer confirmed"
         ratio_brake_only = False
-        if autopilot_engaged and selected_mode(
-                self.sdk.shared_state.get("ets2_transmission_mode", {}) or {},
-                self.sdk.shared_state.get("transmission_mode_preference", "auto")) == 0:
+        mode_evidence = self.sdk.shared_state.get("ets2_transmission_mode", {}) or {}
+        current_mode = selected_mode(mode_evidence,
+                self.sdk.shared_state.get("transmission_mode_preference", "auto"))
+        if (autopilot_engaged and current_mode is None
+                and (mode_evidence or self.sdk.shared_state.get('telemetry_control_schema') == 1)):
+            ratio_reason = 'transmission mode evidence unavailable: ' + str(
+                mode_evidence.get('reason') or 'mode confirmation expired or preference disagrees')
+        elif autopilot_engaged and current_mode == 0:
             _history, ratio_reason = simple_auto_forward_transition(
                 self.sdk.shared_state, truck,
                 forward_history)
             ratio_brake_only = bool(_history and _history.get('brake_only'))
+            if not ratio_reason and gear > 0:
+                # Publish only the positive ratio actually validated above.
+                # Never refresh it on zero, duplicate reads or later clocks.
+                observed, _ = vehicle_control_observation(self.sdk.shared_state, truck)
+                self.sdk.shared_state.set('simple_auto_forward_observation', {
+                    'context': _history['context'], 'sdk_frame_us': truck['sdkFrameTimeUs'],
+                    'observation_timestamp': observed['observed_at'],
+                    'gear': gear, 'speed_mps': speed})
         else:
             ratio_reason = ratio_reason if gear == 0 else ""
             if autopilot_engaged and gear == 0:
@@ -1450,6 +1485,16 @@ class Plugin(BasePlugin):
                         self._publish_control_tags(speed_kmh, False)
                         return
         if autopilot_engaged and ratio_reason:
+            observed, observation_reason = vehicle_control_observation(self.sdk.shared_state, truck)
+            record_control_fault(self.sdk.shared_state, 'autopilot', ratio_reason, details={
+                'source': 'simple_auto_ratio_gate', 'checked_at': time.monotonic(),
+                'sdk_frame_us': truck.get('sdkFrameTimeUs'), 'gear': gear, 'speed_mps': speed,
+                'vehicle_observation': {k: observed.get(k) for k in
+                    ('sdk_frame_us', 'observed_at', 'valid', 'reason')},
+                'observation_binding_reason': observation_reason,
+                'forward_history': {k: (forward_history or {}).get(k) for k in
+                    ('confirmed_frame', 'confirmed_at', 'last_frame', 'last_observed_at',
+                     'zero_deadline_at', 'phase', 'coast_only', 'brake_only')}})
             self.sdk.controller.set_throttle(0.0)
             self._last_throttle = 0.0
             self.sdk.controller.set_brake(0.0)
@@ -1523,11 +1568,12 @@ class Plugin(BasePlugin):
             acc, input_failure = read(self.sdk.shared_state, "acc", binding=self._longitudinal_binding,
                 required=bool(self.sdk.shared_state.get("longitudinal_acc_active", False)),
                 rejection_info=rejected_input)
-            traffic, _ = read(self.sdk.shared_state, "traffic", binding=self._longitudinal_binding)
+            traffic, traffic_failure = read(self.sdk.shared_state, "traffic", binding=self._longitudinal_binding,
+                rejection_info=rejected_input)
             policy, policy_failure = read(self.sdk.shared_state, "policy", binding=self._longitudinal_binding,
                 required=bool(self.sdk.shared_state.get("longitudinal_policy_active", False)),
                 rejection_info=rejected_input)
-            input_failure = input_failure or policy_failure
+            input_failure = input_failure or traffic_failure or policy_failure
             # Collision is a relay of the same traffic minimum, not another
             # independent depth/coverage sensor or a second braking controller.
             collision_brake = 0.0
@@ -1668,6 +1714,13 @@ class Plugin(BasePlugin):
             input_failure = "invalid longitudinal producer values"
             decision = {"throttle": 0., "brake": 0., "source": "invalid", "reason": input_failure}
         self._longitudinal_decision = decision
+        if strict_longitudinal and getattr(self,'_longitudinal_diagnostics',True):
+            from core.navigation.longitudinal_diagnostics import bounded_input, compact_decision, pack_journal_inputs
+            decision['producer_trace'] = pack_journal_inputs(compact_decision({
+                'context':self._longitudinal_binding,
+                'inputs': {k: bounded_input(v) for k,v in
+                           (('acc',acc),('traffic',traffic),('policy',policy),('curve',curve))},
+                'brake_requests': list(requests), 'input_failure': input_failure}))
         if ratio_brake_only:
             decision['throttle'] = 0.
         if strict_longitudinal:
@@ -1694,7 +1747,7 @@ class Plugin(BasePlugin):
                                      details=rejected_input)
                 self.sdk.shared_state.update_batch({"autopilot_control_state": "controlled_stop",
                     "autopilot_stop_epoch": self._control_failure_epoch})
-                decision.update(throttle=0., brake=.70, source="safety", reason=input_failure)
+                decision.update(throttle=0., brake=max(.70,decision['brake']), source="safety", reason=input_failure)
         self._set_brake(decision["brake"], dt)
         self._automatic_brake_stop = bool(
             autopilot_engaged and speed_kmh < 1.0

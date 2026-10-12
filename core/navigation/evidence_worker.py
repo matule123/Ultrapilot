@@ -192,6 +192,14 @@ class ProductionEvidenceWorker:
             traffic_capture, target_segment_index, self._sequence, tracking_plan)
         return True
 
+    def accepting_offer(self):
+        """No IPC or waiting: do not fetch inputs for an occupied single slot.
+
+        Map owns offer/harvest. A completed future still occupies the slot
+        until harvest validates it; offer itself repeats the guard.
+        """
+        return not self._closed and self._future is None
+
     def harvest(self, snapshot, sdk_frame_us, now):
         future = self._future
         if future is None or not future.done():

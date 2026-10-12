@@ -83,6 +83,15 @@ class PID:
             self._integral = 0.0
         self.setpoint = value
 
+    def discard_unexecuted_positive_integral(self):
+        """Client-side drive inhibition, beyond numeric output saturation.
+
+        Preserve negative memory/unwinding and derivative history. A caller
+        must actually inhibit positive drive; this does not change its output
+        or create a brake request. Ordinary cruise clients remain unchanged.
+        """
+        self._integral = min(0., self._integral)
+
     def reset(self):
         self._last_error = 0.0
         self._last_measurement = None

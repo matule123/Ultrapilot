@@ -18,6 +18,7 @@ import re
 import threading
 import time
 import uuid
+import hashlib
 
 
 SCHEMA_VERSION = 3
@@ -227,18 +228,22 @@ class SteeringReplayBuffer:
                          for row in self._execution_samples)
 
     def export(self, directory, *, reason, identity=None,
-               filename_prefix="steering-replay", sample_kind="dense_steering"):
+               filename_prefix="steering-replay", sample_kind="dense_steering", longitudinal=None,
+               maximum_output_bytes=None):
         """Write the current immutable snapshot using an atomic replacement."""
         # Copy both streams and their counters under one lock.  An execution
         # tick must not land between the copied rows and the dropped-row
         # counters recorded in the same evidence document.
         with self._lock:
-            samples = tuple(diagnostic_copy(row) for row in self._samples)
-            execution_samples = tuple(
-                diagnostic_copy(row) for row in self._execution_samples)
+            samples = tuple(self._samples)
+            execution_samples = tuple(self._execution_samples)
             sample_sequence = self._sequence
             execution_sequence = self._execution_sequence
-        if not samples:
+        # Retained rows are owned, immutable copies from append(). Copy outside
+        # the short lock so a diagnostic writer cannot stall the executor.
+        samples = tuple(diagnostic_copy(row) for row in samples)
+        execution_samples = tuple(diagnostic_copy(row) for row in execution_samples)
+        if not samples and not longitudinal:
             return None
         directory = os.path.abspath(os.fspath(directory))
         os.makedirs(directory, exist_ok=True)
@@ -267,6 +272,17 @@ class SteeringReplayBuffer:
             "samples": samples,
             "execution_samples": execution_samples,
         }
+        if longitudinal is not None:
+            from core.navigation.longitudinal_diagnostics import expand_journal
+            longitudinal = expand_journal(longitudinal)
+            longitudinal['field_capture_failures'] = sum(
+                'snapshot_status' in (e.get('source') or {}) for e in longitudinal['events'])
+            longitudinal['snapshot_incomplete'] = bool(longitudinal.get('snapshot_incomplete')
+                or longitudinal['field_capture_failures'])
+            # Exact references belong only to this sealed file, never IPC.
+            payload['longitudinal_storage'] = _intern_values(_json_value(longitudinal))
+            payload['confirmed'] = payload['runtime_authorized'] = False
+        payload['integrity'] = dict(algorithm='sha256', payload_sha256=_payload_hash(payload))
         try:
             with open(temporary, "x", encoding="utf-8") as stream:
                 json.dump(payload, stream, ensure_ascii=False,
@@ -274,6 +290,8 @@ class SteeringReplayBuffer:
                 stream.write("\n")
                 stream.flush()
                 os.fsync(stream.fileno())
+            if maximum_output_bytes is not None and os.path.getsize(temporary) > maximum_output_bytes:
+                raise ValueError('SIGNIFICANT_EVENT_EXPORT_DISK_QUOTA')
             os.replace(temporary, path)
         except Exception:
             try:
@@ -282,3 +300,132 @@ class SteeringReplayBuffer:
                 pass
             raise
         return path
+
+
+def _payload_hash(payload):
+    value = {k:v for k,v in payload.items() if k != 'integrity'}
+    digest=hashlib.sha256()
+    for piece in json.JSONEncoder(ensure_ascii=False,sort_keys=True,
+            separators=(',',':'),allow_nan=False).iterencode(value):
+        digest.update(piece.encode('utf-8'))
+    return digest.hexdigest()
+
+
+def _intern_values(value):
+    values, indices = [], {}
+    def encode(item):
+        if not isinstance(item, (dict,list)):
+            return item
+        node = {k:encode(v) for k,v in item.items()} if isinstance(item,dict) else [encode(v) for v in item]
+        key = json.dumps(node,sort_keys=True,separators=(',',':'),ensure_ascii=False)
+        if key not in indices:
+            indices[key] = len(values)
+            values.append(node)
+        return {'$immutable':indices[key]}
+    root = encode(value)
+    result=dict(schema_version=1,root=root,values=values)
+    encode=None
+    return result
+
+
+def _expand_values(storage):
+    if storage.get('schema_version') != 1 or not isinstance(storage.get('values'),list):
+        raise ValueError('INVALID_IMMUTABLE_REPLAY_SCHEMA')
+    values = storage['values']
+    def expand(item, bound):
+        if isinstance(item,dict) and '$immutable' in item:
+            index = item['$immutable']
+            if set(item) != {'$immutable'} or type(index) is not int or not 0 <= index < bound:
+                raise ValueError('INVALID_OR_CYCLIC_IMMUTABLE_REFERENCE')
+            return expand(values[index],index)
+        if isinstance(item,dict):
+            return {k:expand(v,bound) for k,v in item.items()}
+        if isinstance(item,list):
+            return [expand(v,bound) for v in item]
+        return item
+    try:
+        return expand(storage['root'],len(values))
+    finally:
+        expand=None
+
+
+def inspect_replay(path):
+    """Integrity of stored evidence, never runtime authority/game consumption."""
+    result = dict(integrity_valid=False, confirmed=False, runtime_authorized=False)
+    try:
+        with open(path,encoding='utf-8') as stream:
+            value = json.load(stream)
+        if (value.get('schema_version') != SCHEMA_VERSION or
+                value.get('integrity') != dict(algorithm='sha256',payload_sha256=_payload_hash(value))):
+            raise ValueError('REPLAY_HASH_OR_SCHEMA_MISMATCH')
+        if (value['sample_count'] != len(value['samples'])
+                or value['execution_sample_count'] != len(value['execution_samples'])):
+            raise ValueError('REPLAY_COUNT_MISMATCH')
+        if 'longitudinal_storage' in value:
+            value['longitudinal'] = _expand_values(value.pop('longitudinal_storage'))
+            events = value['longitudinal']['events']
+            seq = [e['sequence'] for e in events]
+            if seq != sorted(set(seq)):
+                raise ValueError('PEDAL_SEQUENCE_ORDER_INVALID')
+            history=value['longitudinal'].get('decision_history')
+            if history is not None:
+                if history.get('schema_version')!=1:raise ValueError('DECISION_HISTORY_SCHEMA_INVALID')
+                seen=set()
+                for stream in ('regular_samples','changes'):
+                    rows=history[stream];sequences=[r['sequence'] for r in rows]
+                    times=[r['monotonic_s'] for r in rows]
+                    if (sequences!=sorted(set(sequences)) or times!=sorted(times)
+                            or any(not isinstance(t,(int,float)) or not math.isfinite(t) for t in times)):
+                        raise ValueError('DECISION_HISTORY_ORDER_INVALID')
+                    for row in rows:
+                        if row['sequence'] in seen or row['identity_reference'] not in history['identities']:
+                            raise ValueError('DECISION_HISTORY_REFERENCE_INVALID')
+                        seen.add(row['sequence'])
+                result['history_incomplete']=history['incomplete']
+                result['history_duration_s']=history['observed_range_s']['duration']
+            incomplete = bool(value['longitudinal'].get('dropped_events')
+                              or value['longitudinal'].get('snapshot_incomplete')
+                              or history and history['incomplete'])
+            result.update(longitudinal_event_count=len(events), incomplete=incomplete,
+                          evidence_status='INCOMPLETE_BOUNDED_INCIDENT' if incomplete else 'OFFLINE_REVIEW_ONLY')
+        result.update(integrity_valid=True, replay=value)
+    except (OSError, ValueError, KeyError, TypeError, RecursionError) as error:
+        result['reason'] = str(error)
+    return result
+
+
+class AsyncReplayExporter:
+    """One in-flight immutable replay job, no queued work or disk I/O in ticks."""
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._thread = None
+        self.status = dict(path=None,error=None,error_detail=None,busy=False,dropped_requests=0)
+
+    def submit(self, operation):
+        with self._lock:
+            if self.status['busy']:
+                self.status['dropped_requests'] += 1
+                import logging
+                logging.warning('Replay export request dropped: one bounded job is already in flight')
+                return False
+            self.status.update(busy=True,error=None,error_detail=None,path=None)
+            def write():
+                try:
+                    path = operation()
+                    self.status['path'] = path
+                except Exception as error:
+                    self.status['error'] = type(error).__name__
+                    self.status['error_detail'] = str(error)[:256]
+                    import logging
+                    logging.warning('Replay export failed: %s: %s',type(error).__name__,self.status['error_detail'])
+                finally:
+                    self.status['busy'] = False
+            self._thread = threading.Thread(target=write,name='UltraPilot-ReplayExport',daemon=True)
+            self._thread.start()
+            return True
+
+    def wait(self, timeout=5.):
+        thread = self._thread
+        if thread is not None:
+            thread.join(timeout)
+        return dict(self.status)
