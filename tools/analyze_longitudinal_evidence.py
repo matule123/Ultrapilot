@@ -17,6 +17,38 @@ from tools.analyze_phase6_stage1 import distribution, finite
 
 
 def load_rows(path):
+    if path.is_file():
+        from core.steering_replay import inspect_replay
+        checked=inspect_replay(path)
+        if not checked.get('integrity_valid'):
+            raise ValueError('REPLAY_INTEGRITY_NOT_VERIFIED')
+        replay=checked.pop('replay')
+        block=replay.get('longitudinal')
+        if not isinstance(block,dict):raise ValueError('LONGITUDINAL_EVIDENCE_NOT_PRESENT')
+        rows=[]
+        for event in block['events']:
+            source=event.get('source') or {}
+            context=source.get('context') or []
+            meta=source.get('sdk_observation') or {}
+            identity=dict(zip(('source_game_session_id','source_map_key','source_dataset_fingerprint',
+                'navigation_intent_id','revision','route_build_id'), context[1:7]))
+            valid = (meta.get('schema_version') == 1 and meta.get('valid') is True
+                     and meta.get('sdk_frame_us') == source.get('sdk_frame_us') and len(context)==8)
+            response=source.get('sdk_response') or {}
+            rows.append(dict(sdk_frame_us=source.get('sdk_frame_us'),telemetry_valid=valid,
+                captured_at_s=event.get('call_started_at_s'), lane=identity,
+                observation_identity=dict(after=identity,reads_match=valid),
+                truck=dict(speed=source.get('actual_speed_mps'),gear=source.get('observed_gear'),
+                    _control_observation=meta,**response),
+                longitudinal=dict(events=[event],dropped_events=0,sampled_state=dict(
+                    activation=source.get('activation'),control_state=source.get('control_state'),
+                    autopilot_active=source.get('autopilot_active'),auto_drive_pending=source.get('phase')=='launch'))))
+        if rows:rows[0]['longitudinal']['dropped_events']=block.get('dropped_events',0)
+        # Same SDK capture may accompany two channel writes. It is ONE
+        # observation; the analyzer below rejects duplicated frames for slopes.
+        checked['first_intervention']=block.get('first_intervention')
+        checked['decision_history']=block.get('decision_history')
+        return rows,checked
     checked = inspect_collection(path)
     if checked.get('integrity_valid') is not True:
         raise ValueError('COLLECTION_INTEGRITY_NOT_VERIFIED')
@@ -75,7 +107,12 @@ def analyze_rows(rows):
                        activation=state.get('activation'),
                        speed_mps=speed, game_throttle=truck.get('gameThrottle'),
                        game_brake=truck.get('gameBrake'))
-            observations.append(obs)
+            duplicate = any(o['identity']==identity and o['sdk_frame_us']==frame
+                            and o['time_s']==t and o['phase']==phase for o in observations[-4:])
+            if duplicate:
+                exclusions['duplicate_sdk_observation'] += 1
+            else:
+                observations.append(obs)
             if (previous and previous[0] == key and frame > previous[1]['sdk_frame_us']
                     and 0 < t-previous[1]['time_s'] <= .5):
                 dt = t-previous[1]['time_s']
@@ -88,10 +125,10 @@ def analyze_rows(rows):
                         jerk.append(dict(time_s=(midpoint+previous_accel[1])/2,
                                          identity=identity, phase=phase, value_mps3=(a-previous_accel[2])/jdt))
                 previous_accel = key, midpoint, a
-            else:
+            elif not duplicate:
                 previous_accel = None
                 exclusions['derivative_boundary_or_gap'] += 1
-            previous = key, obs
+            if not duplicate:previous = key, obs
         else:
             exclusions['invalid_or_missing_original_observation_time'] += 1
             previous = previous_accel = None
@@ -164,9 +201,15 @@ def main(argv=None):
     if not output.is_relative_to(ROOT):
         parser.error('Output must remain in the workspace')
     rows, checked = load_rows(args.collection)
+    # Keep the long, sampled decisions separate from physical write evidence.
+    # Their sequence references can outlive the short detailed journal; never
+    # synthesize full writes or causal SDK responses from a summary row.
+    history=checked.pop('decision_history',None)
     result = analyze_rows(rows)
+    if history is not None:result['decision_history']=history
     result.update(collection=str(args.collection.resolve()), integrity=checked,
-        manifest_sha256=hashlib.sha256((args.collection/'manifest.json').read_bytes()).hexdigest())
+        source_sha256=hashlib.sha256((args.collection if args.collection.is_file()
+            else args.collection/'manifest.json').read_bytes()).hexdigest())
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(result, indent=2, allow_nan=False), encoding='utf-8')
     print(json.dumps({k: result[k] for k in ('returned_mapping_writes', 'failed_backend_calls',

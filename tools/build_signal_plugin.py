@@ -21,7 +21,7 @@ def replace_once(path, old, new):
     path.write_text(text.replace(old, new), encoding='utf-8')
 
 
-def prepare(source, fmt, output):
+def prepare(source, fmt, output, *, scoped=False):
     audit_root = ROOT/'docs/steering-audit'
     if not output.is_relative_to(audit_root) or output.is_relative_to(source) or output.is_relative_to(fmt):
         raise ValueError('Output must be a separate repository audit directory')
@@ -72,8 +72,36 @@ def prepare(source, fmt, output):
         const bool complete = prism::base_ctrl_u::get()!=nullptr &&
                               prism::base_ctrl_u::get()->get_nearby_kdop_items()!=nullptr;
         up_signal::publisher().observe(semaphore_objects_data.data(), count, observed_at, complete);''')
+    if scoped:
+        replace_once(traffic,'#include "up_signal.hpp"','#include "up_signal.hpp"\n#include "prism/management/item/node_item.hpp"')
+        header=output/'src/processing/traffic.hpp'
+        replace_once(header,'#include <vector>','#include <vector>\n#include "up_signal.hpp"')
+        replace_once(header,'        const prism::traffic_semaphore_actor_t* traffic_object;',
+            '        const prism::traffic_semaphore_actor_t* traffic_object;\n        up_signal::Owner owner{};')
+        replace_once(header,'const uint32_t id = 0);','const uint32_t id = 0, up_signal::Owner owner = {});')
+        replace_once(traffic,'const uint32_t id)\n','const uint32_t id, up_signal::Owner owner)\n')
+        replace_once(traffic,'                semaphore_actor\n','                semaphore_actor, owner\n')
+        replace_once(traffic,'            for (const auto &semaphore_instance : prefab_kdop_item->segment->semaphore_instances)',
+            '            uint32_t instance_slot=0;\n            for (const auto &semaphore_instance : prefab_kdop_item->segment->semaphore_instances)')
+        replace_once(traffic,'            {\n                if (semaphore_instance.actor == nullptr)',
+            '            {\n                const auto slot=instance_slot++;\n                if (semaphore_instance.actor == nullptr)')
+        replace_once(traffic,'                this->process_traffic_object(semaphore_instance.actor, semaphore_instance.id);', '''                up_signal::Owner owner{};
+                owner.prefab_uid=prefab_kdop_item->uid;owner.origin_index=prefab_kdop_item->origin_idx;
+                owner.instance_slot=slot;
+                unsigned nodes=0;
+                for(unsigned i=0;i<6;++i)if(prefab_kdop_item->nodes[i]) {
+                    owner.node_uids[i]=prefab_kdop_item->nodes[i]->uid;++nodes;
+                }
+                owner.flags=owner.prefab_uid&&nodes>=2&&owner.origin_index<nodes?1:0;
+                this->process_traffic_object(semaphore_instance.actor, semaphore_instance.id, owner);''')
+        replace_once(traffic,'        std::array<SemaphoreObject, 40> semaphore_objects_data = {};',
+            '        std::array<SemaphoreObject, 40> semaphore_objects_data = {};\n        std::array<up_signal::Owner,40> owners{};')
+        replace_once(traffic,'            semaphore_objects_data[count] = return_object;',
+            '            owners[count]=obj.owner;\n            semaphore_objects_data[count] = return_object;')
+        replace_once(traffic,'up_signal::publisher().observe(semaphore_objects_data.data(), count, observed_at, complete);',
+            'up_signal::publisher().observe(semaphore_objects_data.data(), count, observed_at, complete, owners.data());')
     version = (output/'version.hpp.in').read_text()
-    for key, value in dict(PLUGIN_VERSION_MAJOR='1',PLUGIN_VERSION_MINOR='59',PLUGIN_VERSION_PATCH='2-up-signal',
+    for key, value in dict(PLUGIN_VERSION_MAJOR='1',PLUGIN_VERSION_MINOR='59',PLUGIN_VERSION_PATCH='3-up-signal-scope' if scoped else '2-up-signal',
                            GAME_VERSION_MAJOR='1',GAME_VERSION_MINOR='59',GAME_VERSION_PATCH='x').items():
         version = version.replace('@'+key+'@',value)
     (output/'src/version.hpp').write_text(version)
@@ -87,12 +115,13 @@ def prepare(source, fmt, output):
     subprocess.run(['cl', '/nologo','/LD','/O2','/MT','/std:c++17','/EHsc','/utf-8',
         '/Brepro', '/experimental:deterministic', '/pathmap:'+str(output)+'=ETS2LA_SOURCE',
         '/DFMT_HEADER_ONLY','/DETS2LA_PLUGIN_EXPORTS','/DUNICODE','/D_UNICODE',
+        *(['/DUP_SIGNAL_SCOPE_V3'] if scoped else []),
         '/I'+str(output/'src'),'/I'+str(output/'vendor/scs_sdk/include'),'/I'+str(fmt/'include'),
         *[str(output/'src'/s) for s in sources],'/link','/DEF:'+str(output/'ets2la_plugin.def'),
         '/Brepro','/OUT:'+str(output/'ets2la_plugin.dll')], cwd=output, check=True)
     dll=output/'ets2la_plugin.dll'
     result={'source_commit':SOURCE_COMMIT,'dll_sha256':hashlib.sha256(dll.read_bytes()).hexdigest(),
-            'installed_binary_equivalence':'NOT_CLAIMED','schema':2,
+            'installed_binary_equivalence':'NOT_CLAIMED','schema':3 if scoped else 2,
             'files':{str(p.relative_to(output)):hashlib.sha256(p.read_bytes()).hexdigest()
                      for p in output.rglob('*') if p.is_file() and p.suffix in ('.hpp','.cpp','.dll')}}
     (output/'build-receipt.json').write_text(json.dumps(result,indent=2))
@@ -103,4 +132,5 @@ if __name__ == '__main__':
     p=argparse.ArgumentParser()
     p.add_argument('--source',type=Path,required=True);p.add_argument('--fmt',type=Path,required=True)
     p.add_argument('--output',type=Path,required=True)
-    a=p.parse_args();prepare(a.source.resolve(),a.fmt.resolve(),a.output.resolve())
+    p.add_argument('--scoped',action='store_true',help='Also publish coherent owning-prefab identity in schema 3; preserve schema 2')
+    a=p.parse_args();prepare(a.source.resolve(),a.fmt.resolve(),a.output.resolve(),scoped=a.scoped)
