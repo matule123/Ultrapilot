@@ -1,5 +1,33 @@
 # Phase 7 — Combined longitudinal evidence
 
+The 2026-10-07 additive extension is documented in
+[PHASE7_AUTOMATIC_PEDAL_EVIDENCE_20261007.md](PHASE7_AUTOMATIC_PEDAL_EVIDENCE_20261007.md).
+It reuses this journal/export and enables bounded automatic incident evidence
+without arming combined collection; the original measurements below remain historical.
+The same journal now also retains a separate thirty-second decision history:
+[PHASE7_PEDAL_HISTORY_20261007.md](PHASE7_PEDAL_HISTORY_20261007.md).
+It preserves the 64 KiB detailed-write limit and does not duplicate the entire
+history into every combined sample. The analyzer exposes `decision_history`
+separately from actual physical `write_series`.
+
+The 2026-10-09 significant-event completion is documented in
+[PHASE7_SIGNAL_AND_TRAFFIC_COMPLETION_20261009.md](PHASE7_SIGNAL_AND_TRAFFIC_COMPLETION_20261009.md).
+The same journal and single background replay worker now seal the pre-event
+history for AVOID_OBSTACLE onset, brake-source changes, unassigned signal
+coverage and technical authority loss, without arming. One pending slot,
+four submissions/minute, a 32 KiB receipt, <=1 MiB sealed summary and <=64 KiB
+per detailed snapshot bound the retained evidence; busy events coalesce with
+explicit counts. The export path is
+`<UltraPilot>/route-diagnostics/steering-replay-<UTC>-significant_event.json`.
+The eight-file / 16 MiB quota never deletes or overwrites existing evidence;
+quota exhaustion is reported explicitly. Automatic-disable evidence takes
+priority and remains independent of this normal-event quota. Source timestamps,
+immutable decision identity, first faults and following physical write order
+are preserved. Backend return is still not proof of game consumption.
+The linked report records the final event/export tests and measured runtime
+cost; the measurements and source-build declaration below remain historical.
+This addition is not deployed and does not authorize a new drive.
+
 Date: 2026-10-03. Baseline HEAD: `0107430d57b2c96881ee39c9a27eccd2ea1ecf19`.
 These are uncommitted source changes, not an installed or game-tested build.
 The tracked working tree was clean at entry. No AGENTS.md was present in the

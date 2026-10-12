@@ -2,6 +2,235 @@
 
 Release history for individual plugins. See [PLUGIN_VERSIONS.md](PLUGIN_VERSIONS.md) for versioning rules.
 
+## ACC
+
+### 1.1.9 — unreleased, 2026-10-12
+
+- Discard only positive PID integral accumulated for a qualified signal approach when its computed drive was not executed because the shared stop profile selected coast. Keep gains, derivative state, negative integral unwinding, other limits and emergency priority unchanged.
+
+## Map
+
+### 1.1.2 — unreleased, 2026-10-12
+
+- Publish a single selected-exit maneuver for a bounded, unambiguous directed cycle of placed one-way roads and three-port prefab connectors. Retain the preceding-exit progress gate and stable selected-exit identity; do not derive indicator direction from circulation curvature. Suppress unresolved connector arcs instead of inventing a maneuver.
+
+## TurnSignals
+
+### 1.0.2 — unreleased, 2026-10-12
+
+- Apply the Map-owned entry/previous-exit progress gate before the existing roundabout warning window. Preserve manual, hazard and game self-cancellation priority.
+
+## Core qualified signal approach — unreleased, 2026-10-12
+
+- Delegate a positive qualified stopping envelope to ACC instead of issuing a second Traffic brake in the broad response band. Commit physical brake continuity only at an exhausted envelope or an acknowledged low-speed write in the existing terminal zone. Preserve standstill ownership, original timestamps, safety gates, 6 m + 2 m allowances and green release; no automatic repositioning after a red stop.
+- These are offline corrections. Painted stop-line and truck-front geometry remain unmeasured; no calibration offset or parking-brake operation is introduced.
+
+## Core terminal approach — unreleased, 2026-10-12
+
+- Correct the first-brake regression exposed by the full suite: a slow qualified terminal approach still issues the calculated positive brake even before a continuous chain exists. At zero speed in the same terminal zone retain the brake request; Engine's unchanged authorization decides whether it may be written. No return to the moving full-pedal jump, no standstill repositioning, and no plugin version change.
+- Remove the low-speed / fixed 1.5 m full-brake jump from the shared qualified-stop mapping when its stopping envelope is still positive. Retain full demand at exhausted envelope/target, actual continuous-brake holding, red standstill no-drive and original safety/identity checks. No target offset, 6 m + 2 m margin, PID gain, steering, DLL or plugin VERSION change.
+- The paired production-path model improves the measured residual and terminal jerk without extra default-plant pedal reversals; it still stops before the planning target. Historical 2.5514 m causality and physical bumper-to-painted-line placement remain unverified. See [PHASE7_TERMINAL_APPROACH_20261012.md](PHASE7_TERMINAL_APPROACH_20261012.md).
+
+## ACC
+
+### 1.1.8 — unreleased, 2026-10-11
+
+- Release only an acquired lead dependency after a same-ID/source-slot changed receiver record places every observed native body outside the existing route caution band. Preserve missing/ambiguous/stale/reassigned-record and already-latched loss protection; unknown traffic coverage remains unconfirmed. Existing speed controller, target recovery and emergency priority are unchanged.
+
+## TurnSignals
+
+### 1.0.1 — unreleased, 2026-10-11
+
+- Release automatic ownership with `None`; request `off` only to cancel the plugin's own acknowledged side. Yield to game self-cancellation, a driver's side change and hazards, including live disable and a later Engine observation.
+- Keep consumed semantic events across same-intent geometry republication, bounded to the current Map event window. Continue using the existing topology-owned turn/selected-roundabout-exit events and warning distances; ordinary curvature does not select an indicator.
+
+## Core joint traffic and indicator fixes — unreleased, 2026-10-11
+
+- Start a discovered plugin skipped as disabled when the UI later enables it; do not duplicate workers or rescan folders every tick. Release TurnSignals ownership on live disable.
+- Retain native trailer records from the same traffic capture in the existing protective crossing path. Share the bounded observed-lead-departure contract with the physical longitudinal boundary; between Traffic and ACC ticks, coast without old drive instead of requiring a departed target's missing speed cap. Retain original lease revalidation and other brake/emergency floors.
+- Preserve manual/hazard indicator priority at the actual Controller boundary and store the compact immutable departure receipt in the existing decision/history codec without new reads or larger budgets.
+- Historical collision actors and truck-front/physical-stop-line geometry remain unavailable; no guessed stop offset or safe-gap certification was added. Existing significant-event quota is full and originals are untouched. No DLL, steering, geometry, PID, timeout or unrelated plugin-version change. See [PHASE7_JOINT_TRAFFIC_AND_INDICATORS_20261011.md](PHASE7_JOINT_TRAFFIC_AND_INDICATORS_20261011.md) for before/after reproductions and partial offline scope; not game verified.
+
+## ACC
+
+### 1.1.7 — unreleased, 2026-10-11
+
+- Constrain the existing speed controller with the positive GPS remainder from its actual SDK observation; reuse the qualified-stop distance envelope and pedal mapping without new PID gains or a second controller. Preserve lower signal/curve/following limits and emergency priority.
+
+## DrivePolicy
+
+### 1.1.3 — unreleased, 2026-10-11
+
+- Apply the current GPS stopping ceiling after non-stop preference smoothing; suppress only the duplicate auxiliary brake when ACC owns that ceiling.
+
+## Autopilot
+
+### 1.3.4 — unreleased, 2026-10-11
+
+- Schema-1 arrival uses the common pedal/authority path instead of the legacy early-return brake branch; label a confirmed normal completion replay `destination_reached`.
+
+## Core GPS destination lifecycle — unreleased, 2026-10-11
+
+- Core: retain a positive <=25 m GPS route; distinguish moving destination approach from its physically acknowledged terminal brake chain. Normal release requires a fresh positive remainder within the existing arrival radius and acknowledged terminal reserve, standstill, current identity and no competing stop/fault. Zero/removal is never promoted to success; no automatic parking brake or unattended hill-hold promise.
+- Existing diagnostic source captures the already-consumed GPS distance/time as additive immutable fields. Indexed codec tables, fixed budgets and source timestamps remain unchanged. Freeze the original red-approach test baseline from its hash-verified backup so later installations cannot silently replace the counterfactual.
+- No steering/geometry/500 ms change or DLL replacement. The actual semaphore front/painted-line reserve and historical second-roundabout brake producer remain unproven; this is a partial offline correction, not complete game verification. See [PHASE7_DESTINATION_AND_APPROACH_REVIEW_20261011.md](PHASE7_DESTINATION_AND_APPROACH_REVIEW_20261011.md).
+
+## ACC
+
+### 1.1.6 — unreleased, 2026-10-11
+
+- Own the qualified signal distance trajectory in the existing speed-control output, including its original required-deceleration mapping. Distinguish an active signal constraint from a signal-selected brake; a lower road/curve/vehicle limit still wins.
+- Do not reset the speed controller on a duplicate independent far-signal pedal, or retain an obsolete signal ceiling after fresh green. Use existing pedal hysteresis and the declared response-sized planning reserve for coast/recovery, without a minimum approach speed, new gains or a second regulator. Same-head green remains Engine-confirmed.
+
+## DrivePolicy
+
+### 1.1.2 — unreleased, 2026-10-11
+
+- Apply the current signal stopping ceiling after smoothing the non-signal speed preference; do not persist a lower ceiling belonging to an earlier position.
+- Suppress only the duplicate auxiliary brake when ACC owns that qualified signal target. Lower independent constraints, unavailable coverage and their protective requests remain effective.
+
+## Core qualified signal approach — unreleased, 2026-10-11
+
+- Separate a locked moving approach from terminal continuous service-brake authority. Allow a fresh same-head/profile decision to coast or recover from excessive early slowing; only actual forward-started positive writes qualify terminal braking/holding. Preserve physical sequence, identity, green confirmation, cancellation and negative safety checks.
+- Preserve the existing full terminal request, including when the response reserve exhausts the stopping envelope; do not let a squared-speed demand fade against idle load at a zero-speed target. The final Engine gate also enforces the current qualified signal ceiling between producer ticks.
+- No parking writes, source retimestamping, 500 ms increase, steering/geometry change, DLL replacement or new collector. Read [PHASE7_RED_APPROACH_PROFILE_20261011.md](PHASE7_RED_APPROACH_PROFILE_20261011.md) for retained Oct 11 evidence, pre-fix failures, paired uncalibrated models, nonuniform jerk results and the missing first-brake historical inputs. Not game verified.
+
+## Core prior-activation Traffic initialization — unreleased, 2026-10-10
+
+- Publish the existing fixed activation/first-command bound with its exact authority; share initialization classification between Autopilot and the physical Engine. A still-valid prior-activation producer value is rejected without prematurely revoking the new request, only while all other identities match.
+- Keep throttle zero before a current Traffic publication, never execute or relabel the old packet, and continue without another N after current validated data. Preserve supported continuous service braking, emergency priority and genuine missing/stale/future/foreign/R/backend rejection. Clear the bound on cancellation or first real accepted decision; never renew it per tick.
+- Keep existing 0.5 s/2.5 s initialization and 500 ms evidence limits, original times, controllers, geometry and DLL. No plugin implementation/version change. Correct historical rejected epoch to 8145579392300; exact IPC ordering remains unrecorded. See [PHASE7_REACTIVATION_TRAFFIC_20261010.md](PHASE7_REACTIVATION_TRAFFIC_20261010.md) for the five pre-fix failures and final integration results. Not game verified.
+
+## Core signal phase and moving clearance — unreleased, 2026-10-10
+
+- Preserve original native countdown, yellow direction, acquisition/generation and phase plan through qualified selection and existing bounded pedal history/export. Append history fields without changing indexed source-codec keys or memory budgets.
+- Forecast the qualified head's current green using directed extent, current speed, capped planning dynamics and explicit unmeasured clearance allowances. Use the existing shared stop envelope for insufficient green; distinguish preferred deceleration onset from the full-brake planning bound. A planning dilemma coasts without granting future-green clearance; emergencies and red remain effective.
+- Clear a signal-only continuous braking commitment during forward motion after two fresh same-head green acquisitions and final source/identity/deadline validation. Restore the current decision and its diagnostic source; preserve other stop reasons and the existing bounded standstill restart.
+- No controller gains, steering cadence, geometry, 500 ms limits, DLL or plugin implementation/version changes. Offline counterexamples, 48 paired plant cases, nonuniform jerk changes and the still-open manual-reactivation/initial-red evidence limits are documented in [PHASE7_SIGNAL_APPROACH_TIMING_20261010.md](PHASE7_SIGNAL_APPROACH_TIMING_20261010.md).
+
+## Core scoped-native signal direction — unreleased, 2026-10-10
+
+- Remove the extra 180-degree reversal from schema-3 actor-forward direction in binding and coverage. Original PPD 25 coordinates/quaternions and the native packing prove that the recorded ID 3 pose is opposite to our group-1 passage; do not remap its ID or treat its green as clearance.
+- Preserve exact placed ownership, route/group/lifecycle, original producer times, distance-aware unknown approach, 500 ms freshness, continuous service hold and same-signal green confirmation. No new regulator, geometry, producer schema, DLL or plugin release.
+- Verify the own-head stop/restart model through reader, Policy/ACC, Autopilot, Engine and physical test writes in both automatic modes. Unknown authored-object kinds remain uncertainty. See [PHASE7_SIGNAL_NATIVE_DIRECTION_20261010.md](PHASE7_SIGNAL_NATIVE_DIRECTION_20261010.md) for historical/model boundaries and the consistent runtime package.
+
+## ACC
+
+### 1.1.5 — 2026-10-10
+
+- Consume the shared original-lease approach ceiling for an unresolved, native-owned directed signal entry. Preserve lower route/traffic limits, the existing speed regulator and immediate emergencies; detected green is not clearance.
+
+## DrivePolicy
+
+### 1.1.1 — 2026-10-10
+
+- Include the same distance-based unresolved-entry ceiling in existing speed planning. The required dependency retains its producer time and 500 ms deadline instead of promoting an unassigned head into a red/green control.
+
+## Core/UI signal-distance contract — unreleased, 2026-10-10
+
+- Replace distance-independent takeover for proven owned entries with a bounded uncertain approach and the existing stopping reserve. Missing entry/speed evidence remains fail-closed; no nearest-head control or invented stop line is introduced.
+- Prepare at most 128 fixed-field ownership scopes, reject proven foreign placement fallback only for complete metadata, retain one unresolved dependency on disappearance and invalidate it on authority/lifecycle change.
+- Preserve already-compared LaneId/progress/publication and native head ownership/target/reserve in the existing bounded incident receipt, including priority evidence after optional detail overflow; keep historical schema-1 decoding and unchanged collector budgets.
+- Label pending unassigned detection separately in the HUD. Qualified red/continuous service hold/fresh same-signal green/restart and other stop blockers remain unchanged. No new Autopilot/Map release, DLL change or game confirmation. See [PHASE7_SIGNAL_DISTANCE_CONTRACT_20261010.md](PHASE7_SIGNAL_DISTANCE_CONTRACT_20261010.md).
+
+## Unreleased packet-renewal fix — 2026-10-10 (no new plugin release)
+
+- Map keeps one private read-only geometry snapshot per exact publication token; public SDK copies, same-build invalidation and live identity/SDK checks remain intact.
+- Core caches exact directed prefab topology enumeration within 128 entries, 16,384 curve indices and 1 MiB; equivalent iterative traversal removes recursive closure cycles without changing geometry or positional lane selection.
+- Shared longitudinal handoff retains the exact expiring leaf only as a comparison witness for the existing bounded zero-drive transition when its IPC consumes the remaining milliseconds. No expired propulsion, timestamp renewal or increased timeout is permitted.
+- Existing Map packets and Autopilot replay/timing rows retain fixed-size reference subphase times without additional SDK/IPC reads or per-tick INFO logs.
+- Map checks the existing single-slot evidence worker before fetching profile/traffic arguments that would be discarded while it is occupied. The actual offer/harvest validation, worker count and queue bound are unchanged.
+- Existing packets carry one explicitly sequenced previous completed Map tick, including CPU, publication completion, post-publication work and gap. Normal plugin-stop and combined exports retain this evidence on successful episodes with immutable executor/source binding; no separate collector or timestamp refresh.
+- Autopilot 1.3.3 / Map 1.1.1 declarations are retained by explicit user instruction; not a new release or game reliability certificate. Historical 620/477 ms internal stalls are not fully attributed. See [PHASE7_PACKET_REFRESH_RELIABILITY_20261010.md](PHASE7_PACKET_REFRESH_RELIABILITY_20261010.md).
+
+## Autopilot
+
+### 1.3.3 — 2026-10-09
+
+- Share the existing 2.5/s service-brake rise constant with the final acknowledged hold floor. Retain continuous positive braking, emergency/drift priority and the established red/green restart contract; controller gains and freshness limits are unchanged.
+- Paired modeled stop tests reduce near-standstill jerk at 35/50 km/h without an entry overrun. This is not confirmation of loaded hill holding or SDK consumption in ETS2. See [PHASE7_SIGNAL_AND_TRAFFIC_COMPLETION_20261009.md](PHASE7_SIGNAL_AND_TRAFFIC_COMPLETION_20261009.md).
+
+## Map
+
+### 1.1.1 — 2026-10-09
+
+- Preserve actual placed-prefab UID, native node UIDs and origin with the existing directed signal passages; use the controlled curve's existing transformed heading. Rebuild schema-14 caches which lack ownership metadata. No route-centerline, localization or steering-cadence change.
+
+## Core/native signal and traffic fixes — unreleased, 2026-10-09
+
+- Add coherent owner records in native signal schema 3 while preserving schema 2 acquisition times and ABI. Bind scoped heads to exact placed ownership and a directed group instead of treating lamp elevation as road-deck elevation. Keep foreign/ambiguous/torn/stale/lifecycle rejection and explicit unassigned takeover; no nearest-light control fallback.
+- Make validated TrafficCapture and the existing directed-route candidate/crossing path own traffic demand. Legacy display defaults, duplicate IDs and straight-cab projection cannot override rejected source evidence or a no-conflict curved route. Preserve protective caution and emergency response; empty traffic is not clearance.
+- Seal significant brake/source, AVOID_OBSTACLE, unassigned-signal and technical events in the existing bounded PedalJournal and replay worker without arming. Preserve original receipts, first faults and following writes; add explicit coalescing/loss, fixed disk quota and atomic integrity. No extra diagnostic SDK/IPC reads or new collector.
+- Verify the bounded game-log prefix even when filesystem metadata appears unchanged; reject same-size rewrite without interrupting ordinary append. All file I/O remains on the existing observer worker.
+- Scoped DLL 1.59.3-up-signal-scope is an uninstalled offline candidate. Live ownership/ID correspondence and original missing traffic inputs remain unverified; the historical incident is not declared resolved in ETS2. ACC, DrivePolicy and Collision plugin implementations/versions are unchanged.
+
+## Autopilot
+
+### 1.3.2 — 2026-10-09
+
+- Treat an actually observed, forward route-aligned head with unproven directed assignment as a technical takeover requirement, not optional empty perception. Use the same coverage predicate as the final Engine boundary; inhibit propulsion, retain the first cause and do not resume automatically after technical loss.
+- Preserve stronger fresh emergency demand when entering the existing safety stop. A coverage error cannot downgrade current emergency braking to the normal 0.70 safety floor. Regulators, steering cadence, launch and green-confirmation timings are unchanged.
+- See [PHASE7_SIGNAL_COVERAGE_AND_BRAKE_REVIEW_20261009.md](PHASE7_SIGNAL_COVERAGE_AND_BRAKE_REVIEW_20261009.md): offline repairs do not establish live signal coverage or the historical brake source, so the complete incident task remains blocked.
+
+## Core/UI signal coverage — unreleased, 2026-10-09
+
+- Keep raw detection, qualified control and unknown coverage separate. Check the bounded original producer heads; preserve actual placed-ID selection and locked service braking. An earlier unassigned conflict cannot be silently cleared by a later qualified head. No nearest-head control fallback is restored.
+- Show a fresh producer-timed detected color with an explicit unassigned label; keep untimed, expired and future-timed detection gray. Publish a clear Slovak takeover instruction. The HUD never promotes detection to control authority.
+- Carry the original signal lease and exact rejected head through existing arbitration/fault/export paths. Compact fixed receipt fields within unchanged 8 KiB/64 KiB budgets and reject incomplete vectors. No new collector, DLL, timeout, map geometry or speed-planner change.
+- Recover only uniquely determined planar route vertices from existing original projections/fractions for offline curve queries. Missing geometry, mixed identity and inconsistent constraints are refused; missing calculation speed remains an explicitly marked proxy. This analysis is not a measured historical pedal command.
+
+## Autopilot
+
+### 1.3.1 — 2026-10-08
+
+- Reject unavailable confirmed transmission-mode evidence with its original cause before the zero-ratio fallback. A temporary observer failure is no longer reported as loss of forward gear; returning evidence does not automatically restore a technically disabled activation.
+- Preserve the first intervention through Engine release/export. Lateral and speed regulators, steering cadence, launch commands, freshness limits and reverse protections are unchanged. See [PHASE7_SIGNAL_APPROACH_CONSISTENCY_20261008.md](PHASE7_SIGNAL_APPROACH_CONSISTENCY_20261008.md) for offline verification and unresolved historical evidence.
+
+## Core signal/approach consistency — unreleased, 2026-10-08
+
+- Require a uniquely placed, observed producer head before an authored prefab control group becomes a required signal stop. Retain an unknown stop dependency after losing that qualified head; an unobserved template group cannot manufacture red or hide a later qualified control.
+- Bind planned-stop admission to the actual winning brake source. Ordinary ACC overspeed braking cannot latch a prospective distant red and repeatedly inhibit drive below the approach profile.
+- At stationary continuous holding, retain the strongest successfully written deceleration brake from that same admitted chain instead of freezing the final tiny distance-profile value. Keep the unchanged motion/reverse guard and no-parking-brake ownership; returned software writes do not establish game consumption or hill holding.
+- Read a bounded complete immutable game-log prefix, with at most one prefix-verification read on append. Reject rewrite, truncation, replacement and unconfirmed profile/mode changes; never renew previous observer evidence as a substitute for acquisition.
+- Revalidate actual fresh GPS lane authority, steering packet and engagement alignment when a readiness summary is old. Preserve every packet/heartbeat/identity/alignment gate and the original summary timestamp.
+- Keep exact compared mode evidence/vehicle metadata and first fault in the existing bounded incident path. ACC, Map and DrivePolicy implementations/versions are unchanged in this task. Model stop jerk near standstill can increase with stronger holding and is reported separately from unchanged moving deceleration and regulator benchmarks.
+
+## Core signal/stop lifecycle — unreleased, 2026-10-08
+
+- Remove the remaining metadata-free geometric signal-control fallback. Keep unassigned head detection separate from an authored directed control entry and an actually observed qualified signal; label an unobserved entry explicitly in the HUD.
+- Preserve an acknowledged forward-started planned service-brake chain while approaching without a signal lock, through producer changes and zero demands. Use the existing same-entry positive distance profile, then acquire a recovered actual red/yellow receipt for the same passage/ID before permitting confirmed green restart. Preserve current SDK/command/identity checks, reverse/motion rejection and the original first stop evidence.
+- Keep the selected producer's causal reason at the final longitudinal boundary. Preserve consumed signal fields and missing-head stop geometry in the existing bounded journal; sub-budget optional crossing/display attribution and mark its loss instead of silently erasing the whole input.
+- Verify actual producers/Controller writes, both automatic modes, repeat cycles, export integrity and read-only installed-runtime baseline comparisons. Normal-red braking, sixteen steering cases and twelve comfort cases remain numerically unchanged. No plugin implementation/version changes in this continuation. See [PHASE7_SIGNAL_STOP_LIFECYCLE_20261008.md](PHASE7_SIGNAL_STOP_LIFECYCLE_20261008.md) for measurements and separate unresolved historical incidents.
+
+## Core diagnostics — unreleased, 2026-10-07
+
+- Extend the existing automatic PedalJournal incident with a fixed-budget thirty-second decision history: at most 10 Hz regular samples, ordered state changes and explicit between-sample physical-edge aggregates. Preserve the detailed 64 KiB journal, original SDK/command times and exact owned identity references.
+- Retain release provenance from actual Controller calls, including hotkey/shutdown calls outside a flush, and preserve the first intervention through subsequent safety writes. Keep requested/selected/physical/SDK evidence distinct; do not infer game consumption or fill missing measurements with zero.
+- Export the owned history through the existing single-job background replay writer; retain independent coverage/loss metadata and reject malformed history references/order. Combined and dense steering exports remain available. No controller, arbitration, timeout or plugin implementation changes in this continuation; Autopilot remains at its already pending 1.3.0. See [PHASE7_PEDAL_HISTORY_20261007.md](PHASE7_PEDAL_HISTORY_20261007.md).
+
+## Autopilot
+
+### 1.3.0 — 2026-10-07
+
+- Add bounded diagnostic provenance to the existing longitudinal command: the exact producer inputs, brake requests, original truck observation, decision sequence and consumed EcoDrive preference. Pedal arbitration, regulator outputs and validity checks are unchanged.
+- Export sealed dense replay buffers through a single bounded background job; forward the existing first intervention receipt to Engine without additional diagnostic SDK reads. Ordinary startup also retains the existing PedalJournal and exports a hash-checked longitudinal boundary incident on automatic disable without manual arming.
+- Keep actual write order/results, rejected inputs and post-fault safe writes separate from SDK response. Reuse combined export and its cursor without draining the incident ring. Explicitly report dropped events, unavailable fields and incomplete evidence. See [PHASE7_AUTOMATIC_PEDAL_EVIDENCE_20261007.md](PHASE7_AUTOMATIC_PEDAL_EVIDENCE_20261007.md).
+
+## Autopilot
+
+### 1.2.3 — 2026-10-07
+
+- Publish the original bound SDK positive-ratio observation after validation, separately from Engine's committed output history. The common drivetrain transition can consume it only for a fresh zero-pedal forward coast with matching activation/route and the existing fixed zero-ratio bound; it never grants neutral propulsion or renews source time.
+- Retain compact compared observation/history fields in the first ratio-fault receipt. Preserve launch, continuous service braking, qualified green restart and all reverse/freshness/identity controls. See [PHASE7_COAST_AND_SIGNAL_SCOPE_20261007.md](PHASE7_COAST_AND_SIGNAL_SCOPE_20261007.md) for offline evidence and unresolved historical brake-source attribution.
+
+## Core/UI fixes — unreleased, 2026-10-07
+
+- Preserve emergency and driver-handover intervention receipts in the automatic pedal journal before physical safety writes. Await background replay completion in export regressions rather than relying on thread scheduling; control decisions and memory limits are unchanged.
+
+- Do not promote a geometric head when prepared directed-passage metadata has no relevant regulated passage. Remove the Engine nearest-head substitution from longitudinal control; separate optional raw detection from the qualified signal and keep its read failure from clearing a valid red.
+- Label unassigned detected heads separately in the 2D HUD; unchanged 3D control views do not display raw detection as a controlling head. Keep locked passage, elevation/orientation, ambiguity and producer-timed green rules.
+- Share the bounded coast-only observation receipt through Plugin and Engine; preserve the existing neutral-propulsion rejection, byte-mapping write safety and immutable diagnostic journal. Steering (16 cases) and comfort (12 cases) are unchanged. Historical pedal alternation and false-head identity are not reconstructed from steering-only replay headers.
+
 ## Core/application fixes — unreleased, 2026-10-07
 
 - Pin the longitudinal command before drivetrain checks. If IPC publication overtakes the captured SDK frame, obtain at most one actual replacement truck observation and fully validate the pinned command against it. Reuse the same observation through forward-ratio, continuous-hold and physical output checks; preserve the ahead predicate, original times, identity checks and final write deadline.
@@ -385,3 +614,11 @@ Describe actual changes and include the commit when available.
 Updating the version display changes the application UI, not plugin behavior,
 so it does not itself increase plugin versions. Independent plugin distribution
 and dependency compatibility checks remain planned, not implemented.
+
+## Core traffic availability and fault export — unreleased, 2026-10-10
+
+- Separate vehicle/identity envelope validity from optional actor capture usability and qualified signal coverage. Validate coherent evidence roles and reject unsupported positive demands; preserve acquired-target loss and same-head signal hold/clearance. No weakened freshness/identity checks or new traffic sensor.
+- Reject absent/zero/sentinel and duplicated actor IDs with four bounded original source-slot/pose examples; equal values never authorize content-based deduplication. Preserve receiver time as receiver time, not producer freshness.
+- Keep the exact required traffic cause/frame/time/context in existing fault and automatic incident exports using priority immutable receipts inside unchanged budgets. No extra SDK/IPC reads, new collector or per-tick INFO output.
+- Revoke longitudinal authority when the SCS connection fails during physical output; do not publish failed writes as applied commands. This separate backend defect was reproduced offline, not attributed to the historical traffic refusal.
+- See [PHASE7_TRAFFIC_AVAILABILITY_20261010.md](PHASE7_TRAFFIC_AVAILABILITY_20261010.md): the retained earlier optional traffic packet is not the missing first rejected AP snapshot. The historical native actor cause and game outcome remain unverified. Plugin implementations/versions and DLL are unchanged.

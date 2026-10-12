@@ -1,5 +1,192 @@
 # Odložená a nedokončená práca
 
+## Terminal approach to the unchanged planning target
+
+[PHASE7_STOP_AND_MANEUVER_INDICATORS_20261012.md](PHASE7_STOP_AND_MANEUVER_INDICATORS_20261012.md)
+adds the reproduced positive-envelope Traffic/ACC ownership and premature hold
+correction, with unused positive integral discarded only for qualified signal
+coast. Final targeted checks pass; the final full suite belongs to the user.
+Default/delayed model residuals improve, but idle-drive sensitivity does not meet
+the relative no-regression criterion. Exact convergence and painted-line/front
+geometry are still open; no candidate deployment or game PASS is claimed.
+Selected-exit indicator metadata is also offline checked on actual placed topology.
+
+The full-suite first-brake regression was corrected on 12 October: preserve
+the calculated first positive slow-terminal brake and stationary request while
+retaining Engine ownership. All 2,401 tests and 1,592 subtests passed; no deployment
+or physical stop-line calibration is implied by that result.
+
+[PHASE7_TERMINAL_APPROACH_20261012.md](PHASE7_TERMINAL_APPROACH_20261012.md)
+removes a reproduced premature full-brake discontinuity at low speed while
+the qualified stop envelope remains positive. Continuous acknowledged holding,
+green restart and 6 m + 2 m margins remain. The closed model still has a stopping
+residual; exact convergence and the unretained cause of the historical 2.5514 m
+gap are not closed. Broader candidate changes were discarded for pedal/jerk or
+standstill regressions. Physical painted-line/front geometry remains a separate
+limitation; the stationary +2.3377 m calibration is not activated. No game
+acceptance or candidate deployment is claimed.
+
+## Oct 11 traffic, indicators and unresolved physical geometry
+
+[PHASE7_JOINT_TRAFFIC_AND_INDICATORS_20261011.md](PHASE7_JOINT_TRAFFIC_AND_INDICATORS_20261011.md)
+records the receipt-matched destination deployment and the separate current
+candidate ACC 1.1.8 / TurnSignals 1.0.1. Supported witnessed lead departure,
+between-producer-tick coasting, omitted native trailers and live indicator
+enable/ownership have production-flow offline reproductions. Missing, stale,
+duplicate or reassigned actor observations still cannot clear an acquired loss;
+no traffic coverage or safe-gap proof is invented. No candidate deployment or
+game acceptance has occurred.
+
+Still blocking complete roundabout collision resolution: original collision
+actor trajectories and reliable producer-timed coverage/motion/ego truck-trailer
+body envelopes for the richer existing maneuver contract. Still blocking exact
+semaphore front-to-line adjustment: reference-to-front geometry and physical
+stop-line position. Recorded 2.5514 m is SDK reference to a derived target;
+existing 6 m + 2 m allowances occur once. No arbitrary shortening was made.
+
+[PHASE7_STOP_LINE_GEOMETRY_20261011.md](PHASE7_STOP_LINE_GEOMETRY_20261011.md)
+exhausts the current SDK, full active prefab cache, external body catalog and
+pinned native source. The catalog is empty, ego boxes are not transported and
+no painted-line coordinates are available. Straight/curved production-path
+models preserve hold/restart; they do not fix or verify a 1–2 m bumper gap.
+The exact remaining prerequisite is a metric front-bumper/painted-line geometry
+record bound to truck configuration, SDK pose and placed dataset/passage.
+The conservative fallback is unchanged; this is not a completed stopping-gap
+repair or a reason to deploy the unrelated pending traffic candidate.
+
+Eight old significant-event files fill the existing quota; the originals and
+log are preserved. Future event capture requires separately authorized archival,
+not silent deletion. The detailed incident has only 0.264 s and the 30-second
+summary is explicitly incomplete. User full pytest and separately authorized
+consistent runtime deployment remain prerequisites to game confirmation. No
+new drive or MonoCruise implementation is requested in this task.
+
+## Oct 11 GPS completion / unresolved approach evidence
+
+[PHASE7_DESTINATION_AND_APPROACH_REVIEW_20261011.md](PHASE7_DESTINATION_AND_APPROACH_REVIEW_20261011.md)
+records the positive-distance route retention/common-stop correction and normal
+physical release in both automatic modes. Zero/removal is not inferred arrival.
+The photographed front/painted-line relation and second-roundabout winning brake
+are not retained; no reserve/geometry/steering adjustment is guessed. The existing
+eight-file significant-event quota is full, blocking new event capture until
+separately authorized archival. No originals, installation or game are changed.
+Current candidate ACC 1.1.7 / DrivePolicy 1.1.3 / Autopilot 1.3.4 is offline only;
+full pytest, authorized deployment and game acceptance remain separate gates.
+MonoCruise is not implemented here.
+
+## Dojazd na semafor a uvoľnenie počas pohybu – 10. 10. 2026
+
+[PHASE7_SIGNAL_APPROACH_TIMING_20261010.md](PHASE7_SIGNAL_APPROACH_TIMING_20261010.md)
+dokladá zotrvanie súvislej brzdy aj po zelenej pri približne 3,3 km/h. Engine
+uvoľňoval semaforový dôvod iba pri státí; kandidát ho po potvrdených nových
+zelených snímkach uvoľňuje aj za pohybu a obnovuje aktuálny platný povel.
+Pôvodný odpočet a oba žlté stavy sa zachovávajú. Končiaca kvalifikovaná zelená
+používa spoločný zastavovací profil, bez nového regulátora alebo novej DLL.
+
+Offline model na reálnom prefabe: 48 behov, oba automatické režimy, 20/35/50 km/h,
+žiadny súbeh kladných fyzických pedálov ani prejdenie vstupu na červenú. Nejde
+o herné potvrdenie. Časť jerk metrík sa nezlepšila a report to uvádza.
+Otvorené: chýbajúci začiatok historického skorého dojazdu/odpočet, fyzická spotreba
+SDK brzdy a stop čiara/rozmery. Samostatný pretek starej traffic aktivácie po
+manuálnom vypnutí a novom N je teraz opravený offline v
+[PHASE7_REACTIVATION_TRAFFIC_20261010.md](PHASE7_REACTIVATION_TRAFFIC_20261010.md):
+rovnaká autorita okrem aktivácie čaká v pôvodnom pevnom limite bez plynu,
+starý packet sa nevykoná, nové údaje pokračujú bez ďalšieho N. Historicky
+odmietnutý epoch bol 8145579392300; presné IPC poradie ani herný účinok novej
+opravy nie sú potvrdené. Celý životný cyklus preto nie je označený GAME VERIFIED.
+Pred nasadením zostáva celá sada používateľa a samostatný súhlas; teraz sa
+ďalšia jazda nežiada.
+
+## Natívny smer semafora na mieste incidentu – 10. 10. 2026
+
+[PHASE7_SIGNAL_NATIVE_DIRECTION_20261010.md](PHASE7_SIGNAL_NATIVE_DIRECTION_20261010.md)
+dokladá chybu dodatočného otočenia natívneho smeru o 180°. Pôvodný PPD objekt
+skupiny 3 sa zhoduje s uloženou zelenou hlavou ID 3 na 0,01578 mm a reguluje
+opačný prejazd; naša trasa používa skupinu 1. Opravené je scoped priradenie aj
+hodnotenie neistého smeru, bez premapovania ID, novej DLL či vydania pluginu.
+Vzdialenostná a packet-refresh oprava zostávajú. Produkčný offline model
+v oboch režimoch dokončí opakované červená–držanie–zelená–rozjazd cykly.
+
+Otvorené zostávajú historicky neuložené owner/kind údaje celej natívnej snímky,
+živá prítomnosť vlastnej hlavy skupiny 1, účinok súvislej SDK brzdy v hre,
+držanie na svahu a presná stop čiara. PPD objekty bez vehicle navCurve väzby
+sa bez znalosti runtime druhu nevyhlasujú za cudzie. Legacy unscoped heuristika
+nie je týmto overená. Celé herné miesto preto nie je označené GAME VERIFIED.
+Ďalšia jazda sa teraz nežiada; pred nasadením zostáva používateľova celá sada
+a samostatný súhlas s konzistentným balíkom.
+
+## Dokončenie smerovaného semafora a traffic autority – 9. 10. 2026
+
+[PHASE7_SIGNAL_AND_TRAFFIC_COMPLETION_20261009.md](PHASE7_SIGNAL_AND_TRAFFIC_COMPLETION_20261009.md)
+uzatvára reprodukované softvérové chyby offline: natívne vlastníctvo lampy namiesto
+zámeny jej výšky za vrstvu vozovky, neplatný display traffic používaný na brzdu,
+brzdenie po predĺžení osi kabíny mimo skutočnej zakrivenej trasy a prudký nábeh
+potvrdenej brzdy pri státí. Podporované opakované červená–držanie–zelená cykly
+prešli na troch reálnych prefaboch v oboch režimoch. Kandidát Autopilot 1.3.3,
+Map 1.1.1 a DLL 1.59.3-up-signal-scope sa nenasadili; inštalácia stále 1.3.1.
+
+Existujúci PedalJournal automaticky zapečatí významnú udalosť aj pred vypnutím,
+s jedným čakajúcim slotom, štyrmi exportmi za minútu a diskovou kvótou 8 súborov /
+16 MiB. Zaznamenáva straty a neúplnosť; staré dáta nemaže. Nevyžaduje armovanie.
+Steering a všeobecné komfortné benchmarky zostávajú numericky nezmenené.
+
+Presná historická hlava a pôvodný skorší actor/TTC stále chýbajú: report
+neprisudzuje týmto incidentom syntetické vstupy. Neoverené zostávajú živé
+prefab UID/node/origin/group priradenie, úplné pokrytie križovatiek, spotreba
+súvislej SDK brzdy, držanie na svahu a geometria predku/stop čiary. Nový scoped
+kontrakt umožňuje podporovaný tok, ale nenahrádza tieto herné dôkazy.
+Starší report BLOCKED sa tým dopĺňa o hotové offline opravy, nie o tvrdenie
+vyriešenej historickej jazdy. Ďalšia jazda sa teraz nežiada; najbližšia brána je
+celá pytest sada používateľa, potom samostatne schválené konzistentné nasadenie.
+
+## Prehliadnutá červená a brzdenie pred druhým objazdom – 9. 10. 2026
+
+[PHASE7_SIGNAL_COVERAGE_AND_BRAKE_REVIEW_20261009.md](PHASE7_SIGNAL_COVERAGE_AND_BRAKE_REVIEW_20261009.md)
+oddeľuje nové dve aktivácie zostavy 1.3.1 od starších jázd. Opravené offline:
+tiché pokračovanie pri nepriradenej živej hlave, potlačenie jej čerstvej farby
+v HUD a zachovanie silnejšieho núdzového zásahu pri odovzdaní. Kandidát 1.3.2
+sa nenasadil. Nepriradená hlava vyžaduje prevzatie, nie vymyslenú červenú či
+potvrdený voľný prejazd. Známy uzamknutý semafor a súvislá brzda zostávajú.
+
+Celé vyriešenie incidentov zostáva BLOCKED: historická surová hlava a
+spotrebovaná selekcia pri prehliadnutej červenej nie sú uložené; skorší brzdný
+impulz je mimo zachovanej 30-sekundovej pedálovej histórie. Jeho pôvodný
+traffic brake_basis/actor/TTC a SDK posted speed limit sa nedajú obnoviť.
+Pôvodná pozorovaná geometria sa dala analyticky obnoviť; jej profil pri danom
+úseku nepotvrdzuje skok na 20 km/h. Regulátor ani profil sa naslepo nemenili.
+Herné pokrytie semaforov, presná stop čiara a HUD skok zostávajú neoverené.
+Nová jazda sa v tejto úlohe nežiada a kandidát nie je označený za herne hotový.
+
+## Kvalifikácia semafora, dojazd a observer – 8. 10. 2026 večer
+
+[PHASE7_SIGNAL_APPROACH_CONSISTENCY_20261008.md](PHASE7_SIGNAL_APPROACH_CONSISTENCY_20261008.md)
+dokladá reprodukcie na oboch skutočných prefabových umiestneniach večernej
+jazdy, nesprávne naviazanie bežnej ACC brzdy na budúce zastavenie, zamknutie
+slabej dojazdovej brzdy, pretek pri dopisovaní game.log a zastaraný súhrn
+pripravenosti pri okamžitom ďalšom N. Opravy sú overené offline; nie sú nasadené.
+Strata už kvalifikovanej hlavy naďalej vyžaduje bezpečné čakanie a rovnakú
+čerstvú zelenú. Volant a všeobecný pozdĺžny benchmark sú numericky nezmenené.
+
+Otvorené zostávajú namaľovaná stop čiara a geometria predku, účinok súvislého
+SDK brzdenia a držania na svahu, presné historické bajty pri čítaní game.log,
+pôvodný odmietnutý súhrn navigačnej pripravenosti a používateľom hlásený pád
+bez aktuálneho tracebacku. Silnejšie držanie v modeli zvyšuje jerk tesne pri
+státí; komfort v ETS2 sa preto nepovažuje za potvrdený. Samostatné bezpečné
+držanie pri novej aktivácii už stojaceho vozidla v jednoduchej automatike
+ostáva obmedzením. Ďalšia jazda sa v tejto úlohe nežiada.
+
+## Spoločný semaforový tok – 8. 10. 2026
+
+[PHASE7_SIGNAL_STOP_LIFECYCLE_20261008.md](PHASE7_SIGNAL_STOP_LIFECYCLE_20261008.md)
+dokladá opravu prerušenia plánovanej brzdy bez živého signal locku a obnovu
+väzby po návrate toho istého autorovaného semafora. Offline model znížil
+prepnutia plyn/brzda z 13 na dve očakávané zmeny; normálna červená,
+volant a pozdĺžny komfort sú numericky nezmenené. Nepotvrdené zostávajú
+účinky SDK v hre, príčina pohybu pri držaní o 17:28:56 a pôvodný odmietnutý
+ACC vstup o 17:29:00, ktorý export neuchoval. Chýbajúci živý semafor ani
+zmiznutý aktér nepovoľujú rozjazd. Existujúce obmedzenie bezpečného držania
+pri novej aktivácii zo státia ostáva; ďalšia jazda sa teraz nežiada.
+
 ## Spoločný brzdový tok a krížiaca premávka – 6. 10. 2026
 
 [PHASE7_JOINT_STOP_TRAFFIC_20261006.md](PHASE7_JOINT_STOP_TRAFFIC_20261006.md)
@@ -317,3 +504,67 @@ zelenú zostávajú neoverené. Po celej sade používateľa a schválenom spolo
 nasadení core stačí overiť podporovaný jeden semaforový cyklus. Výber hlavy je
 geometrická heuristika; chýbajúca alebo nejednoznačná zelená ani zmiznuté auto
 nesmú povoliť pokračovanie. Parkovacia brzda vodiča zostáva mimo autority.
+
+## Obnova packetov a technické vypnutia 9. 10.
+
+[PHASE7_PACKET_REFRESH_RELIABILITY_20261010.md](PHASE7_PACKET_REFRESH_RELIABILITY_20261010.md)
+oddeľuje opravené opakované rozbaľovanie geometrie, prefabovú enumeráciu a
+pretek pri ohraničenom nulovom pozdĺžnom odovzdaní od zatiaľ nevysvetlenej
+vnútornej pauzy Mapu 620/477 ms. Offline integračné scenáre a benchmarky sú
+doložené, no pôvodný vnútorný krok nie je historicky preukázaný. Chýbajúce
+časovanie jednotlivých operácií referencie sa teraz ukladá v existujúcom exporte;
+nevznikol nový zberač ani požiadavka na ďalšiu jazdu. Limit 500 ms a skutočné
+bezpečnostné zastavenie zostávajú. Žiadna zmena sa automaticky nenasadila.
+
+Po používateľovej celej sade a osobitne schválenom nasadení zostáva akceptácia
+aspoň 5 km kontrolovanej jazdy vrátane semaforového zastavenia a pokračovania.
+Táto akceptácia zatiaľ neprešla; report nevyhlasuje problém úplne vyriešený.
+
+Pokračovanie dokladá štvrtú opravu: Map už pri obsadenom evidence workeri
+nečíta dva veľké vstupy, ktoré by worker zahodil. História od 221cc90 odlišuje
+novšie evidence čítania a opakovanú lokalizáciu od staršieho prefabového DFS.
+Tri párové merania so súbežnými exportmi zlepšili p95 obnovy packetov, ale
+maximum veku pri zápise sa zhoršilo (179,8 → 192,4 ms); širšia spoľahlivosť
+preto zostáva nepreukázaná. Historické vnútorné pauzy 620/477 ms nemajú
+dostatočné pôvodné časové značky na jednoznačné pripísanie operácii či GC.
+
+Úspešná jazda už vie v existujúcom combined, passive a dense exporte uchovať
+časovanie referencie a presne sekvenovaný predchádzajúci dokončený Map tick,
+vrátane práce po publikovaní a medzery pred ďalším tickom. Izolovaný export
+cez skutočný vykonávač a Engine prešiel bez automatického vypnutia. OFFLINE
+VERIFIED sa vzťahuje na štyri reprodukované chyby a kontrakt exportu;
+GAME VERIFIED na aktuálnom kandidátovi zatiaľ chýba. Verzie sa nemenili,
+inštalácia ani starý checkout neboli upravené.
+
+## Traffic availability incident — 10 October
+
+[PHASE7_TRAFFIC_AVAILABILITY_20261010.md](PHASE7_TRAFFIC_AVAILABILITY_20261010.md)
+records the shared envelope/usability correction, explicit required-demand and
+signal-coverage validation, bounded source-ID diagnostics and first-fault export
+preservation. The actual first AP comparison is missing; the earlier optional
+traffic packet accompanied a successful write and is not substituted for it.
+Original actor rows/pointers/common generation were not retained, so the native
+duplicate-ID cause is not historically established. No new drive is requested.
+Core-only changes are offline verified; no plugin version or DLL changed and
+nothing was deployed. Traffic publisher freshness, actor lane/coverage proof and
+this correction's game result remain unverified. The earlier frozen packet-refresh
+bundle does not include the new four-file core correction.
+
+## Distance-aware unassigned signal incident — 10 October evening
+
+[PHASE7_SIGNAL_DISTANCE_CONTRACT_20261010.md](PHASE7_SIGNAL_DISTANCE_CONTRACT_20261010.md)
+documents the actual green ID 3 / 119.739 m directed-entry premature takeover.
+The candidate uses bounded distance-aware uncertainty, the shared existing
+stopping envelope and original signal lease. Four deployed-selector
+counterexamples fail; qualified stop/hold/green/restart remains supported in
+both automatics. ACC 1.1.5 and DrivePolicy 1.1.1 consume that same constraint;
+Autopilot/Map/DLL versions are unchanged. No deployment or game result.
+
+The original native owner fields and full head array were not retained; native
+instance ID 3 is not proven to be authored control group 1 on the reconstructed
+passage. Complete coverage at that place remains NOT VERIFIED. A later stop
+before the conflict is still required if qualification cannot be established;
+moving the early intervention is not completion of signal coverage. The
+existing bounded incident receipt now retains owner, compared map input and
+derived-target/reserve fields without arming or new SDK/IPC reads. No new drive
+is requested, and unknown color/disappearance is never automatic clearance.
