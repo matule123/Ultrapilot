@@ -20,7 +20,7 @@ def timing_flow(flow, tmp_path, mode=0):
     path, _ = place(tmp_path); entry = path.points[0]
     def step(gen, color, *, speed=3., gear=4, progress=35., other=0., remaining=60., age=0., on_steering=None):
         import math
-        distance = 50.-progress
+        distance = state.get('lane_trajectory')['signal_passages']['passages'][0]['entry_progress_m']-progress
         truck.update(x=entry.x+distance*math.sin(entry.heading), z=entry.z+distance*math.cos(entry.heading))
         flow[4](gear, speed, dt=.06)
         packet = state.get('nav_steering_debug'); packet['tracking_progress_m'] = progress
@@ -73,7 +73,8 @@ def test_new_green_releases_moving_signal_chain_without_waiting_for_zero(flow, t
     path, _ = place(tmp_path); entry = path.points[0]
     def step(gen, color, speed=3., other=0., remaining=60.):
         import math
-        truck.update(x=entry.x+15*math.sin(entry.heading), z=entry.z+15*math.cos(entry.heading))
+        distance = state.get('lane_trajectory')['signal_passages']['passages'][0]['entry_progress_m']-35.
+        truck.update(x=entry.x+distance*math.sin(entry.heading), z=entry.z+distance*math.cos(entry.heading))
         flow[4](4, speed, dt=.06)
         packet = state.get('nav_steering_debug'); packet['tracking_progress_m'] = 35.
         state.set('nav_steering_debug', packet); state.set('truck_speed_ms', speed)

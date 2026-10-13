@@ -77,6 +77,8 @@ def run(directory,*,speed_kmh=50.,mode=0,turn=False,reverse=False,jitter=False,
     v=speed_kmh/3.6;s=initial_progress;t=0.;gear=8 if v else 0
     act_t=act_b=held_t=held_b=0.;queue=deque();rng=random.Random(7610)
     entry=plan['passages'][0]['entry_progress_m'];first_stop=None;green_at=None;rows=[];red=speed_kmh>0
+    reference_offset = (plan['passages'][0]['front_allowance_m']
+                        + plan['passages'][0]['junction_standoff_m'])
     previous_phase=None
     disturbance_done=False
     moved=v>.5
@@ -121,7 +123,9 @@ def run(directory,*,speed_kmh=50.,mode=0,turn=False,reverse=False,jitter=False,
                 red=red_started=True
             if v<.01 and moved and red_started and first_stop is None and (phase is None or red):
                 first_stop=dict(t=t,progress_m=s,model_front_progress_m=s+front_m,
-                    front_gap_to_entry_m=entry-s-front_m,reference_gap_to_target_m=entry-s-8.)
+                    front_gap_to_entry_m=entry-s-front_m,
+                    reference_offset_m=reference_offset,
+                    reference_gap_to_target_m=entry-s-reference_offset)
                 if phase is None: green_at=t+1.
             if phase is None and green_at and t>=green_at:red=False
             if duration_limit_s is not None and (t>=duration_limit_s or s>=r._cumulative_m[-1]-1.):

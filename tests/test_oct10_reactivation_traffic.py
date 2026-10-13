@@ -154,15 +154,22 @@ def test_reactivated_red_wait_then_green_and_moving_green_releases(flow, tmp_pat
     values, step, old = reactivation(flow, tmp_path, mode)
     state, truck, engine, ap, tick, n, clock, writes, collector = values
     tick.policy.on_tick(.02); tick.acc.on_tick(.02); ap.on_tick(.02); engine._flush_controls()
-    for gen in range(31,34): step(gen,'red',speed=2.,progress=48.)
+    passage = state.get('lane_trajectory')['signal_passages']['passages'][0]
+    # Stay just BEFORE the current derived target. The old 48 m ruler now
+    # lies beyond the fixture's authored entrance after its 5 m update.
+    stop_progress = (passage['entry_progress_m']-passage['front_allowance_m']
+                     -passage['junction_standoff_m']-.1)
+    for gen in range(31,34):
+        signal = step(gen,'red',speed=2.,progress=stop_progress)
+        assert signal['valid'] and signal['candidate']['distance'] == pytest.approx(.1)
     start=len(writes)
-    for gen in range(34,40): step(gen,'red',speed=0.,progress=48.,gear=0 if mode==0 else 4)
+    for gen in range(34,40): step(gen,'red',speed=0.,progress=stop_progress,gear=0 if mode==0 else 4)
     assert state.get('autopilot_active') and pedal(engine,'abackward') > 0.
     assert all(v>0 for _,ch,v,_ in writes[start:] if ch=='abackward')
-    for gen in range(40,50): step(gen,'green',speed=0. if gen<43 else .3,progress=48.,gear=0 if mode==0 and gen<43 else 4)
+    for gen in range(40,50): step(gen,'green',speed=0. if gen<43 else .3,progress=stop_progress,gear=0 if mode==0 and gen<43 else 4)
     assert state.get('autopilot_active') and pedal(engine,'aforward') > 0., state.get('navigation_status')
-    for gen in range(50,53):step(gen,'red',speed=1.,progress=48.)
-    for gen in range(53,60):step(gen,'green',speed=.92,progress=48.)
+    for gen in range(50,53):step(gen,'red',speed=1.,progress=stop_progress)
+    for gen in range(53,60):step(gen,'green',speed=.92,progress=stop_progress)
     assert state.get('simple_auto_service_hold') is None
     assert state.get('autopilot_active') and pedal(engine,'aforward') > 0.
     assert not any(ch=='parkingbrake' for _,ch,v,_ in writes[start:])

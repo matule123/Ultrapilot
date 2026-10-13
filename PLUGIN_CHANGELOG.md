@@ -7,6 +7,8 @@ Release history for individual plugins. See [PLUGIN_VERSIONS.md](PLUGIN_VERSIONS
 ### 1.1.9 — unreleased, 2026-10-12
 
 - Discard only positive PID integral accumulated for a qualified signal approach when its computed drive was not executed because the shared stop profile selected coast. Keep gains, derivative state, negative integral unwinding, other limits and emergency priority unchanged.
+- Coordinated core follow-up: a freshly confirmed same-head green can transfer a still-moving qualified approach in simple-auto ratio zero to the existing bounded launch owner. Actual forward-started traffic/obstacle brake writes also retain continuous stop ownership without requiring a semaphore. Missing obstacle clearance remains a takeover limitation; disappearance is not permission to restart. ACC implementation and VERSION remain 1.1.9 at the user's request.
+- Coordinated core follow-up, 2026-10-13: at the user's explicit request, change the directed prefab-entry SDK-reference offset from 8 m to 5 m, applied once through the existing target fields. Retain the stopping envelope, pedal controller, continuous brake, green confirmation and safety guards. The remaining 3 m planning component is not a measured truck front; painted-line clearance is still unverified. No ACC implementation or VERSION change. See [PHASE7_FIVE_METRE_STOP_REFERENCE_20261013.md](PHASE7_FIVE_METRE_STOP_REFERENCE_20261013.md).
 
 ## Map
 

@@ -71,12 +71,17 @@ def real_flow(flow, directory, case, mode=0, *, scoped=False):
     state, truck, engine, ap, tick, n, clock, writes, collected = values
     path, plan = actual_path(directory, case)
     p = path.points[0]; heading = p.heading
-    # Explicit 50 m straight approach to the REAL authored entry. It is a
-    # model prelude, not a replacement of the game's LanePath geometry.
-    start = [p.x+50.*math.sin(heading),p.y,p.z+50.*math.cos(heading)]
+    # Keep this lifecycle scenario's initial 42 m TO ITS PLANNED TARGET.
+    # The authorized 8 -> 5 m reference-policy change moves the synthetic
+    # start 3 m closer to the same real authored entry. Both pose and progress
+    # change together; no stop distance, recorded PPD or assertion is forged.
+    # Independent Oct 13 closed-plant tests keep a fixed 100 m entry approach.
+    passage = plan['passages'][0]
+    approach = 42.+passage['front_allowance_m']+passage['junction_standoff_m']
+    start = [p.x+approach*math.sin(heading),p.y,p.z+approach*math.cos(heading)]
     lane = state.get('lane_trajectory')
     lane['points'] = [start]+[[p.x,p.y,p.z] for p in path.points]
-    plan['passages'][0]['entry_progress_m'] += 50.
+    plan['passages'][0]['entry_progress_m'] += approach
     lane['signal_passages'] = plan
     if scoped:
         # Production SharedState publishes small authority metadata atomically

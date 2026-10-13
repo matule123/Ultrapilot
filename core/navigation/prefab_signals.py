@@ -8,8 +8,11 @@ import math
 import hashlib
 from core.acc_following import RouteLeadSelector
 
-FRONT_ALLOWANCE_M = 6.0  # planning assumption, NOT an SDK-measured body extent
+STOP_REFERENCE_OFFSET_M = 5.0  # authorized SDK-reference convention, NOT a measured painted-line gap
 JUNCTION_STANDOFF_M = 2.0
+# Preserve the existing transport fields and subtract the total exactly once.
+# This remaining component is a planning allowance, NOT an SDK body extent.
+FRONT_ALLOWANCE_M = STOP_REFERENCE_OFFSET_M - JUNCTION_STANDOFF_M
 MAX_PASSAGES = 128
 
 
@@ -107,7 +110,7 @@ def prepare_signal_passages(network, path):
                     for i in owned if abs(path.points[i].curvature)>1e-6), default=40.),
                 stop_target_kind='derived_directed_curve_entry',stop_line_verified=False,
                 front_allowance_m=FRONT_ALLOWANCE_M,junction_standoff_m=JUNCTION_STANDOFF_M,
-                front_geometry_status='conservative_unmeasured_allowance'))
+                front_geometry_status='unmeasured_sdk_reference_policy'))
             if len(result['passages']) > MAX_PASSAGES:
                 return dict(result,status='unavailable',passages=[],blockers=['passage capacity exceeded'])
     result['passages'].sort(key=lambda p:(p['entry_progress_m'],p['passage_key']))

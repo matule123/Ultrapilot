@@ -1,5 +1,41 @@
 # Odložená a nedokončená práca
 
+## Authorized five-metre planning reference — 13 October
+
+[PHASE7_FIVE_METRE_STOP_REFERENCE_20261013.md](PHASE7_FIVE_METRE_STOP_REFERENCE_20261013.md)
+implements the user's explicit 8 -> 5 m SDK-reference policy after paired
+production-path offline verification. No new controller, line calibration,
+parking operation or ACC version is introduced. The historical 6+2 m baselines
+below remain historical evidence; their reserve is superseded for new prepared
+signal passages. Exact painted-line/bumper clearance remains unmeasured and
+the existing stationary +2.3377 m calibration is not activated. Conservative
+body clearance is not certified for all trucks by copying ETS2LA's heuristic.
+Full user pytest PASS and separate deployment approval remain gates; no game
+verification is claimed.
+
+## ETS2LA stop-target source comparison
+
+[PHASE7_ETS2LA_STOP_REFERENCE_COMPARISON_20261012.md](PHASE7_ETS2LA_STOP_REFERENCE_COMPARISON_20261012.md)
+verifies a concrete same-entry target difference: local ETS2LA Python subtracts
+5 m; UltraPilot subtracts 6+2 m, placing its reference target 3 m earlier.
+This is separate from regulator residual and does not measure bumper/painted-line
+clearance. No blind global reserve reduction, new acceleration controller or
+runtime change was made; a scoped equivalent target remains an implementation
+candidate requiring the unchanged directed/safety contracts.
+
+## Oct 12 moving-green and non-signal brake lifecycle
+
+[PHASE7_GREEN_APPROACH_AND_TRAFFIC_HOLD_20261012.md](PHASE7_GREEN_APPROACH_AND_TRAFFIC_HOLD_20261012.md)
+corrects the reproduced moving-green ratio-zero deadlock and missing physical
+hold ownership for forward-started Traffic braking without a semaphore. Existing
+bounded launch, actual brake chain, first-fault evidence and safety gates remain.
+ACC stays 1.1.9; no new plugin version, DLL, controller or geometry change.
+Actual obstacle clearance remains unavailable, so disappearance cannot restart
+a stopped vehicle. The early crossing actor poses needed to adjudicate abrupt
+braking and the bound bumper/painted-line geometry remain missing. Exact stop
+distance and the legitimacy of that crossing prediction are not closed; no
+candidate deployment or GAME VERIFIED claim is made.
+
 ## Terminal approach to the unchanged planning target
 
 [PHASE7_STOP_AND_MANEUVER_INDICATORS_20261012.md](PHASE7_STOP_AND_MANEUVER_INDICATORS_20261012.md)

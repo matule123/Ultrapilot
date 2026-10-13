@@ -1715,6 +1715,8 @@ class UltraPilotEngine:
             transmission_preference=self.shared_state.get('transmission_mode_preference', 'auto'),
             identity=tuple(lane.get(k) for k in ('navigation_intent_id','revision','route_build_id',
                 'source_game_session_id','source_map_key','source_dataset_fingerprint')),
+            moving_signal_resume=bool(mode == 0 and int(truck['gear']) == 0
+                                      and float(truck['speed']) > .05),
             signal_resume=witness)
         if mode == 0:
             self._simple_auto_forward_history = history
@@ -1947,8 +1949,15 @@ class UltraPilotEngine:
                 "SCS backend počas rozjazdu nie je dostupný")
             return True
         speed_limit = 0.5 if pending["mode"] == 0 else 0.05
+        # The standstill launch ceiling is not a limit on a previously
+        # admitted, still-moving same-signal approach. Its restart retains
+        # the original bounded launch/receipt deadlines and rechecks the
+        # immutable green witness, route, SDK and reverse conditions above.
+        moving_signal_resume = (pending["mode"] == 0
+            and pending.get('moving_signal_resume') is True
+            and pending.get('signal_resume') is not None)
         if (not math.isfinite(speed) or speed < -0.10
-                or (gear <= 0 and speed >= speed_limit)):
+                or (gear <= 0 and speed >= speed_limit and not moving_signal_resume)):
             self._cancel_auto_drive_engagement_unlocked(
                 "rýchlosť počas rozjazdu nie je bezpečná")
             return True
@@ -3355,6 +3364,16 @@ class UltraPilotEngine:
                 from core.service_brake_hold import resume_rejection
                 if not resume_rejection(clear_signal, self.shared_state):
                     if abs(float(truck_telemetry['speed'])) < .05:
+                        self._resume_signal_wait(truck_telemetry, clear_signal)
+                        return
+                    if (getattr(self, '_active_transmission_mode', None) == 0
+                            and int(truck_telemetry['gear']) == 0):
+                        # A qualified moving approach can coast into ratio 0.
+                        # Fresh SAME-head clearance transfers this admitted
+                        # approach to the existing fixed bounded launch owner;
+                        # waiting for ratio >0 without drive would deadlock.
+                        # Other stops and final green/identity checks above are
+                        # unchanged. No old pedal/frame is renewed or reused.
                         self._resume_signal_wait(truck_telemetry, clear_signal)
                         return
                     # Moving green clears ONLY the signal's commitment. The

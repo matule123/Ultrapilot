@@ -365,23 +365,26 @@ def test_actual_map_build_late_zero_brake_and_repeated_green_restart(flow,tmp_pa
         tick(0,0.,-220.);n();tick(0,0.,-220.)
         assert pedal(engine,'aforward')==pytest.approx(.12)
         tick(4,.001,-220.);tick(4,.2,-220.);tick(4,.3,-220.)
-        # At the derived stop target the real planner requests braking even
-        # at crawl speed. A red head 7 m farther away permits approach, and
-        # would not be a valid first-brake reproduction at .54 m/s.
-        for i in range(1,165):tick(4,.54,-220.+i*.5)
-        for _ in range(6):tick(4,.54,-138.,flush=False)
+        # Use the actual prepared target, not the old -138 m / 8 m offset.
+        # Pose and Map progress change together; no brake/authority is injected.
+        passage=state.get('lane_trajectory')['signal_passages']['passages'][0]
+        offset=passage['front_allowance_m']+passage['junction_standoff_m']
+        stop_z=passage['entry_xyz'][2]+offset*math.cos(math.pi)
+        for i in range(1,165):tick(4,.54,-220.+(stop_z+220.)*i/164.)
+        for _ in range(6):tick(4,.54,stop_z,flush=False)
         activation=state.get('simple_auto_activation_token')
         for _ in range(3):
-            tick(0,.54,-138.,color=2)
+            tick(0,.54,stop_z,color=2)
+            assert state.get('longitudinal_traffic')['light']['distance'] == pytest.approx(0.,abs=1e-6)
             assert state.get('autopilot_active'),state.get('autopilot_disable_reason')
             assert pedal(engine,'abackward')>0 and pedal(engine,'aforward')==0
             count=len(writes)
-            for speed in (.2,.06,.01,0.,0.):tick(0,speed,-138.,color=2)
+            for speed in (.2,.06,.01,0.,0.):tick(0,speed,stop_z,color=2)
             assert all(v>0 for _,c,v in writes[count:] if c=='abackward')
             assert not engine.controller.current_hazard
-            tick(0,0.,-138.,color=8);tick(0,0.,-138.,color=8,dt=.12)
-            tick(0,0.,-138.,color=8)
-            for gear,speed in ((4,.001),(4,.2),(4,.3), (4,.54)):tick(gear,speed,-138.)
+            tick(0,0.,stop_z,color=8);tick(0,0.,stop_z,color=8,dt=.12)
+            tick(0,0.,stop_z,color=8)
+            for gear,speed in ((4,.001),(4,.2),(4,.3), (4,.54)):tick(gear,speed,stop_z)
             assert state.get('autopilot_active'),state.get('autopilot_disable_reason')
             assert pedal(engine,'aforward')>0 and pedal(engine,'abackward')==0
             assert state.get('simple_auto_activation_token')==activation

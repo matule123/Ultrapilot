@@ -158,7 +158,8 @@ def model_case(directory, *, speed=35., mode=0, approach_curvature=0., program=N
 
 def model_metrics(result):
     stopped = result['stop']
-    entry = (stopped['progress_m'] + stopped['reference_gap_to_target_m'] + 8.) if stopped else None
+    entry = (stopped['progress_m'] + stopped['reference_gap_to_target_m']
+             + stopped['reference_offset_m']) if stopped else None
     # Different fronts are a geometry sensitivity analysis, NOT different
     # calibrated vehicle response plants. The controller has no such input.
     fronts = {str(front): entry-stopped['progress_m']-front for front in (3., 4., 6.)} if stopped else None

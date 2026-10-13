@@ -165,7 +165,9 @@ def test_actual_place_foreign_green_then_own_red_hold_green_backend(flow,tmp_pat
     raw,heads=authored_heads(); path,plan=place(tmp_path); entry=path.points[0]
     generation=[20]
     def step(gear,speed,*,green=False,foreign_only=False,traffic_brake=0.,missing=False):
-        truck.update(x=entry.x+9.*math.sin(entry.heading),z=entry.z+9.*math.cos(entry.heading))
+        # Same one-metre terminal gap under the current reference convention.
+        distance = state.get('lane_trajectory')['signal_passages']['passages'][0]['entry_progress_m']-41.
+        truck.update(x=entry.x+distance*math.sin(entry.heading),z=entry.z+distance*math.cos(entry.heading))
         flow[4](gear,speed,dt=.05)
         packet=state.get('nav_steering_debug');packet['tracking_progress_m']=41.
         state.set('nav_steering_debug',packet)

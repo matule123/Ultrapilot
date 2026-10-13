@@ -81,10 +81,10 @@ def test_prefab_assignment_uses_route_id_not_nearest_green_head(tmp_path):
         'publication',('authority',),dict(x=0.,y=10.,z=0.,rotation=0.,speed=50/3.6),0.,plan)
     assert result['valid'],result
     assert result['candidate']['id']==3
-    assert result['candidate']['distance']==pytest.approx(92.)
+    assert result['candidate']['distance']==pytest.approx(95.)
     assert result['candidate']['stop_target_kind']=='derived_directed_curve_entry'
     assert result['candidate']['stop_line_verified'] is False
-    assert result['candidate']['front_allowance_m']==6.
+    assert result['candidate']['front_allowance_m']==3.
     assert result['candidate']['junction_standoff_m']==2.
 
 
@@ -180,7 +180,12 @@ def test_locked_passage_green_rejects_new_build_and_stale_source(tmp_path):
 def test_real_policy_acc_backend_stop_wait_and_green_resume(tmp_path,mode):
     from tools.run_prefab_signal_bench import run
     result=run(tmp_path,mode=mode,jitter=True)
-    assert result['stop']['front_gap_to_entry_m']>=2.
+    # User-authorized total is 5 m. This plant explicitly assumes a 4 m
+    # front, leaving 1 m at the planned target, not the old >=2 m policy.
+    # This is entry/model arithmetic, never measured painted-line clearance.
+    assert result['stop']['reference_offset_m']==5.
+    assert result['stop']['reference_gap_to_target_m']>=0.
+    assert result['stop']['front_gap_to_entry_m']>=1.
     assert result['resumed_without_n'] and result['active']
     assert result['simultaneous_positive_pedals']==result['parking_writes']==result['hold_brake_zero_count']==0
     writes=result['writes']
@@ -212,7 +217,9 @@ def test_head_distance_counterfactual_overruns_entry_but_derived_target_does_not
     assert not wrong_target['active'] and wrong_target['stop'] is None
     assert not wrong_target['resumed_without_n']
     assert 'signal regulation coverage unverified' in wrong_target['termination_reason']
-    assert current['stop']['front_gap_to_entry_m']>=2.
+    assert current['stop']['reference_offset_m']==5.
+    assert current['stop']['reference_gap_to_target_m']>=0.
+    assert current['stop']['front_gap_to_entry_m']>=1.  # 5 m target minus explicit 4 m model front
     assert current['red_entry_overrun_samples']==0
     assert current['active'] and current['resumed_without_n']
     assert current['maximum_deceleration_mps2']<wrong_target['maximum_deceleration_mps2']
@@ -233,7 +240,9 @@ def test_launch_without_manual_throttle_then_signal_cycle(tmp_path,mode):
     # movement. This does not claim autonomous stationary red-light holding.
     result=run(tmp_path,mode=mode,speed_kmh=0.,jitter=True)
     assert result['active'] and result['resumed_without_n']
-    assert result['stop']['front_gap_to_entry_m']>=2.
+    assert result['stop']['reference_offset_m']==5.
+    assert result['stop']['reference_gap_to_target_m']>=0.
+    assert result['stop']['front_gap_to_entry_m']>=1.  # explicit model, not measured body/line
     assert result['simultaneous_positive_pedals']==0
 
 
@@ -278,7 +287,7 @@ def test_derived_stop_receipt_survives_existing_combined_export(tmp_path,monkeyp
     assigned=[s for s in signals if (s.get('candidate') or {}).get('passage_key')]
     assert assigned, 'bounded journal discarded the derived target receipt'
     assert all(s['candidate']['stop_line_verified'] is False for s in assigned)
-    assert all(s['candidate']['front_allowance_m']==6. for s in assigned)
+    assert all(s['candidate']['front_allowance_m']==3. for s in assigned)
     assert any(e['source'].get('phase')=='signal_resume' and e['pair_after']['throttle']>0 for e in events)
 
 
@@ -376,7 +385,7 @@ def test_distinct_control_groups_at_same_entry_do_not_choose_arbitrary_green(tmp
     result=selector.select(snap,points,'p',('a',),truck,0.,plan)
     assert not result['valid'] and result['candidate'] is None
     assert result['reason']=='ambiguous regulated prefab passages'
-    assert result['stop_candidate']['color']=='unknown' and result['stop_candidate']['distance']==92.
+    assert result['stop_candidate']['color']=='unknown' and result['stop_candidate']['distance']==95.
 
 
 def test_missing_authored_id_cannot_be_replaced_by_geometric_green(tmp_path):

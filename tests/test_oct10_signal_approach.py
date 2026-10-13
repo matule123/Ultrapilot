@@ -35,7 +35,7 @@ def test_distant_native_unqualified_entry_is_planned_not_immediate_takeover(tmp_
     assert not result['valid'] and result['candidate'] is None
     assert not result['coverage']['requires_takeover']
     assert result['coverage']['requires_approach']
-    assert result['coverage']['approach_target']['distance']==pytest.approx(112.)
+    assert result['coverage']['approach_target']['distance']==pytest.approx(115.)
     assert result['unassigned_candidate']['id']==999
     assert result['observed_at']==1000. and result['generation']==12
 
@@ -115,16 +115,19 @@ def test_unresolved_entry_does_not_expire_by_new_buffer_reads_or_clear_on_rerout
 def test_actual_progress_and_speed_decide_uncertainty_reserve(tmp_path):
     snap,points,plan,truck=scene(tmp_path,distance=120.,speed=6.)
     selector=RouteSignalSelector()
-    for progress,speed,takeover in ((0.,6.,False),(50.,6.,False),(75.,6.,False),(85.,6.,True)):
+    # The unchanged 27 m reserve is crossed 3 m later with a 5 m target.
+    # Keep the old 85 m pose as a negative case and exercise the new boundary.
+    for progress,speed,takeover in ((0.,6.,False),(50.,6.,False),(75.,6.,False),
+                                    (85.,6.,False),(88.,6.,True)):
         moved=dict(truck,x=truck['x']-progress*math.sin(truck['rotation']),
                    z=truck['z']-progress*math.cos(truck['rotation']),speed=speed)
         current=dict(snap,generation=12+int(progress),observed_at=1000.+progress*.05)
         result=selector.select(current,points,'route',('authority',),moved,progress,plan)
         assert result['coverage']['requires_takeover']==takeover
         assert result['coverage']['stopping_reserve_m']==pytest.approx(27.)
-        assert result['coverage']['approach_target']['distance']==pytest.approx(112.-progress)
+        assert result['coverage']['approach_target']['distance']==pytest.approx(115.-progress)
         assert signal_approach_speed_limit({'signal':result},speed)==pytest.approx(
-            math.sqrt(2*max(0.,112.-progress-9.)))
+            math.sqrt(2*max(0.,115.-progress-9.)))
         assert not result['coverage']['clearance_confirmed']
 
 

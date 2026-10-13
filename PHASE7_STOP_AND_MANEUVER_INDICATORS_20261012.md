@@ -203,3 +203,17 @@ Neither the 2.34 m local offset nor a generic truck overhang is activated.
 Existing model residual and idle sensitivity remain open separately from that
 geometry. No new journey is requested here. Offline corrections do not certify
 game consumption, exact painted-line placement or all intersections.
+
+## Authorized deployment — 12 October 2026
+
+After user-reported final full-suite PASS and explicit deployment approval,
+eight runtime files above plus changelog were copied with both UltraPilot and
+ETS2 verified stopped. All 22 prior receipt hashes matched; the expanded receipt
+covers 24 files, adding PID and the new turn-maneuver module. All nine changed
+source/installed hashes and all 24 final receipt hashes match.
+
+Backup: `C:\Users\PC\AppData\Local\UltraPilotBackups\stop-indicators-20261012T175215479Z`.
+Receipt: `docs/steering-audit/manual-deployment-stop-indicators-20261012T175215479Z.json`.
+Installed ACC 1.1.9, Map 1.1.2, TurnSignals 1.0.2. DLL, settings, caches and app
+version/commit marker were unchanged. No application or game was launched.
+DEPLOYED / GAME NOT VERIFIED; physical stop-line placement remains open.

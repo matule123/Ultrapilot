@@ -36,7 +36,8 @@ def test_selector_and_planner_subtract_spatial_margins_once(tmp_path, turn, spee
         truck, progress, plan)
     assert result['valid'], result
     target = result['candidate']
-    distance = passage['entry_progress_m']-progress-6.-2.
+    # Authorized policy is now 5 m, subtracted once; not a measured body front.
+    distance = passage['entry_progress_m']-progress-5.
     assert target['distance'] == pytest.approx(distance)
     usable = max(0., distance-speed/3.6*(CURVE_BRAKE_RESPONSE_S+LEASE_S))
     assert signal_stop_speed_limit(target, speed/3.6) == pytest.approx(math.sqrt(2.*usable))

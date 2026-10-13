@@ -59,15 +59,13 @@ def planned_stop(decision):
     traffic = evidence.get('traffic') or {}
     acc = evidence.get('acc') or {}
     policy = evidence.get('policy') or {}
-    signal = traffic.get('signal') or {}
-    candidate = signal.get('candidate') or {}
-    qualified_stop = bool(signal.get('valid')
-        and candidate.get('stop_target_kind') == 'derived_directed_curve_entry'
-        and (candidate.get('color') in ('red','yellow') or candidate.get('stop_required') is True))
     # A prospective red ahead does not turn an unrelated cruise/curve brake
     # into a stop-and-wait commitment. Bind the chain to the winning request.
     return bool((decision.get('source') == 'traffic_light' and traffic.get('light_brake', 0) > 0)
-                or (traffic.get('traffic_brake', 0) > 0 and qualified_stop)
+                # Traffic/obstacle braking has no signal dependency. The
+                # validated decision and actual forward-started write admit
+                # continuity, never clearance by disappearance of the actor.
+                or traffic.get('traffic_brake', 0) > 0
                 or (decision.get('source') == 'acc'
                     and (acc.get('following_status') in ('candidate', 'source_lost')
                          or acc.get('signal_brake_selected') is True
