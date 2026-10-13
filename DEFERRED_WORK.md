@@ -1,5 +1,17 @@
 # Odložená a nedokončená práca
 
+## Oct 13 ACC departure and plugin lifecycle
+
+[PHASE7_ACC_DEPARTURE_AND_PLUGIN_LIFECYCLE_20261013.md](PHASE7_ACC_DEPARTURE_AND_PLUGIN_LIFECYCLE_20261013.md)
+fixes reproduced oriented-body departure and validated-geometry dependency
+reset defects, plus silent KeyError exit/restart storms and shutdown spawning.
+Historical actor boxes/source slot and DrivePolicy exception were not retained;
+these exact historical branches are not declared proved. ACC 1.2.0 preserves
+the approved 5 m stop and signal lifecycle. A MonoCruise-inspired relative-speed
+candidate was rejected after cut-in/steady-state regressions. Producer freshness,
+coverage, calibrated physical acceleration/jerk and verified stop-and-go remain
+open. No deployment or new drive is requested; game confirmation remains separate.
+
 ## Authorized five-metre planning reference — 13 October
 
 [PHASE7_FIVE_METRE_STOP_REFERENCE_20261013.md](PHASE7_FIVE_METRE_STOP_REFERENCE_20261013.md)

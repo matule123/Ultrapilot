@@ -43,13 +43,18 @@ def test_startup_ram_is_pale_blue_in_console_plain_in_log(monkeypatch, capsys):
 
 
 def test_worker_reports_ram_after_start_once_outside_tick(monkeypatch):
+    import threading
     from core import plugin_manager as manager
     events = []
+    stop_event = threading.Event()
     class Plugin:
         def __init__(self, sdk):
             pass
         def on_start(self):
             events.append("start")
+            # Stop after initialization: a pre-set event now correctly cancels
+            # startup before the plugin or its RAM report can be created.
+            stop_event.set()
         def on_stop(self):
             events.append("stop")
     monkeypatch.setattr(manager, "PluginSDK", lambda *_: None)
@@ -58,5 +63,5 @@ def test_worker_reports_ram_after_start_once_outside_tick(monkeypatch):
     monkeypatch.setattr(memory, "resident_mb", lambda: 55)
     monkeypatch.setattr(logger, "log_plugin_ready",
                         lambda name, value: events.append((name, value)))
-    manager.plugin_worker(Plugin, "map", {}, SimpleNamespace(is_set=lambda: True))
+    manager.plugin_worker(Plugin, "map", {}, stop_event)
     assert events == ["start", ("map", 55), "stop"]

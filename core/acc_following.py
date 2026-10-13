@@ -122,9 +122,10 @@ class RouteLeadSelector:
         self._last_target_observation = None
         self._departure_observation = None
 
-    def prepare(self, points, binding):
+    def prepare(self, points, binding, *, preserve_target=False):
         if binding == self.binding:
             return
+        previous = (self.target_id, self._last_target_observation) if preserve_target else None
         self.binding = None
         self.reset()
         if not 2 <= len(points) <= 20000:
@@ -141,6 +142,42 @@ class RouteLeadSelector:
                           1./length, 1./(length*length), arcs[-1]))
             arcs.append(arcs[-1]+length)
         self.points, self.arcs, self.edges, self.binding = pts, tuple(arcs), tuple(edges), binding
+        if previous:
+            self.target_id, self._last_target_observation = previous
+
+    def _body_clearance(self, body, low, high):
+        """Exact native oriented-box/reference distance, not physical lane clearance."""
+        x,y,z,yaw=(float(body[k]) for k in ('x','y','z','yaw'))
+        width,height,length=body['dimensions_whl']
+        extent=.5*math.hypot(width,length)
+        first=max(0,bisect.bisect_right(self.arcs,max(0.,low-extent))-1)
+        last=min(len(self.edges),bisect.bisect_left(self.arcs,high+extent)+1)
+        if last-first>512: return None
+        fw=(-math.sin(yaw),-math.cos(yaw));side=(math.cos(yaw),-math.sin(yaw))
+        half=(width*.5,length*.5);best=math.inf
+        for ax,ay,az,dx,dy,dz,_,_,_,_ in self.edges[first:last]:
+            if not min(ay,ay+dy)-HEIGHT_GATE_M<=y<=max(ay,ay+dy)+HEIGHT_GATE_M:
+                continue
+            def local(px,pz):
+                ox,oz=px-x,pz-z
+                return ox*side[0]+oz*side[1],ox*fw[0]+oz*fw[1]
+            a=local(ax,az);b=local(ax+dx,az+dz)
+            delta=(b[0]-a[0],b[1]-a[1]);lo,hi=0.,1.
+            for i in (0,1):
+                if abs(delta[i])<1e-12:
+                    if abs(a[i])>half[i]: lo,hi=1.,0.;break
+                else:
+                    u,v=sorted(((-half[i]-a[i])/delta[i],(half[i]-a[i])/delta[i]))
+                    lo,hi=max(lo,u),min(hi,v)
+            if lo<=hi: return 0.
+            for p in (a,b):
+                best=min(best,math.hypot(max(0.,abs(p[0])-half[0]),max(0.,abs(p[1])-half[1])))
+            norm=delta[0]**2+delta[1]**2
+            for cx in (-half[0],half[0]):
+                for cz in (-half[1],half[1]):
+                    t=max(0.,min(1.,((cx-a[0])*delta[0]+(cz-a[1])*delta[1])/norm))
+                    best=min(best,math.hypot(cx-a[0]-t*delta[0],cz-a[1]-t*delta[1]))
+        return best if math.isfinite(best) else None
 
     def _project(self, actor, low, high, *, aligned=True):
         x, y, z, yaw = (float(actor[k]) for k in ('x', 'y', 'z', 'yaw'))
@@ -183,6 +220,9 @@ class RouteLeadSelector:
         old, at = previous
         if not 0 < receiver_time-at <= .5:
             return None
+        old_projection=self._project(old,max(0.,ego[1]-20.),ego[1]+HORIZON_M)
+        if old_projection is None or old_projection[0]>PROTECTIVE_REFERENCE_GATE_M:
+            return None  # retained receiver history must still relate to this route
         actor = next((a for a in actors if a['id'] == old['id']), None)
         if (actor is None or actor.get('source') != old.get('source')
                 or actor.get('slot') != old.get('slot')
@@ -205,11 +245,9 @@ class RouteLeadSelector:
             projected = self._project(body, max(0., ego[1]-20.), ego[1]+HORIZON_M, aligned=False)
             if projected is None:
                 return None  # outside observed route range / ambiguous occurrence
-            # Native TrafficProcessor packs get_center_coords(placement, aabox)
-            # and abs(end-start) dimensions for tractor and trailers. The raw
-            # box's half-diagonal bounds any heading; its physical accuracy and
-            # traffic producer freshness still are not certified by this ABI.
-            clearances.append(projected[0]-.5*math.hypot(dims[0],dims[2]))
+            clearance=self._body_clearance(body,max(0.,ego[1]-20.),ego[1]+HORIZON_M)
+            if clearance is None: return None
+            clearances.append(clearance)
         if not clearances or min(clearances) <= PROTECTIVE_REFERENCE_GATE_M:
             return None
         proof = dict(schema_version=1, target_id=str(old['id']),

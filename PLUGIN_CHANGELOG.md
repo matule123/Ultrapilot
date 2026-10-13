@@ -4,6 +4,21 @@ Release history for individual plugins. See [PLUGIN_VERSIONS.md](PLUGIN_VERSIONS
 
 ## ACC
 
+### 1.2.0 — unreleased, 2026-10-13
+
+- Keep the acquired lead dependency across validated geometry/revision publication within the same activation, session, map, dataset and navigation intent. Reproject the original receiver witness on the new reference; real authority changes still reset it and missing observations never prove departure.
+- Coordinated core: after a real same-intent Map rebuild, a freshly observed positive forward ratio and current validated ACC packet start new gearbox observation history. Do not carry old route times, zero-ratio bridge, launch or hold receipts to the replacement identity; absent/stale/foreign inputs and ratio zero retain rejection.
+- Qualify an observed departure using the minimum distance of every native oriented tractor/trailer box from the directed reference instead of an enclosing disk. Preserve unique ID/source/slot, changed-record, original receiver-time, height, bounded projection and 2.6 m caution requirements. This is receiver evidence, not certified traffic freshness or physical lane clearance.
+- Retain the existing speed PID, pedal recovery, emergency demand and 5 m signal reference. A relative-closing-speed planning candidate inspired by MonoCruise was rejected after paired cut-in and steady-state regressions; no acceleration mapper, jerk filter, ghost target or unverified stop-and-go was adopted.
+
+## Core plugin lifecycle — unreleased, 2026-10-13
+
+- Do not classify ordinary data KeyError as IPC shutdown. Preserve the first actual worker exception and revoke its producer packet immediately; stop after three consecutive failures with a nonzero exit and guaranteed cleanup. Required Policy/ACC inputs remain required during failure recovery, preventing old-limit cruise.
+- Serialize spawn/supervision/stop, honor the UI shutdown request in parent and child, mark shutdown before Engine cleanup, and block restarting a disabled plugin. Allow at most three retries with 0.5/1/2 s backoff, with first failure and exit code published in bounded plugin health state; reset the budget only after 60 s healthy operation or explicit disable/re-enable.
+- Core-only lifecycle changes do not release DrivePolicy, Map or other unchanged plugins. The historical DrivePolicy exception/exit code was not retained, so the reproduced worker defect is not presented as a proven historical stack trace.
+
+## ACC
+
 ### 1.1.9 — unreleased, 2026-10-12
 
 - Discard only positive PID integral accumulated for a qualified signal approach when its computed drive was not executed because the shared stop profile selected coast. Keep gains, derivative state, negative integral unwinding, other limits and emergency priority unchanged.

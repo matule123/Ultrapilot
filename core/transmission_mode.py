@@ -235,8 +235,25 @@ def simple_auto_forward_transition(state, truck, history, now=None):
     snapshot = state.get("lane_trajectory", {}) or {}
     context = (token, evidence.get("generation"), preference,
                *(snapshot.get(key) for key in _FORWARD_IDENTITY_KEYS))
-    if token is None or (history and history.get("context") != context):
+    if token is None:
         return None, "simple automatic activation or route identity changed"
+    if history and history.get('context') != context:
+        previous=history.get('context')
+        stable=(isinstance(previous,(tuple,list)) and len(previous)==len(context)==9
+            and all(previous[i]==context[i] for i in (0,1,2,3,6,7,8)))
+        try:
+            from core.longitudinal import read, context as longitudinal_context
+            current, failure = read(state,'acc',binding=longitudinal_context(state),required=True)
+            fresh_forward=(stable and snapshot.get('valid') is True
+                and int(truck['gear'])>0 and float(truck['speed'])>.05
+                and not failure and current is not None)
+        except (KeyError,TypeError,ValueError,OverflowError):
+            fresh_forward=False
+        if not fresh_forward:
+            return None, "simple automatic activation or route identity changed"
+        # A current positive ratio starts new observation history; old route
+        # times, coast/hold receipts and launch authority are not relabelled.
+        history=None
     try:
         frame = int(truck["sdkFrameTimeUs"])
         gear = int(truck["gear"])

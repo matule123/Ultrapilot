@@ -33,9 +33,11 @@ def joint(flow, request):
             next(generator)
 
 
-def traffic_step(rolling, actors, *, before_acc=False, trailer=None):
+def traffic_step(rolling, actors, *, before_acc=False, trailer=None, after_map=None):
     state, engine, ap, acc, policy, tick, _, _, _, _, clock = rolling
     tick(speed=10., z=15., pedals=False)
+    if after_map is not None:
+        after_map()
     truck=state.get('telemetry')['truck']
     raw=capture(actors, clock[0])
     if trailer:

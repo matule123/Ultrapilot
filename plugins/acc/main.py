@@ -18,7 +18,7 @@ class Plugin(BasePlugin):
     """
 
     NAME = "acc"
-    VERSION = "1.1.9"
+    VERSION = "1.2.0"
 
     def on_start(self):
         logging.info("ACC Plugin started with bounded speed PID control.")
@@ -86,10 +86,14 @@ class Plugin(BasePlugin):
         traffic, _ = read(self.sdk.shared_state, "traffic", binding=binding) if strict else (None, "")
         danger_level = (traffic["traffic_brake"] if traffic else 0.) if strict else self.sdk.get("danger_level", 0) or 0
         if binding != self._following_binding:
+            same_dependency=(isinstance(self._following_binding,(tuple,list))
+                and len(self._following_binding)==len(binding)==8
+                and tuple(self._following_binding[:5])==tuple(binding[:5]))
             self._following_binding = binding
-            self._followed_target = False
-            self._following_target_id = None
-            self._following_fault = ''
+            if not same_dependency:
+                self._followed_target = False
+                self._following_target_id = None
+                self._following_fault = ''
         owns_activation = bool(self.sdk.get('autopilot_active', False)
                                or self.sdk.get('auto_drive_pending', False))
         if not owns_activation:

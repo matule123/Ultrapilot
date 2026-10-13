@@ -327,6 +327,7 @@ class UltraPilotEngine:
                 return
             self._stopped = True
             self.running = False
+            self.plugin_manager.begin_shutdown()
             self._realtime_stop.set()
         for thread in (self._control_thread, self._telemetry_thread,
                        self._transmission_thread):
@@ -902,7 +903,10 @@ class UltraPilotEngine:
                 if lane.get('valid') is not True or any(
                         v is None or lane.get(k) != v for k, v in expected.items()):
                     raise ValueError('route identity unavailable')
-                selector.prepare(lane['points'], binding)
+                same_dependency=(isinstance(selector.binding,(tuple,list))
+                    and len(selector.binding)==len(binding)==8
+                    and tuple(selector.binding[:5])==tuple(binding[:5]))
+                selector.prepare(lane['points'], binding, preserve_target=same_dependency)
             debug = self.shared_state.get('nav_steering_debug') or {}
             identity = self.shared_state.get('lane_trajectory_identity') or {}
             if (debug.get('authority_valid') is not True
