@@ -124,6 +124,11 @@ def after_write(previous, controller, forward_context, truck, decision, now,
         result['stop_reason'] = dict(source=decision['source'], reason=decision['reason'],
             signal_id=light.get('id'), signal_color=light.get('color'),
             observation_timestamp=decision['observation_timestamp'])
+        # Preserve this FIRST consumed compact cause even if a long wait exceeds
+        # the rolling journal. A later zero demand cannot rewrite its origin.
+        basis = (evidence.get('traffic') or {}).get('brake_basis')
+        if isinstance(basis, dict):
+            result['stop_reason']['brake_basis'] = dict(basis)
     else:
         return None
     if 'signal_lock' not in result:

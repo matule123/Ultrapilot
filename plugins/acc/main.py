@@ -4,6 +4,7 @@ import time
 import numpy as np
 from sdk.base_plugin import BasePlugin
 from core.pid import PID
+from core.acc_acceleration import pedal_acceleration
 from core.longitudinal import (COMMAND_KEY, context, exclusive, read, publish,
                                rejection, curve_input, curve_speed_envelope, traffic_required)
 from core.transmission_mode import vehicle_control_observation_rejection
@@ -18,7 +19,7 @@ class Plugin(BasePlugin):
     """
 
     NAME = "acc"
-    VERSION = "1.2.0"
+    VERSION = "1.2.1"
 
     def on_start(self):
         logging.info("ACC Plugin started with bounded speed PID control.")
@@ -63,6 +64,19 @@ class Plugin(BasePlugin):
 
         # 1. Telemetry & State
         binding = context(self.sdk.shared_state)
+        # Epoch/session/intent ownership is revoked even if the first new SDK
+        # acquisition is invalid. Invalid data still publish a zero invalid
+        # request; they must not preserve another activation's private latch.
+        if binding != self._following_binding:
+            same_dependency = (isinstance(self._following_binding, (tuple, list))
+                and len(self._following_binding) == len(binding) == 8
+                and tuple(self._following_binding[:5]) == tuple(binding[:5]))
+            self._following_binding = binding
+            if not same_dependency:
+                self._followed_target = False
+                self._following_target_id = None
+                self._following_fault = ''
+                self._reset_control()
         truck = self.sdk.telemetry.get("truck", {}) or {}
         strict = self.sdk.get("longitudinal_control_schema") == 1
         try:
@@ -85,15 +99,6 @@ class Plugin(BasePlugin):
         # Get danger level from perception/traffic analysis
         traffic, _ = read(self.sdk.shared_state, "traffic", binding=binding) if strict else (None, "")
         danger_level = (traffic["traffic_brake"] if traffic else 0.) if strict else self.sdk.get("danger_level", 0) or 0
-        if binding != self._following_binding:
-            same_dependency=(isinstance(self._following_binding,(tuple,list))
-                and len(self._following_binding)==len(binding)==8
-                and tuple(self._following_binding[:5])==tuple(binding[:5]))
-            self._following_binding = binding
-            if not same_dependency:
-                self._followed_target = False
-                self._following_target_id = None
-                self._following_fault = ''
         owns_activation = bool(self.sdk.get('autopilot_active', False)
                                or self.sdk.get('auto_drive_pending', False))
         if not owns_activation:
@@ -387,6 +392,16 @@ class Plugin(BasePlugin):
             # Numeric output saturation alone cannot see this mapping. Preserve
             # negative integral/derivative state; discard only unexecuted drive.
             self.speed_pid.discard_unexecuted_positive_integral()
+        if signal_owns_plan or destination_owns_plan:
+            # A distance-based stop is already a planned deceleration demand;
+            # do not lag that trajectory or retain an ordinary drive recovery.
+            desired_acceleration = selected_acceleration = None
+        else:
+            raw_drive = float(throttle_val) if not self._speed_braking else 0.
+            raw_brake = float(brake_power) if self._speed_braking else 0.
+            throttle_val, brake_power, desired_acceleration = pedal_acceleration(raw_drive, raw_brake)
+            selected_acceleration = desired_acceleration
+            self._speed_braking = brake_power > 0.
         if self._speed_braking:
             self.sdk.shared_state.set("acc_throttle", 0.0)
             self.sdk.shared_state.set("acc_brake", brake_power)
@@ -408,6 +423,9 @@ class Plugin(BasePlugin):
                 following_status=following_reason,
                 following_target_id=following.get('target_id') if isinstance(following, dict) else None,
                 following_confirmed=False,
+                requested_acceleration_ms2=desired_acceleration,
+                selected_acceleration_ms2=selected_acceleration,
+                acceleration_basis='nominal_actuator_mapping_not_measured_vehicle_acceleration',
                 signal_stop_control=signal_control is not None,
                 signal_brake_selected=bool(signal_owns_plan and self._speed_braking),
                 destination_brake_selected=bool(destination_owns_plan and self._speed_braking),

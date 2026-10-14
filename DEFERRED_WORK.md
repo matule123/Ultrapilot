@@ -1,5 +1,21 @@
 # Odložená a nedokončená práca
 
+## October 13 arrival / retry / stop ownership follow-up
+
+[PHASE7_ARRIVAL_RETRY_AND_ACC_ACCELERATION_20261013.md](PHASE7_ARRIVAL_RETRY_AND_ACC_ACCELERATION_20261013.md)
+fixes the historically recorded DrivePolicy startup `KeyError: 'speed'` and
+separates an additional reproduced reactivation defect from missing historical
+producer evidence. Unexpected traffic-stop release is not solved: the original
+actor/conflict is absent; skipping hold by heuristic type failed a preserved
+native-crossing safety regression and was rejected. The first compact stop cause
+is now retained by the existing receipt. GPS disappearance while moving is not safely identifiable as
+arrival: a stable producer-owned destination position and completion/cancellation
+lifecycle are missing. The nominal signed acceleration representation is not
+measured load-adaptive regulation. Additional recovery-slew candidates were
+rejected; producer-timed leader acceleration and verified complete ego/trailer
+swept AEB remain blocked. No new drive, deployment or broad sensor rewrite is
+requested. The complete user request remains open in those explicit scopes.
+
 ## Oct 13 ACC departure and plugin lifecycle
 
 [PHASE7_ACC_DEPARTURE_AND_PLUGIN_LIFECYCLE_20261013.md](PHASE7_ACC_DEPARTURE_AND_PLUGIN_LIFECYCLE_20261013.md)

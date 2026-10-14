@@ -4,6 +4,14 @@ Release history for individual plugins. See [PLUGIN_VERSIONS.md](PLUGIN_VERSIONS
 
 ## ACC
 
+### 1.2.1 — unreleased, 2026-10-13
+
+- Revoke private following/PID memory on a real activation/session/intent change before rejecting an invalid first acquisition. Do not clear a fault in the current activation or accept an invalid request; validated same-authority geometry updates preserve the existing departure witness.
+- Expose a single signed nominal acceleration demand with an exclusive, numerically equivalent actuator mapping. Declare its offline-plant basis explicitly; do not present it as measured ETS2 acceleration, calibrated load compensation or physical jerk. Additional comfort slew candidates were rejected after paired steady-error/jerk regressions.
+- Coordinated core: quarantine a zero, non-emergency invalid ACC result from a previous epoch only inside existing initialization, with original times and non-epoch authority checked. Await the current producer without executing or relabeling its old packet. Current-epoch, stale, future, foreign, nonzero and emergency failures still reject.
+- Coordinated core: retain the first consumed compact traffic brake basis and decisive actor/conflict in the existing long-lived stop receipt/export. Do not infer clearance from zero demand or a heuristic type. A draft that skipped crossing hold was rejected after the unchanged native-crossing/zero-ratio regression failed; original continuous-brake and emergency behavior are preserved. These core changes do not release other plugins or the DLL; the separate DrivePolicy producer fix is recorded below.
+- See [PHASE7_ARRIVAL_RETRY_AND_ACC_ACCELERATION_20261013.md](PHASE7_ARRIVAL_RETRY_AND_ACC_ACCELERATION_20261013.md). GPS disappearance/arrival classification, producer-timed leader anticipation and complete-body AEB remain explicitly blocked; no game verification is claimed.
+
 ### 1.2.0 — unreleased, 2026-10-13
 
 - Keep the acquired lead dependency across validated geometry/revision publication within the same activation, session, map, dataset and navigation intent. Reproject the original receiver witness on the new reference; real authority changes still reset it and missing observations never prove departure.
@@ -75,6 +83,12 @@ Release history for individual plugins. See [PLUGIN_VERSIONS.md](PLUGIN_VERSIONS
 - Constrain the existing speed controller with the positive GPS remainder from its actual SDK observation; reuse the qualified-stop distance envelope and pedal mapping without new PID gains or a second controller. Preserve lower signal/curve/following limits and emergency priority.
 
 ## DrivePolicy
+
+### 1.1.4 — unreleased, 2026-10-14
+
+- Validate the consumed vehicle speed and observation before planning. Expected missing startup telemetry publishes an invalid zero-brake/no-plan packet without throwing `KeyError: 'speed'`, exhausting bounded worker restart attempts or leaving every later N without a Policy producer.
+- Keep Policy required while evidence is unavailable; revoke its previous plan and wait for a real valid SDK acquisition. Do not fabricate zero speed, renew old observations or clear a current control failure. Same-instance worker recovery and Map-to-Controller activation are verified offline for simple and real automatic modes.
+- Retain the approved 5 m stop reference, distance stop profile, signal hold/restart, emergency priority and existing lane geometry. No DLL, Map, Autopilot or TurnSignals implementation change. See [PHASE7_ARRIVAL_RETRY_AND_ACC_ACCELERATION_20261013.md](PHASE7_ARRIVAL_RETRY_AND_ACC_ACCELERATION_20261013.md).
 
 ### 1.1.3 — unreleased, 2026-10-11
 

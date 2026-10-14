@@ -595,12 +595,17 @@ def initialization_request(state, binding, now):
 
 
 def _initialization_input_reason(state, source, value, binding, now, reason):
-    """Only an otherwise valid old activation may wait; never consume it.
+    """Quarantine an old activation during initialization; never consume it.
 
     Validate against its OWN original identity/time before classifying the
     scheduling transition. All non-activation authority fields must agree.
+    A zero invalid retired ACC result is not an acknowledgement of the new N.
     """
-    if reason != 'longitudinal identity or activation changed' or not isinstance(value, dict):
+    retired_zero_acc = bool(source == 'acc' and isinstance(value, dict)
+        and reason == 'invalid longitudinal observation' and value.get('valid') is False
+        and value.get('throttle') == 0. and value.get('brake') == 0.
+        and value.get('emergency') is False)
+    if (reason != 'longitudinal identity or activation changed' and not retired_zero_acc) or not isinstance(value, dict):
         return reason
     original = value.get('context')
     if (not isinstance(original, (tuple,list)) or len(original) != len(binding)
@@ -612,7 +617,12 @@ def _initialization_input_reason(state, source, value, binding, now, reason):
             and isinstance(request.get('expires_at'), (int,float))
             and now > request['expires_at']):
         return 'longitudinal initialization timed out waiting for ' + source
-    original_failure = rejection(value, original, now)
+    # This classification NEVER returns the retired packet as usable. Its zero
+    # invalid result can be quarantined only in the existing initialization
+    # bound of another epoch, with every original time/route field checked.
+    # A fault from the current epoch, nonzero request or stale/future packet
+    # still follows the ordinary rejection path.
+    original_failure = rejection(dict(value, valid=True) if retired_zero_acc else value, original, now)
     if original_failure:
         return original_failure  # Stale/future/invalid data are never benign.
     try:
@@ -1214,6 +1224,17 @@ def _engine_decision(state, truck, now=None, *, diagnostic=None, rejection_info=
             policy=policy and {k: policy.get(k) for k in ('sdk_frame_us',
                 'observation_timestamp', 'brake', 'reason')},
             source_observation_timestamp=value['observation_timestamp'])
+        basis = (traffic or {}).get('brake_basis')
+        if isinstance(basis, dict) and stop.get('traffic') is not None:
+            # Stop ownership needs the consumed cause, not unbounded actors or
+            # forecast arrays. Missing provenance remains explicitly unknown.
+            stop['traffic']['brake_basis'] = {k: basis[k] for k in
+                ('kind', 'target_id', 'confirmed_route_conflict') if k in basis}
+            decisive = basis.get('decisive')
+            if isinstance(decisive, dict):
+                stop['traffic']['brake_basis']['decisive'] = {k: decisive[k] for k in
+                    ('id', 'distance_m', 'route_progress_m', 'actor_arrival_s',
+                     'ego_arrival_earliest_s', 'brake') if k in decisive}
         if destination:
             stop['destination'] = {k: destination[k] for k in
                 ('distance_m', 'cap_ms', 'terminal', 'target_kind', 'stop_line_verified')}

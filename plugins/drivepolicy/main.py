@@ -4,6 +4,7 @@ from sdk.base_plugin import BasePlugin
 from core.navigation.route import curve_speed_limit_ms, iter_path_xz
 from core.longitudinal import (context, read, publish, curve_input,
                                curve_speed_envelope, curve_constraint_speed, number, traffic_required)
+from core.transmission_mode import vehicle_control_observation_rejection
 
 
 # === Tuning =================================================================
@@ -76,7 +77,7 @@ class Plugin(BasePlugin):
     a pile of independent, sometimes-contradictory requests."""
 
     NAME = "drivepolicy"
-    VERSION = "1.1.3"
+    VERSION = "1.1.4"
 
     def on_start(self):
         logging.info("DrivePolicy plugin started.")
@@ -428,11 +429,34 @@ class Plugin(BasePlugin):
     #  TICK
     # ====================================================================
     def on_tick(self, delta_time: float):
-        dt = max(delta_time, 1e-3)
         binding = context(self.sdk.shared_state)
         self._longitudinal_binding = binding
         truck = self.sdk.telemetry.get("truck", {}) or {}
-        speed_ms = abs(float(truck.get("speed", 0.0) or 0.0))
+        if not isinstance(truck, dict):
+            truck = {}
+        try:
+            speed_ms = abs(float(truck['speed']))
+            dt = float(delta_time)
+            invalid = not math.isfinite(speed_ms) or not math.isfinite(dt) or not 0 < dt <= .5
+        except (KeyError, TypeError, ValueError, OverflowError):
+            invalid = True
+        strict = self.sdk.get('longitudinal_control_schema') == 1
+        if strict and vehicle_control_observation_rejection(self.sdk.shared_state, truck):
+            invalid = True
+        if invalid:
+            # Missing startup telemetry is expected unavailable evidence, not
+            # a worker exception that consumes the bounded crash-retry budget.
+            # Keep this required producer alive, but revoke its previous plan.
+            # Neither a fabricated zero speed nor a new observation is created.
+            self._planned = None
+            self._signal_speed_control = self._destination_speed_control = None
+            self._longitudinal_dependencies = []
+            self.sdk.shared_state.update_batch({'planned_speed_ms': None,
+                'aux_brake_request': 0., 'drive_lane_offset': None})
+            publish(self.sdk.shared_state, truck, 'policy', binding=binding,
+                evidence_valid=False, planned_speed_ms=None, brake=0.,
+                reason='vehicle speed observation or control interval unavailable')
+            return
 
         planned = self._compute_planned_speed(dt, truck)
         # A qualified stop is tracked by ACC's existing PID. Do not add an
