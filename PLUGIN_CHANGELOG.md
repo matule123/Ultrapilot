@@ -2,7 +2,17 @@
 
 Release history for individual plugins. See [PLUGIN_VERSIONS.md](PLUGIN_VERSIONS.md) for versioning rules.
 
+## Core stop ownership and destination handover — unreleased, 2026-10-14
+
+- Distinguish a fresh native-source positive moving-actor speed constraint from a terminal conflict stop. Ordinary positive caps feed the existing speed PID; they no longer apply an independent legacy distance brake or create a terminal hold. Missing actors, legacy/unqualified records, source resets, crossing/body conflicts, red signals and other stop causes cannot authorize restart or clear a terminal receipt.
+- Retain the physically admitted continuous service brake at a positive-distance destination planning stop until explicit driver handover. Show the takeover instruction without hazards; do not label standstill as confirmed native GPS completion or silently release unattended holding. Automatic arrival versus manual GPS removal remains blocked by the missing producer lifecycle contract.
+- Preserve original acquisition/authority and moving-constraint ownership in the existing bounded export using literal codec extensions. DrivePolicy stays 1.1.4; the native DLL and other plugins remain unchanged. ACC's concrete consumer correction is versioned below. See the final continuation in [PHASE7_DESTINATION_STOP_AND_ACC_COMPLETION_20261014.md](PHASE7_DESTINATION_STOP_AND_ACC_COMPLETION_20261014.md).
+
 ## ACC
+
+### 1.3.1 — unreleased, 2026-10-14
+
+- Consume the qualified positive caps of still-observed native moving protective actors in the existing speed PID. Preserve the actual constraining target ID and traffic lease through the shared arbiter and final Engine gate. Do not classify geometric protective candidates as confirmed lane targets or infer departure from absence; unknown/legacy inputs, true terminal conflicts, emergency and signal braking retain protection. No PID gains, ramp rates, signal offset, timeout, steering or DLL changes.
 
 ### 1.3.0 — unreleased, 2026-10-14
 

@@ -19,7 +19,7 @@ class Plugin(BasePlugin):
     """
 
     NAME = "acc"
-    VERSION = "1.3.0"
+    VERSION = "1.3.1"
 
     def on_start(self):
         logging.info("ACC Plugin started with bounded speed PID control.")
@@ -133,6 +133,23 @@ class Plugin(BasePlugin):
                 following_reason = 'observed route candidate; reliable sensor freshness unproven'
             except (KeyError, TypeError, ValueError, OverflowError):
                 following_cap = None
+        motion_scope=(traffic or {}).get('motion_constraint')
+        motion_target=None
+        if motion_scope is not None:
+            from core.service_brake_hold import moving_speed_constraint
+            # The same consumed contract classifies regulation versus a
+            # terminal stop at Engine. No second controller or renewed lease.
+            qualified=moving_speed_constraint(dict(source='acc',context=binding,
+                stopping_evidence=dict(traffic=traffic)))
+            if qualified is None:
+                self._reset_control()
+                self._publish_pedals(truck,binding,0.,0.,valid=False,
+                    reason='invalid positive moving traffic constraint')
+                return
+            motion_target=min(qualified['targets'],key=lambda t:(t['cap_mps'],t['id']))
+            cap=motion_target['cap_mps']*3.6
+            following_cap=cap if following_cap is None else min(following_cap,cap)
+            following_reason='observed moving protective speed constraint; coverage unproven'
         # No cached pedal/target lease is extended. After target loss the
         # existing required-producer guard removes drive and controls stopping.
         # Empty/uncovered buffers cannot prove that the old target departed.
@@ -145,6 +162,9 @@ class Plugin(BasePlugin):
             following_reason = 'observed lead left route; coverage remains unproven'
         if strict and self._followed_target and following_cap is None:
             self._following_fault = 'ACC target unavailable or unconfirmed departure; driver takeover required'
+        if (strict and self._followed_target and motion_scope is not None
+                and self._following_target_id not in {t['id'] for t in motion_scope['targets']}):
+            self._following_fault='ACC original moving target unavailable; driver takeover required'
         self.sdk.set('acc_following_status', following_reason)
 
         # 2. Emergency Collision Avoidance
@@ -256,7 +276,7 @@ class Plugin(BasePlugin):
             if owns_activation and (following_cap < effective_target_speed
                     or following_cap < speed_kmh or following.get('emergency') is True):
                 self._followed_target = True
-                self._following_target_id = following['target_id']
+                self._following_target_id = following.get('target_id') or motion_target['id']
             effective_target_speed = min(effective_target_speed, following_cap)
             hard_limits.append(following_cap)
             if following_cap < 3.6 and speed < 1.:
@@ -436,7 +456,8 @@ class Plugin(BasePlugin):
                     else "signal distance recovery" if throttle_val > 0 else "signal distance coast")
                     if signal_owns_plan else "speed service brake" if self._speed_braking else "speed tracking",
                 following_status=following_reason,
-                following_target_id=following.get('target_id') if isinstance(following, dict) else None,
+                following_target_id=(following.get('target_id') or self._following_target_id)
+                    if isinstance(following, dict) else self._following_target_id,
                 following_confirmed=False,
                 leader_prediction=following.get('leader_prediction') if isinstance(following, dict) else None,
                 requested_acceleration_ms2=desired_acceleration,

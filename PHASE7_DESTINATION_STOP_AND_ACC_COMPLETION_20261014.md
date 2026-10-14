@@ -490,3 +490,375 @@ Protective AEB is implemented for qualified measured boxes; complete coverage,
 future articulation and collision-free behavior are not certified. There is no
 new game request, deployment, automatic gain application or false whole-task
 completion claim.
+
+## Final continuation: moving constraints and safe destination handover
+
+**The two-problem request is not fully complete.** The reproduced moving-traffic
+stop defect is corrected offline; authentic GPS arrival after target removal is
+still **BLOCKED** by the producer contract below. No new drive, deployment,
+arming, commit or push is performed. GAME NOT VERIFIED applies to this candidate.
+
+The continuation starts from `add9a19` (`fix: strengthen AEB detection and
+stop-clearance validation`). Earlier uncommitted October 14 work is now present
+in that commit; the earlier `b11777d` and v2 verification statements above are
+historical identities, not the identity of this final candidate. Existing source
+changes are retained. There is no applicable AGENTS.md in the repository or its
+checked parents. Plugin version rules remain those in PLUGIN_VERSIONS.md.
+
+### Native GPS boundary — exact unresolved capability
+
+The pinned producer and available upstream were exhausted without assigning
+invented semantics to native fields. `src/core.cpp::get_navigation_data` publishes
+physical route node UID/distance/time rows only when their count changes. A null
+task means no task, not an arrival event; the old mapping is not cleared by that
+branch. `route_task.hpp:60` contains an array of the **undefined**
+`private_route_task_target_t` at offset 0xB8. The four `unk*` members of the
+0x18-byte waypoint record have no documented target-completion meaning.
+`gps_manager.hpp` exposes waypoint node pointers and trip/checkpoint remainders,
+not a proven whole-goal identity/generation or the cause of removal. The same
+limitations remain visible in the available [upstream route-task header](https://gitlab.com/ETS2LA/ets2la_plugin/-/raw/main/src/prism/navigation/route_task.hpp)
+and [navigation producer](https://gitlab.com/ETS2LA/ets2la_plugin/-/raw/main/src/core.cpp).
+The official bundled SCS events describe job delivery, not user-waypoint arrival.
+
+No new GPS ABI/DLL is fabricated. Republishing a node tail, a zero GPS remainder
+or a receiver timestamp could not distinguish cancellation from completion.
+The existing Map endpoint counterexample still holds: a bounded 8 km/768-UID
+reference can have the same endpoint for different actual GPS remainders.
+
+**Exact minimum dependency:** obtain a verified definition of the private target
+record (or equivalent authoritative complete-route target interface), stable
+destination identity/generation/session, and the real navigation lifecycle hook
+that distinguishes automatic completion from manual cancellation/replacement.
+A computed endpoint is usable only when bound to that independently confirmed
+whole goal. An ordinary new ride cannot supply those missing native semantics.
+Until this exists, disappearance while moving retains technical fail-closed
+behavior; it is never relabeled successful arrival or prolonged by a cached route.
+
+An independent unsafe handover was reproduced in both automatics: an admitted
+positive-GPS-remainder stop immediately called `release_all`, set `arrived` and
+released physical service brake without proving driver ownership or static hold.
+The candidate now stays active in `destination_handover_pending`, retains the
+existing positive brake chain and zero drive, and displays:
+**“Dojazd skončil – držte brzdu a stlačte N na prevzatie”.** It records
+`producer_completion_verified=false`, `driver_handover_required=true` and
+`game_consumption_verified=false`. N remains the explicit driver transfer and
+uses the existing release path. Parking inputs are untouched; no stationary
+brake edge is added. This is a safe planning-stop handover, **not** the requested
+fully automatic GPS completion/shutdown.
+
+The former destination test now checks retained brake before explicit handover,
+then retains its zero-output/no-hazard/no-parking assertions after N. Its old
+`arrived` assertion is deliberately removed because it represented unsupported
+producer completion, rather than removed to accept an unsafe physical output.
+Zero/missing GPS, stale telemetry, R, foreign identity, other stops and backend
+failure still cannot become arrival. Four successive standstill ticks in both
+modes preserve the hold and UI instruction.
+
+### Moving traffic slowdown versus terminal stop — IMPLEMENTED
+
+Historical October 13 facts are unchanged: traffic hold started at
+22404.3793202; retained history begins 22406.4573366, so the initiating original
+actor/conflict is absent. The final first fault was observed R. A turn/prefab
+change is **not** proved to have caused that historical stop. Significant-event
+export failures with `SIGNIFICANT_EVENT_EXPORT_DISK_QUOTA` do not restore those
+missing original inputs. No brake-zero pulse is inferred from the retained tail.
+
+Two linked production deficiencies are now reproduced independently:
+
+1. Any positive protective traffic brake could admit terminal service-hold
+   ownership, even while the same newly observed moving actor imposed a strictly
+   positive speed cap. Lower later demand could not revoke that stop commitment.
+2. The independent legacy distance floor kept braking even below the valid
+   moving speed cap. Merely allowing its held brake to decrease avoided an early
+   terminal receipt but still slowed the 20 s model to 0.478 m/s. That intermediate
+   experiment is **REJECTED**, not packaged as the solution. Its separate
+   `stop-completion-comparison.json` is preserved as intermediate evidence.
+
+The final single-path contract:
+
+- Selector qualifies at most 16 actual, uniquely identified native moving
+  actors projected ahead onto the existing directed local reference. Each must
+  have genuine source acquisition time/lifecycle/generation/frame, finite native
+  speed >0.1 m/s and an existing following cap >1 m/s. Legacy/TMP/temporary,
+  ambiguous ID, nonaligned or different-height candidates cannot qualify.
+  Geometric protective relevance is explicitly **not** lane/coverage clearance.
+- Engine binds that complete positive-motion scope to the actual validated
+  authority. Only its ordinary `protective_route_candidate` distance brake is
+  replaced by an input to the existing speed PID. TTC emergency, crossing/body
+  contact, stopped/unknown actors, signals, destination/toll and other sources
+  retain their original safety and terminal-stop contracts.
+- ACC takes the lowest existing motion cap without increasing any road/curve/
+  signal/Policy limit. It publishes the actual constraining ID and required
+  original traffic lease. The same shared qualifier validates the source at
+  ACC, final Engine arbitration and the existing final positive-write read.
+  Lower caps withdraw old drive even between ACC ticks. No additional SDK/IPC
+  acquisition is introduced by diagnostics or another regulator.
+- A positive moving constraint cannot create terminal hold or clear a previously
+  admitted terminal receipt. Known original conflict clearance still requires
+  its existing observed-body/two-acquisition contract. Missing actors, a smaller
+  list, ID replacement, source reset or a zero request do not prove departure.
+  The existing body departure witness is retained for the controlling protective
+  actor. A cap from another actor cannot silently replace a lost acquired owner.
+- Original times, scope, selected ID and authority remain in the existing
+  bounded detail/history export as additive literal fields. Existing codec
+  indices, 64 KiB detail and 1 MiB history budgets do not change. No new collector,
+  parking command, timeout, geometry or lateral-controller change.
+
+The preserved October 12 `test_native_crossing_demand_has_physical_hold_witness`
+still requires real continuous brake through zero ratio. It is not bypassed by
+the positive-cap classifier. New tests include publication immediately before
+positive backend write: missing/changed owner, expired source and foreign
+authority all prevent any new positive physical drive and preserve intervention.
+
+The last boundary review reproduced one additional hole: removing the **entire**
+traffic slot after successful arbitration allowed the guard's optional-input
+early return to write **0.185599** throttle in both modes. A removed slot is now
+required when the pinned decision contains moving owners; it rejects as
+`ACC moving traffic unavailable before write`. Both unchanged reproductions pass
+afterward with no positive backend write. There is no extra read, lease renewal
+or guessed replacement packet. The earlier v3 complete-suite attempt was
+interrupted to include this actual correction, retained as partial evidence and
+never treated as PASS. The final verifier uses the new v4 log/receipt.
+
+### Frozen-before reproduction and identical closed model
+
+The same tests run against in-memory `add9a19` components, without resetting any
+checkout. **6 failed / 2 passed** on the final new reproductions: protective
+slowdown and both 20 s closed models fail, as does safe destination handover in
+both modes. The ordinary moving-lead scenario already passed baseline; it is not
+claimed as a newly reproduced defect.
+
+Criteria are semantic stop ownership plus the existing Phase 7.2 settled RMS
+<=1 km/h: a continuously observed positive moving constraint must not produce
+standstill/terminal hold; accepted output must remain exclusive; a true terminal
+cause cannot be released by a new positive cap. No new comfort threshold was
+selected after comparison. Model: existing actual Map/native-reader/Policy/ACC/
+AP/Engine/Controller memory backend, 30 Hz inputs, 0.10 s output delay, 0.35 s
+actuator response, nominal 2.2/4.0 drive/brake acceleration, drag
+`0.12 + 0.004*v²`, four integration substeps/tick. Actors move at 10 m/s; initial
+ego speed is 10 m/s and reference gap 29 m. Gear-zero semantics are the stated
+user-observation model, not proof of ETS2 SDK consumption. Scripted component
+tests are not physics trials; this separate model integrates actual written
+outputs before generating subsequent input motion.
+
+Both transmission modes give identical results, **600 samples / 20 s each**:
+
+| Metric | Entry add9a19 | Final candidate |
+| --- | ---: | ---: |
+| Final actual model speed | 0 m/s | 9.8595 m/s |
+| Minimum model speed | 0 m/s | 8.9168 m/s |
+| Terminal-hold samples | 460 | 0 |
+| Last-five-second speed RMS versus 10 m/s | 36 km/h | 0.3275 km/h |
+| Final backend throttle / brake | 0 / 0.52329 | 0.55440 / 0 |
+| Minimum reference-point gap | 29.00036 m | 29.00036 m |
+| Maximum model deceleration | 2.37681 m/s² | 1.09126 m/s² |
+| Maximum absolute model jerk | 34.28975 m/s³ | 2.43808 m/s³ |
+| p95 absolute model jerk, whole 20 s | 0.46100 m/s³ | 1.55674 m/s³ |
+| Pedal reversals | 0 (latched brake) | 1 (braking -> drive) |
+
+The whole-section p95 jerk **increases**: baseline spends most of the section at
+forced standstill, whereas the candidate actively regulates. There is no claim
+of universal jerk improvement, bumper clearance or game comfort from this
+semantic regression model. Maximum baseline jerk includes the plant's zero-speed
+clamp, not a native physical measurement. The same 16 steering and 12 established
+longitudinal-comfort benchmark case reports are **numerically identical** to
+`add9a19`. Their original criteria are not changed.
+
+### Performance tail review — 93 ms remains historically unexplained
+
+The original `followup-bench.json` retains maximum **93.2359 ms**, but no timed
+sample, CPU/GC/IPC span or sample identity for that maximum. It cannot retrospectively
+be assigned to GC, scheduling or a particular call. New profiling is separate
+from full pytest and does not hide the old maximum.
+
+Paired **uninstrumented whole production-path** runs, 180 ticks each, same 40
+actors/two ego boxes and copied IPC inputs:
+
+| Run | p50 ms before -> after | p95 ms before -> after | p99 ms before -> after | max ms before -> after |
+| --- | --- | --- | --- | --- |
+| 1 | 10.537 -> 10.664 | 11.278 -> 11.299 | 13.185 -> 12.690 | 21.116 -> 24.620 |
+| 2 | 10.627 -> 11.153 | 13.430 -> 13.422 | 17.410 -> 15.991 | 43.047 -> 39.909 |
+| 3 | 10.930 -> 10.836 | 11.774 -> 14.773 | 14.986 -> 19.983 | 34.481 -> 26.044 |
+
+These are operation costs, **not** packet scheduling/freshness or real IPC-lock
+waiting. Increases as well as decreases are reported; no performance speedup or
+elimination of tails is claimed. The 40-actor case is primarily body prediction;
+it does not exercise 16 simultaneous qualifying positive-motion targets.
+
+Separate phase instrumentation records wall time, Windows thread CPU cycles,
+quantized `thread_time`, every copied-IPC read and exact same-thread GC spans.
+Traced whole-path maxima before/after: **84.131/28.945**, **30.311/27.074**,
+and **50.281/47.653 ms** with the existing single-flight exporter active in the
+third pair. Its actual exports pass integrity inspection. In the first baseline
+repeat, an Engine span **71.903 ms** overlaps measured **67.746 ms** generation-1
+GC. Candidate Engine maxima overlap GC of about 16.0–18.0 ms. This proves those
+specific new repeats, not the old 93 ms/game incident. Frozen-module/fixture
+allocation and instrumented snapshot/GC state also affect these tails.
+
+Windows thread CPU is quantized to 15.625 ms on this host. CPU cycles describe
+work but are not converted using an assumed clock rate; wall-minus-quantized-CPU
+cannot honestly be labeled waiting. Mock IPC includes deepcopy CPU, not real
+process transfer/lock measurement. Export work uses the existing one-job worker
+and no queue; snapshots are taken outside the reported Engine phase but inside
+the timed whole loop. No collector arming, synchronous control-loop disk write,
+GC disabling or safety-budget increase is used.
+
+Retained native actor-motion state is **100894 bytes** by unique recursive object
+size; the profile detail journal stays below **65536 bytes**, sampled history
+about **48.6 KiB** below **1048576 bytes**. This excludes cleared fixture/mock
+assertion histories and is not an RSS claim. Full paired traces are in
+`stop-completion-comparison-final.json`; the tracked reproducer is
+`tools/compare_oct14_stop_completion.py`. Profiling/trace artifacts are ignored
+and not runtime payload.
+
+### Current completion gates and runtime scope
+
+Targeted production/safety regressions passed **189 tests** after the control
+changes, including both automatics, native crossing, AEB, source expiry/reset,
+manual/foreign/backend rejection, positive-write publication races and the
+closed model. The final full-suite receipt and package hashes are recorded below
+after verification; the earlier 2561-case PASS is not substituted for changed code.
+After the last missing-slot guard and stricter native scalar validation,
+**42/42 new regressions pass**, including the two failing-before full-slot cases.
+
+Only ACC implementation changes, to **1.3.1**; DrivePolicy stays **1.1.4**.
+Map 1.1.2, AP 1.3.4, indicators 1.0.2 and the existing native candidate
+1.59.4-up-traffic-timed are unchanged. GPS ABI remains unchanged; the DLL is the
+same verified prepared native candidate, not an installed new GPS interface.
+The coordinated payload is the 17-file list above, with current Python/core/ACC
+and release metadata. Tests/reports/tools are excluded. Both native copies retain
+SHA-256 `ebe8af192bcd7c0955075d2869882d8c82804e855ba25a6b43fb47d8c7542bdb`.
+The older candidate and v2 ZIP are **SUPERSEDED** by this working tree; preserve
+their bytes/receipts and do not deploy them as this correction.
+
+New runtime changes: `core/acc_following.py`, `core/service_brake_hold.py`,
+`core/longitudinal.py`, `core/engine.py`,
+`core/navigation/longitudinal_diagnostics.py`, `plugins/acc/main.py` and
+`PLUGIN_CHANGELOG.md`. New/revised verification: `tests/test_oct14_stop_completion.py`,
+`tests/test_oct11_destination_flow.py`, `tools/compare_oct14_stop_completion.py`,
+the verification/packaging tools, this report and DEFERRED_WORK.md. All previous
+candidate dependencies remain in the coordinated ZIP, rather than deploying
+only these seven changed runtime files over an older installation.
+
+**OFFLINE VERIFIED** is limited to the reproduced moving-constraint stop fix,
+safe explicit destination handover and the named negative/benchmark/export
+scope. **GPS automatic removal/arrival remains BLOCKED**, including normal
+fully automatic shutdown and unattended static handover. The initiating
+historical turn conflict and original 93 ms maximum remain NOT VERIFIED.
+All new game effects are **GAME NOT VERIFIED**. No new ride is requested; the
+minimum unblocker is the authoritative native target/lifecycle definition above,
+not an ordinary repeat of the route.
+
+### Final verification receipt and prepared package — 2026-10-14
+
+The final complete suite passed **2603 tests and 1592 subtests in 1088.08 s**.
+`full-suite-completion-v4.verified.json` records exit code 0 and binds the
+before/after unchanged runtime hashes to HEAD
+`add9a190a6cbdc44898ac5a11034d44e2aa012de` plus the uncommitted corrections.
+The complete log SHA-256 is
+`1ade043c7e8e5535e64caefbfa8b1996cfdcf7f051b7ee784a327497f497ebc9`.
+The interrupted v3 run remains incomplete and is not used as verification.
+Targeted regressions, compileall and `git diff --check` also passed; the 16
+steering and 12 longitudinal comfort benchmark case results are numerically
+unchanged against the frozen comparison baseline.
+
+Prepared, **NOT DEPLOYED**:
+`docs/steering-audit/oct14-completion/ultrapilot-oct14-candidate-v4.zip`.
+ZIP SHA-256:
+`106e0a97f4b1a276e468fd65aa93f2db6a6f1c73e4aae0fc84d2abe46e434b8f`.
+All **17 payload files** were rehashed after ZIP readback; every Python/runtime
+payload hash matches the completed-suite receipt. Native source/artifact hashes
+match its existing build receipt. All **24 installed base files** still match
+the existing deployment receipt; this read-only check does not claim that the
+installation already contains this candidate. The adjacent manifest lists every
+payload path, size and hash, licenses, dependencies and explicit blockers.
+
+Earlier candidate ZIPs are superseded, preserved, and must not be substituted
+for this package. No installation, commit, push, diagnostic arming or game
+operation was performed. No additional full pytest rerun is needed for these
+unchanged verified bytes. Native GPS completion remains **BLOCKED** and new
+runtime effects remain **GAME NOT VERIFIED**, irrespective of this suite PASS.
+
+### Follow-up: fresh native destination search and executable boundary proof
+
+The October 14 follow-up searched the current public producer, its complete
+route-task-header history (five commits), all three visible forks, the local
+ETS2LA/MonoCruise sources, the bundled official telemetry headers and a separate
+native framework. This was a source search, not another game drive or a change
+to the tested runtime. The installed game executable identifies itself as
+**1.59.1.3 (e5e78473399772409aa86569d35f2f2b289127a5)**.
+
+Fresh GitLab API reads pinned the current producer to
+[`c925bd965a96c58b73eaea9ca033fe0f0dc623a7`](https://gitlab.com/ETS2LA/ets2la_plugin/-/commit/c925bd965a96c58b73eaea9ca033fe0f0dc623a7).
+Unlike the earlier cached raw response, this is a **1.60** layout update:
+`route_task_t` changes Windows size from 0x138 to 0x160 and the private-target
+array offset to 0xC8. It still only forward-declares `private_route_task_target_t`.
+The new `gps_voice_events` array is an opaque list of 48-byte records: no
+arrival/cancel discriminator, consumer implementation, target binding or 1.59
+layout verification is provided. It is **not** installed or copied into the
+1.59 candidate, and an imagined voice-event name is not used as authority.
+
+The Zia-ullah-khan, Piggywu981 and dariowouters forks respectively resolved to
+`6995f06494da5663d89ef9944cde6020098dceaf`,
+`b59b3f18d8d70469972aeb5c367610d7df199f39` and
+`131e1031aedf8cf90ad357b0b0d39d06375aab1b`; their target type remains undefined.
+The original ts-extra-utilities tree has no alternative navigation producer.
+SPF-Framework at `1ca67f04ec90727f3777eaedbd94ad7887a6bb95` exposes only
+[navigation distance/time/speed limit](https://github.com/TrackAndTruckDevs/SPF-Framework/blob/1ca67f04ec90727f3777eaedbd94ad7887a6bb95/include/SPF/Telemetry/SCS/Navigation.hpp)
+and [job delivery/cancellation events](https://github.com/TrackAndTruckDevs/SPF-Framework/blob/1ca67f04ec90727f3777eaedbd94ad7887a6bb95/include/SPF/Telemetry/SCS/Events.hpp),
+not GPS target completion. These job events cannot certify arbitrary GPS arrival.
+
+`tools/probe_native_destination_contract.py` extracts **the actual unchanged**
+candidate `CCore::get_navigation_data` method and compiles it with MSVC into a
+standalone harness. The engine input containers and memory sink are isolated
+stubs; no game process, controller, DLL deployment or arbitrary memory is used.
+The probe is an executable proof of the available publisher's information
+loss, **not** verification that the private game produces either modeled event.
+
+Results in `docs/steering-audit/oct14-completion/gps-contract-probe-v2/result.json`:
+
+| Input at the available native boundary | Actual publisher output |
+| --- | --- |
+| Initial two route rows | One 96000-byte write |
+| Replace terminal node with another node, same row count | No new write; previous bytes retained |
+| Remove task and clear waypoint list | No new write; previous bytes retained |
+| Repeat the same no-task input with another hypothesized removal cause | Indistinguishable bytes; no cause field exists |
+
+Source SHA-256:
+`9000d91aac1ef6242c2f72e880b5e8f449bc7f024324608a677f4713aa248ecb`;
+verbatim extracted method SHA-256:
+`70bd1f895f79fcffe07056d764be9c526008ebfbbfcd406f1b3d865f577222be`.
+The null-task result does not establish the real game's completion transition;
+it proves that if identical removal inputs occur, no downstream consumer can
+recover their different causes from this interface. Republishing/clearing that
+buffer alone would still not add authentic target semantics.
+
+**Still BLOCKED:** the precise remaining work requires verified 1.59 private
+target fields and the engine transition/hook for target reached versus user
+cancel/replacement, associated with that target's identity and session. No such
+definition or hook was found in the available primary sources. This requires
+version-specific native reverse engineering and validation of those fields and
+transitions, or an authoritative source/symbol/interface supplying them. A
+normal repeat of the drive cannot substitute for that contract. A second,
+independent completion requirement remains safe brake ownership after normal
+disengagement: current `release_all` withdraws service brake, so an unattended
+static hold must not be claimed, especially on a slope.
+
+Read-only inspection of the local 1.59 executable also found diagnostic strings
+for `route_task_node_t::get_position`, `get_time_compression`, waypoint-array
+removal and `gps_voice_event_t`. These are useful reverse-engineering anchors,
+not exported callable symbols, field layouts or completion semantics. No
+`private_route_task_target`, `destination_reached` or `destination_reach` ASCII
+token was found; absence of such a string is not proof that the private engine
+has no arrival function. The smallest concrete native investigation is to
+resolve the waypoint-position computation and the two removal paths (reached
+versus user cancel/replacement) in this exact executable, then validate their
+target binding and lifecycle before exporting authority. No unverified address
+or hook was added on the strength of a name alone.
+
+The working runtime, DLL, versions, changelog and verified v4 package are
+unchanged by this follow-up. Only this report and the isolated probe tool changed.
+The previous 2603-test/1592-subtest PASS remains bound to the same runtime hashes;
+it is not claimed to test authentic GPS completion. No redundant full-suite run
+is needed. Fully automatic GPS arrival is **not implemented**, rather than
+silently approximated from distance zero, local endpoints or a removal label.

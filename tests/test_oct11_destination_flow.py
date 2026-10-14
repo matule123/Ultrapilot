@@ -26,7 +26,7 @@ def test_destination_envelope_starts_before_fixed_35m_flag(flow, tmp_path, mode)
 
 
 @pytest.mark.parametrize('mode', [0, 3])
-def test_confirmed_positive_destination_distance_stops_then_normal_release(flow, tmp_path, mode):
+def test_positive_destination_stop_requires_driver_handover_before_release(flow, tmp_path, mode):
     values, step = timing_flow(flow, tmp_path, mode)
     state, truck, engine, ap, tick, n, clock, writes, collector = values
     state.set('acc_target_speed', 50.)
@@ -38,8 +38,15 @@ def test_confirmed_positive_destination_distance_stops_then_normal_release(flow,
     assert pedal(engine, 'abackward') > 0.
     truck['routeDistance'] = 1.
     step(36, 'green', speed=0., gear=0 if mode == 0 else 4, progress=0.)
+    # Standstill does not confirm producer completion or unattended hill hold.
+    # Strengthen the handover contract: keep the physically admitted brake
+    # until the driver explicitly accepts it, then retain the release checks.
+    assert state.get('autopilot_active')
+    assert state.get('autopilot_control_state') == 'destination_handover_pending'
+    assert state.get('navigation_destination_completion') is None
+    assert pedal(engine, 'aforward') == 0. and pedal(engine, 'abackward') > 0.
+    n(); engine._flush_controls()
     assert not state.get('autopilot_active')
-    assert state.get('autopilot_control_state') == 'arrived'
     assert state.get('autopilot_intervention') is None
     assert pedal(engine, 'aforward') == pedal(engine, 'abackward') == 0.
     assert not any(ch in ('parkingbrake', 'hazard') and value for _, ch, value, _ in writes)

@@ -30,7 +30,7 @@ def prepare(output):
     if sha(dll)!=receipt['dll_sha256']:raise ValueError('Native build receipt mismatch')
     for path,digest in receipt['files'].items():
         if sha((native/path).read_bytes())!=digest:raise ValueError('Native source/artifact mismatch: '+path)
-    test_log=ROOT/'docs/steering-audit/oct14-completion/full-suite-completion-v2.log'
+    test_log=ROOT/'docs/steering-audit/oct14-completion/full-suite-completion-v4.log'
     log=test_log.read_text(errors='replace')
     if 'failed' in log.lower() or 'passed' not in log or '[100%]' not in log:
         raise ValueError('Final complete pytest PASS is required before packaging')
@@ -63,7 +63,8 @@ def prepare(output):
         deployment_requirements=['Separate user approval, both applications off, whole-set rollback backup',
             'Install runtime payload and the same DLL into the already receipt-identified game plugin location',
             'Preserve settings/map-cache/diagnostic records/commit marker; verify every installed hash'],
-        blockers=['GPS completion/cancellation lifecycle and precise destination world point unavailable',
+        blockers=['Producer-owned complete destination identity and completion/cancellation lifecycle unavailable; local Map endpoint is not proof',
+            'Positive-distance planning stop requires explicit driver handover; fully automatic destination shutdown not implemented',
             'Calibrated load mapper and certified coverage/full swept envelope not implemented'],
         game_verified=False)
     with zipfile.ZipFile(output,'x',zipfile.ZIP_DEFLATED) as archive:

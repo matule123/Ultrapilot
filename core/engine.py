@@ -1145,6 +1145,21 @@ class UltraPilotEngine:
                 confirmed_route_conflict=False,coverage_confirmed=False)
         self.shared_state.set('lead_distance',following.get('gap_m'))
         brake=self._route_crossing_brake(following,brake)
+        scope=following.get('motion_constraint')
+        if (scope and not following.get('emergency')
+                and (following.get('crossing') or {}).get('brake',0.) == 0.
+                and (following.get('body_prediction') or {}).get('brake',0.) == 0.):
+            following['motion_constraint']=dict(scope,authority=tuple(binding))
+            if (self._traffic_brake_basis or {}).get('kind') == 'protective_route_candidate':
+                self._traffic_brake_basis=dict(self._traffic_brake_basis,
+                    stop_contract='observed_positive_motion_speed_constraint')
+                # Ordinary positive moving constraints belong to the existing
+                # speed PID. The legacy distance floor otherwise brakes even
+                # below that cap and can turn a slowdown into a full stop.
+                # TTC emergency and crossing/body demands were excluded above.
+                brake=0.
+        else:
+            following['motion_constraint']=None
         return following,brake
 
     def _publish_traffic_control(self, truck, telemetry_timestamp, binding, traffic,
@@ -1186,6 +1201,7 @@ class UltraPilotEngine:
                 if detected_light else None), following=following,
             brake_basis=self._traffic_brake_basis,
             stop_clearance=following.get('stop_clearance'),
+            motion_constraint=following.get('motion_constraint'),
             dependencies=following.get('deadline_dependencies', ()),
             expires_at=following.get('expires_at', float('inf')))
 
@@ -3530,20 +3546,16 @@ class UltraPilotEngine:
                     and not longitudinal.get('refresh_pending')
                     and not self.shared_state.get('autopilot_intervention')
                     and not write_rejection(longitudinal, context(self.shared_state), time.monotonic())):
-                # Only a fresh positive GPS remainder and physically admitted
-                # planned chain can complete. A vanished/zero target is NOT proof.
-                # Release once to the driver; no promise of unattended hill hold.
-                self._bind_longitudinal_output('destination_release', 0., 0., 'positive GPS destination reached at standstill')
-                self.controller.release_all()
-                if not getattr(getattr(self.controller, 'scs', None), 'connected', False):
-                    self._automatic_safety_stop('GPS destination controller release failed')
-                    return
-                self.shared_state.update_batch({'autopilot_active': False,
-                    'autopilot_control_state': 'arrived',
-                    'autopilot_engagement_request': None, 'auto_drive_pending': False,
-                    'longitudinal_command': None, 'simple_auto_service_hold': None,
-                    'navigation_arrival_pending': False,
-                    'navigation_destination_completion': dict(
+                # Positive remainder + standstill proves this planning stop,
+                # not the producer's GPS completion/cancellation semantics.
+                # No unattended static hold or driver pedal ownership is known.
+                # Keep the admitted continuous write chain until explicit N/UI
+                # handover; never drop brake merely to label arrival successful.
+                first_handover = self.shared_state.get('autopilot_control_state') != 'destination_handover_pending'
+                self.shared_state.update_batch({
+                    'autopilot_control_state': 'destination_handover_pending',
+                    'navigation_destination_completion': None,
+                    'navigation_destination_handover': dict(
                         context=tuple(longitudinal['context']),
                         sdk_frame_us=truck_telemetry['sdkFrameTimeUs'],
                         observation_timestamp=truck_telemetry['_control_observation']['observed_at'],
@@ -3551,16 +3563,15 @@ class UltraPilotEngine:
                         positive_gps_remainder_m=destination['distance_m'],
                         terminal_receipt=dict(destination_terminal),
                         game_consumption_verified=False,
-                        automatic_hill_hold_after_release=False),
-                    'navigation_status': 'Cieľ dosiahnutý – prevezmite držanie vozidla',
-                    CTL_THROTTLE: 0., CTL_BRAKE: 0., CTL_STEERING: 0.,
-                    CTL_SELECT_DRIVE: None})
-                self._service_brake_hold = None
-                self._clear_simple_auto_forward_history()
-                self._drive_engagement = None
-                self._drive_selector_pressed = False
-                self._was_active = False
-                logging.info('Navigation: planned destination stop complete; controls released to driver')
+                        producer_completion_verified=False, driver_handover_required=True),
+                    'navigation_status': 'Dojazd skončil – držte brzdu a stlačte N na prevzatie',
+                    CTL_THROTTLE: 0., CTL_BRAKE: brake,
+                    CTL_SELECT_DRIVE: None,
+                    'longitudinal_applied': dict(throttle=0.,brake=brake,
+                        source='destination_handover_pending',reason='explicit driver holding required',
+                        context=tuple(longitudinal['context']),checked_at=time.monotonic())})
+                if first_handover:
+                    logging.info('Navigation: planning stop at standstill; continuous brake retained pending explicit driver handover')
                 return
             if next_hold and next_hold['phase'] == 'holding':
                 if not previous_hold or previous_hold['phase'] != 'holding':

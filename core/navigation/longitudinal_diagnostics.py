@@ -448,7 +448,7 @@ def bounded_input(value):
     # Additive fields do not change schema-1 bitmap positions or byte limits.
     for key in ('deadline_basis', 'traffic_availability', 'destination_brake_selected',
                 'leader_prediction', 'stop_clearance', 'requested_acceleration_ms2',
-                'selected_acceleration_ms2', 'acceleration_basis'):
+                'selected_acceleration_ms2', 'acceleration_basis', 'motion_constraint'):
         if key in value:
             result[key] = value[key]
     following_keys = (
@@ -744,6 +744,7 @@ HISTORY_FIELDS = (
     'signal_native_state','signal_time_left_s','signal_phase_plan',
     'traffic_departure',
     'load_observation', 'sdk_user_throttle', 'sdk_user_brake',
+    'motion_constraint',
 )
 
 
@@ -824,6 +825,8 @@ def _decision_summary(source):
             'entry_progress_m','entry_xyz','stop_line_verified','front_allowance_m')} if head else None,
         forward_phase=forward.get('phase'),coast_only=forward.get('coast_only'),
         hold_phase=hold.get('phase'),hold_chain=hold.get('chain'),hold_brake=hold.get('brake'),
+        motion_constraint=({k:v for k,v in traffic['motion_constraint'].items() if k!='authority'}
+                           if isinstance(traffic.get('motion_constraint'),dict) else None),
         hold_reason=hold.get('stop_reason'),sdk_game_throttle=response.get('gameThrottle'),sdk_game_brake=response.get('gameBrake'),
         load_observation=source.get('load_observation'),
         sdk_user_throttle=response.get('userThrottle'), sdk_user_brake=response.get('userBrake'),

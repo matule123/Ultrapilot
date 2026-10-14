@@ -19,7 +19,7 @@ if __name__=='__main__':
     sha=lambda value:hashlib.sha256(value).hexdigest()
     hashes=lambda:{name:sha((ROOT/name).read_bytes()) for name in RUNTIME}
     before=hashes()
-    log=ROOT/'docs/steering-audit/oct14-completion/full-suite-completion-v2.log'
+    log=ROOT/'docs/steering-audit/oct14-completion/full-suite-completion-v4.log'
     if log.exists():raise ValueError('Preserve existing evidence; use a new verification revision')
     env=dict(os.environ,PYTHONCASEOK='1')
     with log.open('x',encoding='utf-8') as out:

@@ -412,10 +412,38 @@ class RouteLeadSelector:
                 continue
         caution = [following_demand(c[0],c[2],float(truck['speed']),include_brake=True) for c in protective]
         caution_brake = max((c['protective_brake'] for c in caution),default=0.)
+        # A moving speed constraint is not itself a full-stop obligation.
+        # This remains protective reference relevance, not lane/road clearance.
+        moving_scope = None
+        related = candidates+protective
+        if source and source.get('valid') is True and 0 < len(related) <= 16:
+            targets = []
+            for gap, aid, speed in related:
+                actor = next(a for a in actors if str(a['id']) == aid)
+                cap = following_demand(gap, speed, float(truck['speed']))['speed_cap_mps']
+                if (actor.get('source') != 'moving' or actor.get('temporary')
+                        or actor.get('speed_source') != 'buffer' or speed <= .1 or cap <= 1.):
+                    break
+                targets.append(dict(id=aid, speed_mps=speed, cap_mps=cap,
+                                    source=actor['source'], slot=actor['slot']))
+            if len(targets) == len(related):
+                moving_scope = dict(schema=1, kind='observed_positive_motion_speed_constraint',
+                    targets=sorted(targets,key=lambda t:t['id']), complete=True,
+                    source_acquisition={k:source[k] for k in ('lifecycle','generation','frame_us','observed_at')},
+                    coverage_confirmed=False)
         caution_fields = dict(unassigned_protective_brake=caution_brake,
             protective_target_id=min(protective)[1] if protective else None,
-            departure=departure)
+            departure=departure, motion_constraint=moving_scope)
         if not candidates:
+            if moving_scope and protective:
+                # Keep the existing departure witness for the controlling
+                # protective constraint too. This never certifies a lane.
+                selected=min(protective)
+                retained=next((c for c in protective if c[1]==self.target_id),None)
+                if retained and retained[0]<=selected[0]+RETENTION_M:selected=retained
+                self.target_id=selected[1]
+                actor=next(a for a in actors if str(a['id'])==selected[1])
+                self._last_target_observation=(dict(actor),receiver_time)
             return dict(status='no_candidate_unproven_coverage', confirmed=False,
                 protective_brake=caution_brake, emergency=any(c['emergency'] for c in caution),**caution_fields)
         candidates.sort()

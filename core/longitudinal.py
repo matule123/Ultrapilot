@@ -377,6 +377,7 @@ def traffic_required(value):
     except (TypeError, ValueError, OverflowError):
         return True
     return bool(demand
+        or value.get('motion_constraint')
         or signal_coverage_required(value)
         or signal_approach_required(value)
         or following.get('status') == 'candidate' or value.get('lead_distance')
@@ -542,6 +543,8 @@ def signal_drive_write_guard(state, truck, value, binding, *, diagnostic=None,
     traffic, reason = read(state, 'traffic', binding=binding,
                            diagnostic=diagnostic, rejection_info=rejection_info)
     if reason or traffic is None:
+        if traffic is None and value.get('moving_target_ids'):
+            return value,'ACC moving traffic unavailable before write'
         return value, reason
     control = signal_speed_control(traffic, float(truck['speed']))
     cap = signal_approach_speed_limit(traffic, float(truck['speed']))
@@ -550,6 +553,21 @@ def signal_drive_write_guard(state, truck, value, binding, *, diagnostic=None,
     destination = destination_stop_control(state, truck)
     if destination:
         cap = min(cap, destination['cap_ms']) if cap is not None else destination['cap_ms']
+    scope=traffic.get('motion_constraint')
+    original_ids=value.get('moving_target_ids') or ()
+    if scope is not None:
+        from core.service_brake_hold import moving_speed_constraint
+        qualified=moving_speed_constraint(dict(source='acc',context=binding,
+            stopping_evidence=dict(traffic=traffic)))
+        if qualified is None:
+            return value,'invalid positive moving traffic constraint before write'
+        if not set(original_ids)<={t['id'] for t in qualified['targets']}:
+            return value,'ACC original moving target unavailable before write'
+        moving_cap=min(t['cap_mps'] for t in qualified['targets'])
+        cap=min(cap,moving_cap) if cap is not None else moving_cap
+    elif original_ids:
+        # Do not accept disappearance between arbitration and positive write.
+        return value,'ACC moving constraint unavailable before write'
     if cap is None or float(truck['speed']) <= cap:
         return value, ''
     result = dict(value, throttle=0., source='speed_constraint',
@@ -1072,15 +1090,26 @@ def _engine_decision(state, truck, now=None, *, diagnostic=None, rejection_info=
     if acc_reason or policy_reason:
         return reject(acc_reason or policy_reason)
     following = traffic.get('following') if traffic else None
+    moving_scope = None
+    if (traffic or {}).get('motion_constraint') is not None:
+        from core.service_brake_hold import moving_speed_constraint
+        moving_scope = moving_speed_constraint(dict(source='acc',context=binding,
+            stopping_evidence=dict(traffic=traffic)))
+        if moving_scope is None:
+            return reject('invalid positive moving traffic constraint', traffic)
+        if float(truck['speed']) > min(t['cap_mps'] for t in moving_scope['targets']):
+            throttle = 0.  # Current hard cap applies even between ACC ticks.
     observed_lead_departure = False
     if current_acc and current_acc.get('following_required') is True:
         # Target loss is not clear-road evidence, including between ACC ticks.
         # The old candidate cannot outlive its source's original short lease.
         from core.acc_following import observed_departure
         candidate_present = isinstance(following, dict) and following.get('status') == 'candidate'
+        moving_target_present = bool(moving_scope and current_acc.get('following_target_id')
+                                    in {t['id'] for t in moving_scope['targets']})
         observed_lead_departure = observed_departure(
             following, current_acc.get('following_target_id'), decision_time())
-        if not candidate_present and not observed_lead_departure:
+        if not candidate_present and not moving_target_present and not observed_lead_departure:
             result = reject('ACC target unavailable or unconfirmed departure', traffic)
             if rejection_info is not None:
                 rejection_info['following_target_id'] = current_acc.get('following_target_id')
@@ -1094,7 +1123,7 @@ def _engine_decision(state, truck, now=None, *, diagnostic=None, rejection_info=
                     throttle = 0.
             except (KeyError, TypeError, ValueError, OverflowError):
                 return reject('invalid ACC following constraint', traffic)
-        else:
+        elif not moving_target_present:
             # The new Traffic receipt can precede ACC's next independent tick.
             # It has no following cap; do not fabricate one or apply old drive.
             # Current braking/emergency floors remain effective below.
@@ -1158,6 +1187,8 @@ def _engine_decision(state, truck, now=None, *, diagnostic=None, rejection_info=
                   computed_at=value["computed_at"],
                   refresh_pending=bool(value.get('refresh_pending')),
                   expires_at=min(p['expires_at'] for p in dependencies))
+    if moving_scope:
+        result['moving_target_ids']=tuple(t['id'] for t in moving_scope['targets'])
     winner = min(dependencies, key=lambda p: (p['expires_at'], p.get('source', '')))
     result['deadline_basis'] = dependency(winner)['deadline_basis']
     result['lease_dependencies'] = [dependency(p) for p in dependencies]
@@ -1217,10 +1248,10 @@ def _engine_decision(state, truck, now=None, *, diagnostic=None, rejection_info=
         stop = dict(
             source=result['source'], reason=result['reason'], brake=result['brake'],
             traffic=traffic and {k: traffic.get(k) for k in ('sdk_frame_us',
-                'observation_timestamp', 'traffic_brake', 'light_brake')},
+                'observation_timestamp', 'traffic_brake', 'light_brake', 'motion_constraint')},
             acc=current_acc and {k: current_acc.get(k) for k in ('sdk_frame_us',
                 'observation_timestamp', 'brake', 'following_status', 'signal_stop_control',
-                'signal_brake_selected')},
+                'signal_brake_selected', 'control_target_kmh')},
             policy=policy and {k: policy.get(k) for k in ('sdk_frame_us',
                 'observation_timestamp', 'brake', 'reason')},
             source_observation_timestamp=value['observation_timestamp'])

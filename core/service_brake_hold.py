@@ -1,10 +1,11 @@
 """Engine-owned continuous service-brake state, not another pedal regulator.
 
 Software continuity supports the user-observed gearbox model only. It does not
-prove DLL consumption or hill hold. Only the versioned producer-timed signal
-sidecar can authorize release; legacy semaphore/actor buffers cannot do so.
+prove DLL consumption or hill hold. Release needs producer-timed same-signal or
+qualified original-traffic clearance; legacy buffers cannot prove either.
 """
 import time
+import math
 SERVICE_BRAKE_RISE_PER_S=2.5  # existing Autopilot service-pedal limit, not physical jerk
 
 
@@ -55,6 +56,8 @@ def rejection(record, controller, state, truck):
 def planned_stop(decision):
     if not decision or decision.get('emergency') or decision.get('brake', 0) <= 0:
         return False
+    if moving_speed_constraint(decision) is not None:
+        return False  # Positive speed regulation is not a terminal stop receipt.
     evidence = decision.get('stopping_evidence') or {}
     traffic = evidence.get('traffic') or {}
     acc = evidence.get('acc') or {}
@@ -80,6 +83,48 @@ def consumed_stop_target(evidence):
     traffic = (evidence or {}).get('traffic') or {}
     signal = traffic.get('signal') or {}
     return traffic.get('light') or signal.get('candidate') or signal.get('stop_candidate') or {}
+
+
+def moving_speed_constraint(decision):
+    """Consumed positive moving-actor constraint, never clearance by absence.
+
+    Unknown/legacy inputs retain terminal protection. A fresh positive cap can
+    adjust ordinary braking; it cannot clear an existing terminal stop receipt.
+    """
+    try:
+        if (decision.get('emergency') or decision.get('refresh_pending')
+                or decision.get('source') not in ('acc','traffic')):
+            return None
+        evidence=decision.get('stopping_evidence') or {}
+        traffic=evidence.get('traffic') or {}; acc=evidence.get('acc') or {}
+        policy=evidence.get('policy') or {}; basis=traffic.get('brake_basis') or {}
+        scope=traffic.get('motion_constraint') or {}
+        if (traffic.get('light_brake',0.) > 0. or acc.get('signal_brake_selected')
+                or evidence.get('destination_brake_selected')
+                or policy.get('reason') == 'toll stop/payment'
+                or acc.get('following_status') == 'source_lost'
+                or (traffic.get('traffic_brake',0.) > 0. and
+                    basis.get('stop_contract') != 'observed_positive_motion_speed_constraint')
+                or scope.get('schema') != 1 or scope.get('complete') is not True
+                or scope.get('kind') != 'observed_positive_motion_speed_constraint'
+                or tuple(scope['authority']) != tuple(decision['context'])
+                or not 1 <= len(scope['targets']) <= 16
+                or not all(isinstance(t['id'],str) and t['id'] and t['source']=='moving'
+                    and type(t['slot']) is int and 0<=t['slot']<80
+                    and math.isfinite(t['speed_mps']) and .1<t['speed_mps']<=70.
+                    and math.isfinite(t['cap_mps']) and 1.<t['cap_mps']<=140. for t in scope['targets'])
+                or len({t['id'] for t in scope['targets']}) != len(scope['targets'])
+                or (acc.get('brake',0.) > 0. and
+                    (not math.isfinite(acc['control_target_kmh']) or acc['control_target_kmh']<=3.6))):
+            return None
+        acquired=scope['source_acquisition']
+        if (not all(type(acquired[k]) is int and acquired[k]>0
+                    for k in ('lifecycle','generation','frame_us'))
+                or not 0 <= time.monotonic()-acquired['observed_at'] <= .5):
+            return None
+        return scope
+    except (KeyError,TypeError,ValueError,OverflowError):
+        return None
 
 
 def after_write(previous, controller, forward_context, truck, decision, now,
@@ -152,6 +197,7 @@ def after_write(previous, controller, forward_context, truck, decision, now,
     traffic = evidence.get('traffic') or {}
     policy = evidence.get('policy') or {}
     basis = traffic.get('brake_basis') or {}
+    motion = moving_speed_constraint(decision)
     qualified_traffic_stop = bool(basis.get('stop_contract') == 'observed_conflict_stop'
             and basis.get('targets_complete') is True and basis.get('targets'))
     if traffic.get('traffic_brake', 0) > 0 and qualified_traffic_stop:
@@ -170,12 +216,12 @@ def after_write(previous, controller, forward_context, truck, decision, now,
     # Separate the originally consumed reasons. Qualified clearance may remove
     # ONLY its own traffic dependency; it cannot clear toll/ACC/unknown stops.
     others = set(result.get('other_stop_sources') or ())
-    if traffic.get('traffic_brake', 0) > 0:
+    if traffic.get('traffic_brake', 0) > 0 and motion is None:
         # A previous qualified owner cannot bless a newly unqualified cause.
         # Losing the complete set is sticky until this hold/authority ends.
         others.add('traffic' if qualified_traffic_stop and result.get('traffic_lock')
                    else 'unqualified_traffic')
-    if acc.get('following_status') in ('candidate', 'source_lost'):
+    if acc.get('following_status') in ('candidate', 'source_lost') and motion is None:
         others.add('acc')
     if policy.get('reason') == 'toll stop/payment':
         others.add('toll')
@@ -191,8 +237,8 @@ def after_write(previous, controller, forward_context, truck, decision, now,
                 distance_m=evidence['destination']['distance_m'],
                 sdk_frame_us=truck['sdkFrameTimeUs'], returned_at=current['returned_at']))
     result['other_stop_unverified'] = bool(result.get('other_stop_unverified')
-        or acc.get('following_status') in ('candidate', 'source_lost')
-        or traffic.get('traffic_brake', 0) > 0
+        or (motion is None and (acc.get('following_status') in ('candidate', 'source_lost')
+                               or traffic.get('traffic_brake', 0) > 0))
         or policy.get('reason') == 'toll stop/payment')
     result.update(brake=current['value'], returned_at=current['returned_at'],
                   write_sequence=current['sequence'], sdk_frame_us=truck['sdkFrameTimeUs'],

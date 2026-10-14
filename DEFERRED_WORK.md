@@ -1,5 +1,29 @@
 # Odložená a nedokončená práca
 
+## October 14 final stop-completion continuation
+
+The final continuation in
+[PHASE7_DESTINATION_STOP_AND_ACC_COMPLETION_20261014.md](PHASE7_DESTINATION_STOP_AND_ACC_COMPLETION_20261014.md)
+reproduces and fixes the shared positive-moving-constraint/terminal-hold conflict.
+Qualified ordinary protective caps now feed the existing speed PID instead of a
+separate legacy distance brake; acquired-source loss and terminal conflicts remain
+protected. ACC 1.3.1 is an actual consumer change; DrivePolicy stays 1.1.4. The
+initial held-brake-decrease-only experiment failed the closed model and is rejected.
+
+Positive-GPS planning standstill now retains continuous service brake and explicit
+driver takeover instead of silently releasing it and claiming native completion.
+Automatic GPS disappearance/arrival remains BLOCKED by the undefined native
+private target and completion/cancellation lifecycle interface. A local Map tail,
+zero remainder or receiver timestamp cannot supply that authority. The historical
+turn's original actor and original 93 ms sample spans are absent; their exact causes
+remain unproved. New same-input CPU-cycle/wall/GC/export measurements are separate
+offline observations, not retroactive explanation or game verification.
+
+The earlier v1/v2 candidate ZIPs are superseded by the final continuation. No
+installation or original data is changed, and no new ordinary ride is requested
+to obtain missing native semantics. The complete two-problem request stays OPEN
+at the precisely named GPS producer/handover dependency.
+
 ## October 14 independent completion and exact blockers
 
 October 14 follow-up reviewed the calculated LanePath endpoint: a full current
