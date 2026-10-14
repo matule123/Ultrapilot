@@ -1229,7 +1229,8 @@ def _engine_decision(state, truck, now=None, *, diagnostic=None, rejection_info=
             # Stop ownership needs the consumed cause, not unbounded actors or
             # forecast arrays. Missing provenance remains explicitly unknown.
             stop['traffic']['brake_basis'] = {k: basis[k] for k in
-                ('kind', 'target_id', 'confirmed_route_conflict') if k in basis}
+                ('kind', 'target_id', 'confirmed_route_conflict', 'stop_contract',
+                 'source_acquisition', 'targets', 'targets_complete') if k in basis}
             decisive = basis.get('decisive')
             if isinstance(decisive, dict):
                 stop['traffic']['brake_basis']['decisive'] = {k: decisive[k] for k in

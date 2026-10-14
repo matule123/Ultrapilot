@@ -269,6 +269,25 @@ class SCSTelemetry:
             # above, not gameSteer's normalized input and not radians.
             tf["wheelSteeringTurns"] = self.read_float(1200, 16)[0]
             data["truckFloat"] = tf
+            # Optional passive evidence, RenCloud ABI revision 12. These are
+            # decoded from the SAME copied image as control fields, never an
+            # additional live SDK read. Unknown revisions remain unavailable.
+            # Layout: scs-sdk-plugin/scs-telemetry/inc/scs-telemetry-common.hpp.
+            if self.read_int(40)[0] == 12:
+                def optional_float(offset, lo, hi):
+                    value = self.read_float(offset)[0]
+                    return value if math.isfinite(value) and lo <= value <= hi else None
+                for key, offset in (('gameThrottle', 976), ('gameBrake', 980),
+                                    ('userThrottle', 960), ('userBrake', 964)):
+                    tf[key] = optional_float(offset, 0., 1.)
+                pitch = self.read_double(2232)[0]
+                data['loadObservation'] = dict(schema=1, abi_revision=12,
+                    cargo_mass_kg=optional_float(748, 0., 1e7),
+                    unit_mass_kg=optional_float(944, 0., 1e7),
+                    chassis_pitch_rad=pitch*math.tau if math.isfinite(pitch) else None,
+                    motor_brake=self.read_bool(1567)[0],
+                    retarder_step=self.read_int(108)[0],
+                    total_mass_verified=False, road_grade_verified=False)
             data["wheelSteerable"] = self.read_bool(1500, 16)[0]
             data["wheelPositionX"] = self.read_float(1676, 16)[0]
             data["wheelPositionZ"] = self.read_float(1804, 16)[0]

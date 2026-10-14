@@ -193,6 +193,11 @@ def hold_snapshot(original):
     if lock:
         hold['signal_lock'] = {k:lock[k] for k in ('lifecycle','generation','frame_us','observed_at')}
         hold['signal_lock']['id'] = lock['candidate']['id']
+    # Additive extensions remain literal keys. Do NOT reorder schema-1 field
+    # tables/tree dictionaries: existing incident files must still decode.
+    for key in ('traffic_lock', 'other_stop_sources'):
+        if key in original:
+            hold[key] = original[key]
     return hold
 
 _COMPARISON_FIELDS = (
@@ -441,14 +446,17 @@ def bounded_input(value):
     result['unavailable_field_schema'] = 1
     result['unavailable_field_mask'] = sum(1 << i for i,k in enumerate(keys) if value.get(k) is None)
     # Additive fields do not change schema-1 bitmap positions or byte limits.
-    for key in ('deadline_basis', 'traffic_availability', 'destination_brake_selected'):
+    for key in ('deadline_basis', 'traffic_availability', 'destination_brake_selected',
+                'leader_prediction', 'stop_clearance', 'requested_acceleration_ms2',
+                'selected_acceleration_ms2', 'acceleration_basis'):
         if key in value:
             result[key] = value[key]
     following_keys = (
         'status', 'target_id', 'gap_m', 'speed_mps', 'speed_cap_mps', 'emergency',
         'reason', 'receiver_time', 'source_timestamp', 'source_sequence',
         'complete', 'atomic', 'confirmed', 'expires_at','protective_target_id',
-        'protective_brake','unassigned_protective_brake','actor_identity')
+        'protective_brake','unassigned_protective_brake','actor_identity',
+        'leader_prediction','source_acquisition','body_prediction')
     result['following'] = {k: value['following'].get(k) for k in following_keys} if isinstance(value.get('following'), dict) else None
     if result['following'] is not None and isinstance(value['following'].get('departure'), dict):
         proof = value['following']['departure']
@@ -735,6 +743,7 @@ HISTORY_FIELDS = (
     # Append only; existing history field indices retain their meanings.
     'signal_native_state','signal_time_left_s','signal_phase_plan',
     'traffic_departure',
+    'load_observation', 'sdk_user_throttle', 'sdk_user_brake',
 )
 
 
@@ -816,6 +825,8 @@ def _decision_summary(source):
         forward_phase=forward.get('phase'),coast_only=forward.get('coast_only'),
         hold_phase=hold.get('phase'),hold_chain=hold.get('chain'),hold_brake=hold.get('brake'),
         hold_reason=hold.get('stop_reason'),sdk_game_throttle=response.get('gameThrottle'),sdk_game_brake=response.get('gameBrake'),
+        load_observation=source.get('load_observation'),
+        sdk_user_throttle=response.get('userThrottle'), sdk_user_brake=response.get('userBrake'),
         first_reason=intervention.get('reason'),first_reason_observed_at=intervention.get('observed_at'))
     if any(isinstance(p, dict) and (p.get('capture_incomplete') or p.get('snapshot_status'))
            for p in inputs.values()):
@@ -1336,7 +1347,8 @@ def local_source_snapshot(truck, pending=None):
         actual_speed_mps=truck.get('speed'), observed_gear=truck.get('gear'),
         # Additive extension keys: never change the indexed codec tables.
         gps_remainder_m=truck.get('routeDistance'), gps_route_time_s=truck.get('routeTime'),
-        sdk_response={k: truck.get(k) for k in ('gameThrottle', 'gameBrake')},
+        load_observation=truck.get('loadObservation'),
+        sdk_response={k: truck.get(k) for k in ('gameThrottle', 'gameBrake', 'userThrottle', 'userBrake')},
         decision_started_at_s=time.monotonic(), activation=pending.get('request_id'),
         route_identity=identity, context=None, control_state=None,
         phase='launch' if pending else 'unbound', requested=None, selected=None,
@@ -1367,6 +1379,8 @@ def source_snapshot(state, truck, pending):
         observation_timestamp=observed.get('observed_at'),
         observation_valid=not reason and observed.get('valid') is True,
         actual_speed_mps=truck.get('speed'), observed_gear=truck.get('gear'),
+        load_observation=truck.get('loadObservation'),
+        sdk_response={k: truck.get(k) for k in ('gameThrottle', 'gameBrake', 'userThrottle', 'userBrake')},
         decision_started_at_s=time.monotonic(),
         autopilot_active=bool(state.get('autopilot_active', False)),
         activation=state.get('autopilot_failure_epoch'),

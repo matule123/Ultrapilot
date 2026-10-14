@@ -1,5 +1,36 @@
 # Odložená a nedokončená práca
 
+## October 14 independent completion and exact blockers
+
+October 14 follow-up reviewed the calculated LanePath endpoint: a full current
+UID window can produce the same final centerline point for distinct live GPS
+remainders. Computed endpoints are acceptable only with independent whole-goal
+identity/completeness; native coordinates alone are not the sole possible design.
+Arrival/cancellation semantics remain unresolved. The review fixes actual-box
+AEB omissions (parked bodies and already-observed overlap on a short horizon)
+and sticky incomplete crossing ownership. Same-image SDK pedal/load fields and
+an offline passive response estimator are implemented; existing old data lack
+those channels, and no automatic calibrated mapper is enabled or certified.
+
+[PHASE7_DESTINATION_STOP_AND_ACC_COMPLETION_20261014.md](PHASE7_DESTINATION_STOP_AND_ACC_COMPLETION_20261014.md)
+adds a real acquisition-timed native Traffic v1 candidate, qualified negative
+leader anticipation, original-body crossing-clearance ownership/restart and
+protective observed tractor/trailer contact prediction. The one existing PID
+estimates its measurement derivative and retains anti-windup and immediate
+safety priority. No installation changed. These are model/ABI/production-test
+results, not game acceptance or complete traffic coverage.
+
+Arrival after automatic GPS removal remains BLOCKED: the available native
+route task exposes nodes/remainders and partly unknown waypoint/target structs,
+not an authenticated final world goal and completion-versus-cancellation event.
+No receiver-side disappearance heuristic or unknown native flags are used.
+The initiating actor of the historical October 13 hold is still absent, so the
+new clearance reproduction does not prove that historical stop was spurious.
+Legacy/unqualified actor stops remain conservative. Calibrated load-adaptive
+acceleration mapping and certified full swept AEB remain separate blockers;
+actual boxes/source time do not provide road-load identification, dimension
+error bounds, traffic coverage or future articulation accuracy.
+
 ## October 13 arrival / retry / stop ownership follow-up
 
 [PHASE7_ARRIVAL_RETRY_AND_ACC_ACCELERATION_20261013.md](PHASE7_ARRIVAL_RETRY_AND_ACC_ACCELERATION_20261013.md)

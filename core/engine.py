@@ -848,6 +848,8 @@ class UltraPilotEngine:
         pending_wait = engagement.get('activation_wait')
         self._signal_selector.lock = ((hold or pending_wait or {}).get('signal_lock')
                                      or engagement.get('signal_resume'))
+        if (self._signal_selector.lock or {}).get('kind') == 'traffic':
+            self._signal_selector.lock = None
         packet = self.shared_state.get('nav_steering_debug', {}) or {}
         match = self.shared_state.get('lane_match', {}) or {}
         expected = (binding[4], binding[5], binding[6], binding[1], binding[2], binding[3])
@@ -914,8 +916,24 @@ class UltraPilotEngine:
                     or not 0 <= time.monotonic()-float(debug['observation_timestamp']) <= .5):
                 raise ValueError('route calculation unavailable')
             result = selector.select(observed['actors'], truck, float(debug['tracking_progress_m']),
-                                     receiver_time=observed['receiver_time'])
+                                     receiver_time=observed['receiver_time'], source=observed.get('source'))
             result['crossing'] = selector.crossing(observed['actors'], truck, float(debug['tracking_progress_m']))
+            if observed.get('ego_bodies'):
+                from core.acc_body_prediction import predict
+                result['body_prediction'] = predict(selector, observed['ego_bodies'],
+                    observed['actors'], observed['source']['ego_speed_mps'],
+                    float(debug['tracking_progress_m']),observed['source']['ego_anchor'],
+                    source_age=time.monotonic()-observed['source']['observed_at'])
+                result['body_prediction']['source_acquisition']={k:observed['source'][k]
+                    for k in ('lifecycle','generation','frame_us','observed_at','ego_speed_observed_at')}
+            # A no-lead crossing still needs native motion history. select()
+            # may return before its candidate-specific calculations.
+            selector.source_motion(observed['actors'], observed.get('source'))
+            hold = getattr(self, '_service_brake_hold', None) or {}
+            engagement=getattr(self,'_drive_engagement',None) or {}
+            resume=engagement.get('signal_resume') or {}
+            result['stop_clearance'] = selector.stop_clearance(hold.get('traffic_lock') or resume.get('stop_lock'),
+                result['crossing'], truck, float(debug['tracking_progress_m']), result.get('body_prediction'))
             if context(self.shared_state) != binding:
                 raise ValueError('route identity changed during traffic projection')
             projection = projection_input(self.shared_state, binding=binding, debug=debug)
@@ -931,6 +949,15 @@ class UltraPilotEngine:
                           deadline_dependencies=[projection, receiver],
                           expires_at=min(observed['receiver_time']+.5,
                                          float(debug['observation_timestamp'])+.5))
+            native = observed.get('source')
+            if native:
+                result.update(source_timestamp=native['observed_at'], source_sequence=native['generation'],
+                    source_acquisition={k:native[k] for k in ('lifecycle','generation','frame_us','observed_at')},
+                    atomic=True, expires_at=min(result['expires_at'], native['observed_at']+.5))
+                result['deadline_dependencies'].append(dict(source='traffic_capture',
+                    expires_at=native['observed_at']+.5, deadline_basis=dict(source='traffic_capture',
+                        kind='native_acquisition', observation_timestamp=native['observed_at'],
+                        sdk_frame_us=native['frame_us'], expires_at=native['observed_at']+.5)))
             return result
         except (KeyError, TypeError, ValueError, OverflowError):
             return dict(status='route_unavailable_or_ambiguous', confirmed=False)
@@ -1062,6 +1089,18 @@ class UltraPilotEngine:
 
     def _route_crossing_brake(self, following, traffic_brake):
         crossing = following.get('crossing') or {}
+        body = following.get('body_prediction') or {}
+        if body.get('brake', 0.) > max(traffic_brake, crossing.get('brake', 0.)):
+            conflicts = body['conflicts']
+            self._traffic_brake_basis = dict(kind='observed_body_path_prediction',
+                stop_contract='observed_conflict_stop',
+                source_acquisition=dict(following['source_acquisition']),
+                targets=[{k:c[k] for k in ('id','route_progress_m')} for c in conflicts[:16]],
+                targets_complete=len(conflicts)<=16,
+                decisive=max(conflicts,key=lambda c:c['brake']),
+                model=body['model'], confirmed_route_conflict=False, coverage_confirmed=False,
+                complete_envelope_verified=False)
+            return body['brake']
         if crossing.get('brake', 0.) <= traffic_brake:
             return traffic_brake
         conflicts = crossing['conflicts']
@@ -1073,6 +1112,11 @@ class UltraPilotEngine:
             decisive=max(conflicts, key=lambda c: c['brake']),
             producer_timestamp=None, confirmed_route_conflict=False,
             coverage_confirmed=False, clearance_confirmed=False)
+        if following.get('source_acquisition'):
+            self._traffic_brake_basis.update(stop_contract='observed_conflict_stop',
+                source_acquisition=dict(following['source_acquisition']),
+                targets=[{k:c[k] for k in ('id','route_progress_m')} for c in conflicts[:16]],
+                targets_complete=len(conflicts)<=16)
         return crossing['brake']
 
     def _traffic_control_observation(self, capture, truck, binding, traffic):
@@ -1141,6 +1185,7 @@ class UltraPilotEngine:
                 candidate={k:detected_light.get(k) for k in ('id','color','x','y','z','yaw')}
                 if detected_light else None), following=following,
             brake_basis=self._traffic_brake_basis,
+            stop_clearance=following.get('stop_clearance'),
             dependencies=following.get('deadline_dependencies', ()),
             expires_at=following.get('expires_at', float('inf')))
 
@@ -1732,12 +1777,14 @@ class UltraPilotEngine:
             'service_brake_resume': dict(request_id=request, context=witness['authority'],
                 mode=mode, deadline_at=now+2.5),
             'autopilot_control_state': 'resuming',
-            'navigation_status': 'Zelená overená – uvoľňujem brzdu a rozbieham',
+            'navigation_status': ('Pôvodná prekážka pozorovane odišla – rozbieham'
+                if witness.get('kind') == 'traffic' else 'Zelená overená – uvoľňujem brzdu a rozbieham'),
             CTL_THROTTLE: 0., CTL_BRAKE: 0.})
         # Zero opposing channel FIRST. A callback/backend failure cannot cause
         # simultaneous positive channels or renew the fixed handoff deadline.
         probe = .12 if mode == 0 else 0.
-        self._bind_longitudinal_output('signal_resume', probe, 0., 'fresh locked signal green')
+        self._bind_longitudinal_output('signal_resume', probe, 0.,
+            'fresh original traffic body clearance' if witness.get('kind') == 'traffic' else 'fresh locked signal green')
         self.controller.set_brake(0.)
         from core.service_brake_hold import resume_rejection
         reason = resume_rejection(witness, self.shared_state)
@@ -1755,8 +1802,9 @@ class UltraPilotEngine:
         if not getattr(self.controller.scs, 'connected', False):
             self._cancel_auto_drive_engagement_unlocked('signal restart throttle write failed')
             return
-        logging.info('Signal wait released: locked ID %s, producer generation %s; bounded restart',
-                     witness['candidate']['id'], witness['generation'])
+        logging.info('Planned wait released: source %s, ID %s, producer generation %s; bounded restart',
+                     witness.get('kind', 'signal'), (witness.get('candidate') or {}).get('id')
+                     or [t['id'] for t in witness.get('targets', ())], witness['generation'])
 
     def _wait_stationary_activation(self, pending, truck, signal, brake_reason):
         """Retain N without propulsion or a new stationary service-brake edge.
@@ -3013,7 +3061,8 @@ class UltraPilotEngine:
                 self._longitudinal_trace.update(
                     context=list(command_observation.binding), activation=command_observation.binding[0],
                     sdk_observation={k:metadata.get(k) for k in ('schema_version','sdk_frame_us','observed_at','valid','reason')},
-                    sdk_response={k:truck_telemetry.get(k) for k in ('gameThrottle','gameBrake')},
+                    sdk_response={k:truck_telemetry.get(k) for k in ('gameThrottle','gameBrake','userThrottle','userBrake')},
+                    load_observation=truck_telemetry.get('loadObservation'),
                     sdk_frame_us=truck_telemetry.get("sdkFrameTimeUs"),
                     observation_timestamp=metadata.get("observed_at"),
                     observation_valid=metadata.get("valid") is True,
@@ -3393,14 +3442,17 @@ class UltraPilotEngine:
                         self._service_brake_hold = None
                         self.shared_state.update_batch({'simple_auto_service_hold': None,
                             'autopilot_control_state': 'active',
-                            'navigation_status': 'Zelená overená – pokračujem v jazde'})
+                            'navigation_status': ('Pôvodná prekážka pozorovane odišla – pokračujem'
+                                if clear_signal.get('kind') == 'traffic' else 'Zelená overená – pokračujem v jazde')})
                         trace = getattr(self, '_longitudinal_trace', None)
                         if isinstance(trace, dict):
                             trace['selected'] = {k:v for k,v in longitudinal.items()
                                 if k not in ('emergency_evidence', 'stopping_evidence', 'lease_dependencies')}
                             trace['control_state'] = 'active'
-                        logging.info('Moving signal approach released: locked ID %s, generation %s',
-                                     clear_signal['candidate']['id'], clear_signal['generation'])
+                        logging.info('Moving planned stop released: source %s, ID %s, generation %s',
+                                     clear_signal.get('kind', 'signal'),
+                                     (clear_signal.get('candidate') or {}).get('id')
+                                     or [t['id'] for t in clear_signal.get('targets', ())], clear_signal['generation'])
         if (longitudinal and not longitudinal.get('emergency')
                 and self.shared_state.get('autopilot_control_state') != 'controlled_stop'):
             record = self.shared_state.get('autopilot_intervention')

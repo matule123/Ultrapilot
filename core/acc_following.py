@@ -25,6 +25,31 @@ def observation(capture, now):
     result = dict(status='unavailable', actors=[], receiver_time=capture.observed_at,
                   source_timestamp=None, source_sequence=None, complete=False,
                   atomic=False, confirmed=False)
+    source = getattr(capture, 'source', None)
+    if source is not None:
+        result.update(source=dict(source), source_timestamp=source.get('observed_at'),
+            source_sequence=source.get('generation'), atomic=source.get('valid') is True)
+        if not source.get('valid') or not 0 <= now-source.get('observed_at', float('-inf')) <= .5:
+            result['status'] = source.get('reason') or 'stale_source_capture'
+            return result
+        payload = source.get('ego_body_payload')
+        count = source.get('ego_body_count', 0)
+        if (source.get('ego_body_flags') == 1 and type(count) is int and 1 <= count <= 4 and payload
+                and all(math.isfinite(v) for v in source['ego_anchor'])
+                and math.isfinite(source['ego_speed_mps']) and 0 <= source['ego_speed_mps'] <= 70.
+                and 0 <= now-source['ego_speed_observed_at'] <= .5):
+            bodies = []
+            for i in range(count):
+                row = struct.unpack_from('<10f', payload, i*40)
+                if (not all(math.isfinite(v) for v in row) or min(row[7:10]) <= 0.
+                        or not .9 <= sum(v*v for v in row[3:7]) <= 1.1):
+                    break
+                bodies.append(dict(x=row[0], y=row[1], z=row[2], yaw=_yaw(*row[3:7]),
+                    dimensions_whl=tuple(row[7:10])))
+            if len(bodies) == count:
+                result['ego_bodies'] = bodies
+        # Raw transport bytes are not a command/prediction metadata field.
+        result['source'].pop('ego_body_payload', None)
     if not 0 <= now - capture.observed_at <= .1:
         result['status'] = 'stale_receiver_capture'
         return result
@@ -63,6 +88,8 @@ def observation(capture, now):
                     x=r[0], y=r[1], z=r[2], yaw=_yaw(*q),
                     speed=r[10] if source == 'moving' else 0.,
                     speed_source='buffer' if source == 'moving' else 'parked_classification',
+                    acceleration=r[11] if source == 'moving' else None,
+                    temporary=bool(r[14]) if source == 'moving' else False,
                     dimensions_whl=tuple(r[7:10]), source=source, slot=i, bodies=bodies,
                     record_fingerprint=hashlib.sha256(raw[i*record_size:(i+1)*record_size]).hexdigest()))
     except (ValueError, struct.error):
@@ -116,11 +143,101 @@ class RouteLeadSelector:
         self.target_id = None
         self._last_target_observation = None
         self._departure_observation = None
+        self._native_previous = None
+        self._native_current = None
 
     def reset(self):
         self.target_id = None
         self._last_target_observation = None
         self._departure_observation = None
+        self._native_previous = None
+        self._native_current = None
+
+    def source_motion(self, actors, source):
+        """One immutable native frame pair; duplicate reads never advance it."""
+        if not source or source.get('valid') is not True:
+            self._native_previous = self._native_current = None
+            return {}
+        stamp = (source['lifecycle'], source['generation'], source['frame_us'], source['observed_at'])
+        current = self._native_current
+        if current and stamp == current[0]:
+            return self._native_predictions()
+        self._native_previous = current if current and stamp[0] == current[0][0] else None
+        self._native_current = (stamp, {a['id']: dict(a) for a in actors})
+        return self._native_predictions()
+
+    def _native_predictions(self):
+        if not self._native_previous or not self._native_current:
+            return {}
+        previous, current = self._native_previous, self._native_current
+        dt = current[0][3]-previous[0][3]
+        if not .02 <= dt <= .5 or current[0][1] <= previous[0][1] or current[0][2] <= previous[0][2]:
+            return {}
+        result = {}
+        for aid, actor in current[1].items():
+            old = previous[1].get(aid)
+            if (old is None or actor.get('temporary') or old.get('temporary')
+                    or actor['source'] != old['source'] or actor['source'] != 'moving'
+                    or actor['slot'] != old['slot']):
+                continue  # TMP speed/acceleration fields are explicitly placeholders.
+            acceleration = (actor['speed']-old['speed'])/dt
+            displacement=math.hypot(actor['x']-old['x'],actor['z']-old['z'])
+            if (not math.isfinite(acceleration) or abs(acceleration) > 15.
+                    or displacement > max(old['speed'],actor['speed'])*dt+1.):
+                continue  # Unsupported discontinuity, not an invented measurement.
+            result[str(aid)] = dict(basis='native_source_speed_difference',
+                acceleration_mps2=acceleration, raw_acceleration_mps2=actor.get('acceleration'),
+                lifecycle=current[0][0], generation=current[0][1], frame_us=current[0][2],
+                observed_at=current[0][3], previous_observed_at=previous[0][3],
+                previous_frame_us=previous[0][2], accuracy_verified=False)
+        return result
+
+    def stop_clearance(self, lock, crossing, truck, progress, body_prediction=None):
+        """Clear only observed original bodies receding from this local route.
+
+        Two source frames establish movement; Engine additionally confirms two
+        clearance acquisitions. No absence, no new target and no coverage claim.
+        """
+        if not lock or not self._native_previous or not self._native_current:
+            return None
+        previous, current = self._native_previous, self._native_current
+        if (lock.get('lifecycle') != current[0][0] or current[0][1] <= lock['generation']
+                or current[0][2] <= lock['frame_us'] or not 0 < current[0][3]-previous[0][3] <= .5
+                or crossing.get('status') == 'crossing_projection_unavailable'
+                or crossing.get('brake', 0.) > 0.
+                or (body_prediction or {}).get('brake', 0.) > 0.):
+            return None
+        witnesses = []
+        for target in lock['targets']:
+            aid = target['id']; old, actor = previous[1].get(aid), current[1].get(aid)
+            if (not old or not actor or old['source'] != actor['source']
+                    or old['slot'] != actor['slot'] or actor.get('temporary')
+                    or old['record_fingerprint'] == actor['record_fingerprint']
+                    or len(old['bodies']) != len(actor['bodies'])):
+                return None
+            dt=current[0][3]-previous[0][3]
+            displacement=math.hypot(actor['x']-old['x'],actor['z']-old['z'])
+            if displacement > max(old['speed'],actor['speed'])*dt+1.:
+                return None  # discontinuity/reassigned native short is not clearance
+            distances = []
+            for old_body, body in zip(old['bodies'], actor['bodies']):
+                dims = body.get('dimensions_whl') or ()
+                if len(dims) != 3 or not all(math.isfinite(v) and v > 0 for v in dims):
+                    return None
+                low, high = max(0., progress-20.), min(self.arcs[-1], progress+HORIZON_M)
+                old_distance = self._body_clearance(old_body, low, high)
+                distance = self._body_clearance(body, low, high)
+                if (old_distance is None or distance is None or distance <= PROTECTIVE_REFERENCE_GATE_M
+                        or distance <= old_distance):
+                    return None
+                distances.append(distance)
+            witnesses.append(dict(id=aid, record=actor['record_fingerprint'],
+                previous_record=old['record_fingerprint'], minimum_reference_clearance_m=min(distances)))
+        return dict(kind='traffic', authority=lock['authority'], lifecycle=current[0][0],
+            generation=current[0][1], frame_us=current[0][2], observed_at=current[0][3],
+            targets=witnesses, status='observed_original_bodies_receding',
+            stop_lock=dict(lock),
+            coverage_confirmed=False, game_consumption_verified=False)
 
     def prepare(self, points, binding, *, preserve_target=False):
         if binding == self.binding:
@@ -262,7 +379,7 @@ class RouteLeadSelector:
         self._departure_observation = proof
         return proof
 
-    def select(self, actors, truck, progress, *, receiver_time=None):
+    def select(self, actors, truck, progress, *, receiver_time=None, source=None):
         if not math.isfinite(progress) or not 0 <= progress <= self.arcs[-1]:
             return dict(status='invalid_route_progress', confirmed=False)
         if len(actors) > 80:
@@ -312,10 +429,20 @@ class RouteLeadSelector:
             actor = next(a for a in actors if str(a['id']) == selected[1])
             self._last_target_observation = (dict(actor), receiver_time)
             self._departure_observation = None
+        predictions = self.source_motion(actors, source)
         constraints = [following_demand(c[0], c[2], float(truck['speed']),include_brake=True) for c in candidates]
+        # Negative anticipation only, over the existing 500 ms evidence horizon.
+        # It can lower a cap but cannot relax TTC/AEB or certify lane membership.
+        for candidate, demand in zip(candidates, constraints):
+            motion = predictions.get(candidate[1])
+            if motion:
+                predicted = max(0., candidate[2]+max(-2., min(0., motion['acceleration_mps2']))*.5)
+                demand['speed_cap_mps'] = min(demand['speed_cap_mps'],
+                    following_demand(candidate[0], predicted, float(truck['speed']))['speed_cap_mps'])
         return dict(status='candidate', target_id=selected[1], gap_m=selected[0],
                     speed_mps=selected[2], confirmed=False,
                     gap_kind='route_reference_points',
+                    leader_prediction=predictions.get(selected[1]),
                     speed_cap_mps=min(c['speed_cap_mps'] for c in constraints),
                     emergency=any(c['emergency'] for c in constraints+caution),
                     protective_brake=max([c['protective_brake'] for c in constraints]+[caution_brake]),

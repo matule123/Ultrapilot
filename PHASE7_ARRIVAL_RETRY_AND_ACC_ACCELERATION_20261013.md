@@ -1,5 +1,13 @@
 # Phase 7 — October 13 follow-up: arrival, reactivation and stop ownership
 
+October 14 continuation: see
+[PHASE7_DESTINATION_STOP_AND_ACC_COMPLETION_20261014.md](PHASE7_DESTINATION_STOP_AND_ACC_COMPLETION_20261014.md)
+for the new source-timed native candidate, functional derivative/anticipation
+changes and original-body stop clearance. The measurements and rejected drafts
+below remain the historical 1.2.1/1.1.4 follow-up; they are not relabeled as
+verification of the later ACC 1.3.0/DLL candidate. Destination disappearance
+classification remains explicitly unfinished.
+
 ## Verdict and build identity
 
 **PARTIALLY OFFLINE VERIFIED / GAME NOT VERIFIED. The complete request is not

@@ -24,9 +24,19 @@ class TrafficCapture:
     moving: bytes | None
     parked: bytes | None
     stable: bool
+    source: dict | None = None  # producer-owned immutable acquisition metadata
 
 
 def capture_traffic(reader, session, now):
+    from core.sdk.traffic_snapshot import TrafficReader
+    native = getattr(reader, '_timed_traffic_reader', None)
+    if native is None:
+        native = reader._timed_traffic_reader = TrafficReader()
+    snapshot = native.read(now)
+    if snapshot is not None:
+        metadata = {k: v for k, v in snapshot.items() if k not in ('moving', 'parked')}
+        return TrafficCapture(str(session), now, snapshot.get('moving'),
+            snapshot.get('parked'), snapshot['valid'], metadata)
     def read(buf, size):
         if buf is None:
             return None, False
@@ -69,6 +79,9 @@ class ObservedTrafficSnapshot:
     sensor_time_s: float | None = None
     sensor_range_m: float | None = None
     failure_reason: str = MISSING_TRAFFIC
+    producer_lifecycle: int | None = None
+    producer_generation: int | None = None
+    producer_frame_us: int | None = None
 
 
 class LegacyTrafficProducer:
@@ -85,7 +98,11 @@ class LegacyTrafficProducer:
             self.last_time = None
             self.session = capture.session
         status, actors = 'unavailable', []
-        if (not finite(now, capture.observed_at)
+        source_metadata=getattr(capture,'source',None)
+        if source_metadata and (not source_metadata.get('valid') or not finite(source_metadata.get('observed_at'))
+                       or not 0<=now-source_metadata['observed_at']<=.5):
+            status=source_metadata.get('reason') or 'stale_source_capture'
+        elif (not finite(now, capture.observed_at)
                 or not 0 <= now-capture.observed_at < .1
                 or (self.last_time is not None and capture.observed_at < self.last_time)):
             status = 'stale_snapshot'
@@ -126,7 +143,11 @@ class LegacyTrafficProducer:
                       else 'observed_incomplete_coverage')
         self.last_time = capture.observed_at
         snapshot = ObservedTrafficSnapshot(capture.session, self.sequence,
-                                          capture.observed_at, status, tuple(actors))
+            capture.observed_at, status, tuple(actors),
+            sensor_time_s=source_metadata.get('observed_at') if source_metadata else None,
+            producer_lifecycle=source_metadata.get('lifecycle') if source_metadata else None,
+            producer_generation=source_metadata.get('generation') if source_metadata else None,
+            producer_frame_us=source_metadata.get('frame_us') if source_metadata else None)
         self.history.append(snapshot)
         return snapshot
 

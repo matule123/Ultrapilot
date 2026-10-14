@@ -21,7 +21,7 @@ def replace_once(path, old, new):
     path.write_text(text.replace(old, new), encoding='utf-8')
 
 
-def prepare(source, fmt, output, *, scoped=False):
+def prepare(source, fmt, output, *, scoped=False, traffic_timed=False):
     audit_root = ROOT/'docs/steering-audit'
     if not output.is_relative_to(audit_root) or output.is_relative_to(source) or output.is_relative_to(fmt):
         raise ValueError('Output must be a separate repository audit directory')
@@ -75,6 +75,7 @@ def prepare(source, fmt, output, *, scoped=False):
     if scoped:
         replace_once(traffic,'#include "up_signal.hpp"','#include "up_signal.hpp"\n#include "prism/management/item/node_item.hpp"')
         header=output/'src/processing/traffic.hpp'
+        replace_once(header, '#include <vector>', '#include <vector>\n#include <array>')
         replace_once(header,'#include <vector>','#include <vector>\n#include "up_signal.hpp"')
         replace_once(header,'        const prism::traffic_semaphore_actor_t* traffic_object;',
             '        const prism::traffic_semaphore_actor_t* traffic_object;\n        up_signal::Owner owner{};')
@@ -100,8 +101,63 @@ def prepare(source, fmt, output, *, scoped=False):
             '            owners[count]=obj.owner;\n            semaphore_objects_data[count] = return_object;')
         replace_once(traffic,'up_signal::publisher().observe(semaphore_objects_data.data(), count, observed_at, complete);',
             'up_signal::publisher().observe(semaphore_objects_data.data(), count, observed_at, complete, owners.data());')
+    if traffic_timed:
+        shutil.copy(ROOT/'tools/signal_plugin/traffic_snapshot.hpp', output/'src/up_traffic.hpp')
+        replace_once(core, '#include "up_signal.hpp"', '#include "up_signal.hpp"\n#include "up_traffic.hpp"')
+        replace_once(core, '    SCSAPI_VOID telemetry_tick(', '''    SCSAPI_VOID traffic_speed_observation(const scs_string_t, const scs_u32_t,
+        const scs_value_t* value, scs_context_t) {
+        up_traffic::publisher().speed_observation(value?value->value_float.value:0.f,
+            value && value->type==SCS_VALUE_TYPE_float);
+    }
+    SCSAPI_VOID telemetry_tick(''')
+        replace_once(core, '        up_signal::publisher().open();',
+                     '        up_signal::publisher().open();\n        up_traffic::publisher().open();')
+        replace_once(core, '        up_traffic::publisher().open();', '''        up_traffic::publisher().open();
+        if(this->init_params_->register_for_channel(SCS_TELEMETRY_TRUCK_CHANNEL_speed,SCS_U32_NIL,
+            SCS_VALUE_TYPE_float,SCS_TELEMETRY_CHANNEL_FLAG_each_frame|SCS_TELEMETRY_CHANNEL_FLAG_no_value,
+            traffic_speed_observation,nullptr)!=SCS_RESULT_ok)return false;''')
+        replace_once(core, '        auto& p = up_signal::publisher();', '''        auto& p = up_signal::publisher();
+        if(event == SCS_TELEMETRY_EVENT_paused || event == SCS_TELEMETRY_EVENT_configuration)
+            up_traffic::publisher().invalidate();''')
+        replace_once(traffic, '#include "up_signal.hpp"', '#include "up_signal.hpp"\n#include "up_traffic.hpp"')
+        header=output/'src/processing/traffic.hpp'
+        replace_once(header, '            float3_t truck_pos;', '''            float3_t truck_pos;
+            mutable std::array<unsigned char,6960> acquired_moving{};
+            std::array<unsigned char,1720> acquired_parked{};''')
+        replace_once(traffic, '        memory_handler_->write_traffic_mem(TrafficMemData{',
+                     '        static_assert(sizeof(traffic_vehicle_objects)==6960);\n        memcpy(acquired_moving.data(),traffic_vehicle_objects.data(),acquired_moving.size());\n        memory_handler_->write_traffic_mem(TrafficMemData{')
+        replace_once(traffic, '        this->memory_handler_->write_parked_vehicles_mem(ParkedVehiclesMemData{ parked_vehicles_data });',
+                     '        static_assert(sizeof(parked_vehicles_data)==1720);\n        memcpy(acquired_parked.data(),parked_vehicles_data.data(),acquired_parked.size());\n        this->memory_handler_->write_parked_vehicles_mem(ParkedVehiclesMemData{ parked_vehicles_data });')
+        replace_once(traffic, '    void TrafficProcessor::tick(scs_value_dplacement_t truck_pos)\n    {',
+                     '    void TrafficProcessor::tick(scs_value_dplacement_t truck_pos)\n    {\n        const double acquired_at=up_signal::clock_s();')
+        replace_once(traffic, '        this->write_semaphore_data();', '''        this->write_semaphore_data();
+        // Copy the same acquisition, not freshly timestamped receiver buffers.
+        const bool acquired=prism::game_traffic_u::get()!=nullptr && prism::game_actor_u::get()!=nullptr;
+        std::array<TrafficTrailer,4> ego{};float anchor[3]{};uint32_t body_count=0;bool all_bodies=false;
+        auto* actor=prism::game_actor_u::get();
+        auto* truck=actor?actor->game_physics_vehicle:nullptr;
+        if(truck) {
+            auto collect=[&](auto* vehicle) {
+                prism::placement_t placement;vehicle->get_physics_placement(&placement);
+                if(body_count==0){const auto root=placement.to_global_position();
+                    anchor[0]=root.x;anchor[1]=root.y;anchor[2]=root.z;}
+                const auto p=get_center_coords(placement,vehicle->aabox);
+                ego[body_count++]={p.x,p.y,p.z,placement.rot.w,placement.rot.x,placement.rot.y,placement.rot.z,
+                    abs(vehicle->aabox.start.x-vehicle->aabox.end.x),
+                    abs(vehicle->aabox.start.y-vehicle->aabox.end.y),
+                    abs(vehicle->aabox.start.z-vehicle->aabox.end.z)};
+            };
+            collect(truck);auto* trailer=truck->get_trailer();
+            while(trailer&&body_count<4){collect(trailer);trailer=trailer->get_slave_trailer();}
+            all_bodies=trailer==nullptr;
+        }
+        static_assert(sizeof(ego)==160);
+        up_traffic::publisher().observe(acquired_moving.data(),acquired_parked.data(),acquired_at,acquired,
+            ego.data(),body_count,all_bodies,anchor);''')
+        replace_once(core, '        up_signal::publisher().paused();',
+                     '        up_signal::publisher().paused();\n        up_traffic::publisher().invalidate();')
     version = (output/'version.hpp.in').read_text()
-    for key, value in dict(PLUGIN_VERSION_MAJOR='1',PLUGIN_VERSION_MINOR='59',PLUGIN_VERSION_PATCH='3-up-signal-scope' if scoped else '2-up-signal',
+    for key, value in dict(PLUGIN_VERSION_MAJOR='1',PLUGIN_VERSION_MINOR='59',PLUGIN_VERSION_PATCH='4-up-traffic-timed' if traffic_timed else '3-up-signal-scope' if scoped else '2-up-signal',
                            GAME_VERSION_MAJOR='1',GAME_VERSION_MINOR='59',GAME_VERSION_PATCH='x').items():
         version = version.replace('@'+key+'@',value)
     (output/'src/version.hpp').write_text(version)
@@ -122,6 +178,7 @@ def prepare(source, fmt, output, *, scoped=False):
     dll=output/'ets2la_plugin.dll'
     result={'source_commit':SOURCE_COMMIT,'dll_sha256':hashlib.sha256(dll.read_bytes()).hexdigest(),
             'installed_binary_equivalence':'NOT_CLAIMED','schema':3 if scoped else 2,
+            'traffic_schema':1 if traffic_timed else None,
             'files':{str(p.relative_to(output)):hashlib.sha256(p.read_bytes()).hexdigest()
                      for p in output.rglob('*') if p.is_file() and p.suffix in ('.hpp','.cpp','.dll')}}
     (output/'build-receipt.json').write_text(json.dumps(result,indent=2))
@@ -133,4 +190,5 @@ if __name__ == '__main__':
     p.add_argument('--source',type=Path,required=True);p.add_argument('--fmt',type=Path,required=True)
     p.add_argument('--output',type=Path,required=True)
     p.add_argument('--scoped',action='store_true',help='Also publish coherent owning-prefab identity in schema 3; preserve schema 2')
-    a=p.parse_args();prepare(a.source.resolve(),a.fmt.resolve(),a.output.resolve(),scoped=a.scoped)
+    p.add_argument('--traffic-timed',action='store_true',help='Add acquisition-timed atomic Traffic v1; preserve every legacy mapping')
+    a=p.parse_args();prepare(a.source.resolve(),a.fmt.resolve(),a.output.resolve(),scoped=a.scoped,traffic_timed=a.traffic_timed)

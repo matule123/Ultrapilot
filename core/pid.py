@@ -20,7 +20,7 @@ class PID:
     def __init__(self, kp: float, ki: float, kd: float, setpoint: float = 0.0,
                  integral_limit: float = 10.0, output_limits=(None, None), *,
                  derivative_on_measurement=False, anti_windup=False,
-                 reset_on_setpoint=True):
+                 reset_on_setpoint=True, measurement_derivative_tau=0.):
         self.kp = kp
         self.ki = ki
         self.kd = kd
@@ -31,6 +31,8 @@ class PID:
         self.anti_windup = anti_windup
         self.reset_on_setpoint = reset_on_setpoint
         self._last_measurement = None
+        self.measurement_derivative_tau = max(0., float(measurement_derivative_tau))
+        self._measurement_derivative = None
 
         self._last_error = 0.0
         self._integral = 0.0
@@ -52,6 +54,13 @@ class PID:
         if self.derivative_on_measurement:
             derivative = (0.0 if self._last_measurement is None else
                           -(measured_value - self._last_measurement) / dt)
+            if self.measurement_derivative_tau and self._last_measurement is not None:
+                # Estimate only the measurement derivative. Targets, hard
+                # limits and emergencies are not filtered or delayed here.
+                previous = self._measurement_derivative
+                if previous is not None:
+                    derivative = previous+(1.-math.exp(-dt/self.measurement_derivative_tau))*(derivative-previous)
+                self._measurement_derivative = derivative
         else:
             derivative = (error - self._last_error) / dt
         d_term = self.kd * derivative
@@ -95,5 +104,6 @@ class PID:
     def reset(self):
         self._last_error = 0.0
         self._last_measurement = None
+        self._measurement_derivative = None
         self._integral = 0.0
         self._last_time = time.monotonic()

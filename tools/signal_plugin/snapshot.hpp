@@ -46,6 +46,9 @@ class Publisher {
     ScopedSnapshot* scope_view=nullptr;
 #endif
 public:
+    uint64_t lifecycle_id() const { return lifecycle; }
+    uint64_t frame_id() const { return frame; }
+    bool is_active() const { return active; }
     Publisher() { reset(); }
     ~Publisher() { paused(); if(view) UnmapViewOfFile(view); if(handle) CloseHandle(handle);
 #ifdef UP_SIGNAL_SCOPE_V3

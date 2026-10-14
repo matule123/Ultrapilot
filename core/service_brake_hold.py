@@ -151,6 +151,35 @@ def after_write(previous, controller, forward_context, truck, decision, now,
     acc = evidence.get('acc') or {}
     traffic = evidence.get('traffic') or {}
     policy = evidence.get('policy') or {}
+    basis = traffic.get('brake_basis') or {}
+    qualified_traffic_stop = bool(basis.get('stop_contract') == 'observed_conflict_stop'
+            and basis.get('targets_complete') is True and basis.get('targets'))
+    if traffic.get('traffic_brake', 0) > 0 and qualified_traffic_stop:
+        acquisition = basis['source_acquisition']
+        lock = result.get('traffic_lock')
+        if lock is None:
+            result['traffic_lock'] = dict(acquisition, authority=tuple(decision['context']),
+                targets=list(basis['targets']), complete=True)
+        elif lock['lifecycle'] == acquisition['lifecycle']:
+            targets = {t['id']: t for t in lock['targets']}
+            targets.update({t['id']:t for t in basis['targets']})
+            result['traffic_lock'] = dict(lock, targets=list(targets.values())[:16],
+                complete=lock.get('complete') is True and len(targets)<=16)
+        else:
+            result['traffic_lock'] = dict(lock, complete=False)
+    # Separate the originally consumed reasons. Qualified clearance may remove
+    # ONLY its own traffic dependency; it cannot clear toll/ACC/unknown stops.
+    others = set(result.get('other_stop_sources') or ())
+    if traffic.get('traffic_brake', 0) > 0:
+        # A previous qualified owner cannot bless a newly unqualified cause.
+        # Losing the complete set is sticky until this hold/authority ends.
+        others.add('traffic' if qualified_traffic_stop and result.get('traffic_lock')
+                   else 'unqualified_traffic')
+    if acc.get('following_status') in ('candidate', 'source_lost'):
+        others.add('acc')
+    if policy.get('reason') == 'toll stop/payment':
+        others.add('toll')
+    result['other_stop_sources'] = sorted(others)
     if evidence.get('destination_brake_selected') and evidence.get('destination'):
         result.setdefault('destination_lock', dict(context=tuple(decision['context']),
             target_kind=evidence['destination']['target_kind'],
@@ -177,6 +206,11 @@ def after_write(previous, controller, forward_context, truck, decision, now,
     if result.get('signal_lock'):
         result.setdefault('automatic_restart_supported', True)
         result.setdefault('restart_blocker', 'locked signal is not green')
+    elif result.get('traffic_lock') and result['traffic_lock'].get('complete') is True:
+        supported = not bool(others-{'traffic'})
+        result.update(automatic_restart_supported=supported,
+            restart_blocker=('awaiting confirmed original traffic clearance' if supported
+                             else 'other stop cause has no confirmed clearance'))
     else:
         result.update(automatic_restart_supported=False,
             restart_blocker='STOP_CLEARANCE_PRODUCER_TIME_AND_GENERATION_UNAVAILABLE')
@@ -276,6 +310,30 @@ def clearance(record, state):
     candidate = signal.get('candidate') or {}
     now = time.monotonic()
     reason = packet_rejection(packet, binding, now)
+    traffic_lock = record.get('traffic_lock')
+    traffic_witness = packet.get('stop_clearance')
+    if traffic_lock and not reason:
+        traffic_reason = traffic_clearance_rejection(traffic_witness, traffic_lock, packet, binding, now)
+        if not traffic_reason:
+            first = record.get('traffic_clear_candidate')
+            if first is None:
+                record['traffic_clear_candidate'] = dict(traffic_witness)
+            elif (traffic_witness['generation'] > first['generation']
+                    and traffic_witness['frame_us'] > first['frame_us']
+                    and traffic_witness['observed_at']-first['observed_at'] >= .1):
+                others = set(record.get('other_stop_sources') or ())
+                others.discard('traffic')
+                record['other_stop_sources'] = sorted(others)
+                record['other_stop_unverified'] = bool(others)
+                if not lock and not others and not launch_rejection(state):
+                    record.update(automatic_restart_supported=True, restart_blocker='')
+                    return dict(traffic_witness)
+        else:
+            record.pop('traffic_clear_candidate', None)
+        if not lock:
+            record.update(automatic_restart_supported=traffic_lock.get('complete') is True,
+                restart_blocker=traffic_reason or 'confirming original traffic body clearance acquisitions')
+            return None
     if not reason and not lock:
         reason = 'STOP_CLEARANCE_PRODUCER_TIME_AND_GENERATION_UNAVAILABLE'
     if not reason:
@@ -333,6 +391,21 @@ def resume_rejection(witness, state):
     reason = packet_rejection(packet, binding, now)
     if reason:
         return reason
+    if witness.get('kind') == 'traffic':
+        current = packet.get('stop_clearance')
+        reason = traffic_clearance_rejection(current,
+            witness.get('stop_lock') or {}, packet, binding, now)
+        if reason:
+            return reason
+        if current['generation'] < witness['generation'] or current['observed_at'] < witness['observed_at']:
+            return 'traffic clearance regressed during bounded restart'
+        reason = launch_rejection(state)
+        checked = time.monotonic()
+        latest_binding=context(state)
+        if latest_binding != binding:
+            return 'traffic restart identity changed during clearance reads'
+        return reason or packet_rejection(packet, latest_binding, checked) or (
+            'traffic clearance expired during restart' if not 0 <= checked-current['observed_at'] <= .5 else '')
     try:
         if (not signal.get('valid') or tuple(signal['authority']) != binding
                 or tuple(witness['authority']) != binding
@@ -362,6 +435,25 @@ def resume_rejection(witness, state):
         return reason
     if not 0 <= checked_at-signal['observed_at'] <= .5:
         return 'signal clearance expired during restart validation'
+    return ''
+
+
+def traffic_clearance_rejection(witness, lock, packet, binding, now):
+    try:
+        if (not lock.get('complete') or not witness
+                or witness.get('status') != 'observed_original_bodies_receding'
+                or tuple(witness['authority']) != binding or tuple(lock['authority']) != binding
+                or witness['lifecycle'] != lock['lifecycle']
+                or witness['generation'] <= lock['generation'] or witness['frame_us'] <= lock['frame_us']
+                or {t['id'] for t in witness['targets']} != {t['id'] for t in lock['targets']}
+                or not all(t.get('record') and t.get('previous_record') and t['record'] != t['previous_record']
+                           and t['minimum_reference_clearance_m'] > 2.6 for t in witness['targets'])
+                or not 0 <= now-witness['observed_at'] <= .5
+                or witness['observed_at'] <= lock['observed_at']
+                or packet.get('traffic_brake', 0) > 0 or packet.get('emergency')):
+            return 'original traffic stop lacks new observed-body clearance'
+    except (KeyError, TypeError, ValueError):
+        return 'original traffic stop clearance is incomplete'
     return ''
 
 

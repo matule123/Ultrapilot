@@ -4,7 +4,7 @@ import time
 import numpy as np
 from sdk.base_plugin import BasePlugin
 from core.pid import PID
-from core.acc_acceleration import pedal_acceleration
+from core.acc_acceleration import pedal_acceleration, DRIVE_GAIN_MS2
 from core.longitudinal import (COMMAND_KEY, context, exclusive, read, publish,
                                rejection, curve_input, curve_speed_envelope, traffic_required)
 from core.transmission_mode import vehicle_control_observation_rejection
@@ -19,7 +19,7 @@ class Plugin(BasePlugin):
     """
 
     NAME = "acc"
-    VERSION = "1.2.1"
+    VERSION = "1.3.0"
 
     def on_start(self):
         logging.info("ACC Plugin started with bounded speed PID control.")
@@ -29,9 +29,15 @@ class Plugin(BasePlugin):
         # Input error is km/h; output is normalized drive. Lower proportional
         # and measurement-derivative sensitivity are validated across the fixed
         # Phase 7.2 delay/load/noise matrix, not tuned from a single ETS2 run.
-        self.speed_pid = PID(kp=0.15, ki=0.06, kd=0.015, output_limits=(-1., 1.),
+        # Existing PID in nominal acceleration units; no parallel loop. Only
+        # its SDK speed derivative is estimated on a 150 ms ordinary-control
+        # horizon. This avoids amplifying frame noise into alternating demand;
+        # P/limits, source-loss withdrawal and emergency remain immediate.
+        self.speed_pid = PID(kp=0.15*DRIVE_GAIN_MS2, ki=0.06*DRIVE_GAIN_MS2,
+                             kd=0.015*DRIVE_GAIN_MS2,
+                             output_limits=(-DRIVE_GAIN_MS2, DRIVE_GAIN_MS2),
                              derivative_on_measurement=True, anti_windup=True,
-                             reset_on_setpoint=False)
+                             reset_on_setpoint=False, measurement_derivative_tau=.15)
         self.speed_pid.set_setpoint(settings.target_speed)
         self._control_target = None
         self._control_context = None
@@ -43,6 +49,7 @@ class Plugin(BasePlugin):
         self._following_target_id = None
         self._following_fault = ''
         self._signal_control_active = False
+        self._native_following_lifecycle = None
 
     def on_stop(self):
         logging.info("ACC Plugin stopped.")
@@ -76,6 +83,7 @@ class Plugin(BasePlugin):
                 self._followed_target = False
                 self._following_target_id = None
                 self._following_fault = ''
+                self._native_following_lifecycle = None
                 self._reset_control()
         truck = self.sdk.telemetry.get("truck", {}) or {}
         strict = self.sdk.get("longitudinal_control_schema") == 1
@@ -106,6 +114,12 @@ class Plugin(BasePlugin):
             self._following_target_id = None
             self._following_fault = ''
         following = traffic.get('following') if traffic else None
+        native_lifecycle = ((following or {}).get('source_acquisition') or {}).get('lifecycle')
+        if native_lifecycle is not None:
+            if (self._followed_target and self._native_following_lifecycle is not None
+                    and native_lifecycle != self._native_following_lifecycle):
+                self._following_fault = 'ACC native producer lifecycle changed; driver takeover required'
+            self._native_following_lifecycle = native_lifecycle
         following_cap = None
         following_reason = ('traffic unavailable; cruise only' if following is None
                             else 'no route candidate; traffic coverage unproven')
@@ -332,8 +346,9 @@ class Plugin(BasePlugin):
                        (previous_brake > 0 or previous_drive + .05 < self._last_requested_drive))
         except (KeyError, TypeError, ValueError, OverflowError):
             limited = False  # Missing optional feedback cannot create authority.
-        throttle_output = self.speed_pid.update(speed_kmh, dt,
+        acceleration_output = self.speed_pid.update(speed_kmh, dt,
             integrate=active and not duplicate and (not limited or speed_kmh > self._control_target))
+        throttle_output = acceleration_output/DRIVE_GAIN_MS2
 
         # 4. Control Output Mapping
         # Map PID output to throttle (0 to 1) and brake (0 to 1).
@@ -423,6 +438,7 @@ class Plugin(BasePlugin):
                 following_status=following_reason,
                 following_target_id=following.get('target_id') if isinstance(following, dict) else None,
                 following_confirmed=False,
+                leader_prediction=following.get('leader_prediction') if isinstance(following, dict) else None,
                 requested_acceleration_ms2=desired_acceleration,
                 selected_acceleration_ms2=selected_acceleration,
                 acceleration_basis='nominal_actuator_mapping_not_measured_vehicle_acceleration',
