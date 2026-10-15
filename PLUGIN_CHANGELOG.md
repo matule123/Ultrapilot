@@ -2,6 +2,15 @@
 
 Release history for individual plugins. See [PLUGIN_VERSIONS.md](PLUGIN_VERSIONS.md) for versioning rules.
 
+## Core bounded refresh response protocol — unreleased, 2026-10-15
+
+- Bind each zero-drive renewal to its original deadline cause and deterministic activation/route token. Preserve the fixed 100 ms renewal bound and original 500 ms observation leases; repeated stale producer ticks cannot rearm a wait.
+- At receipt or final write, allow one actual complete-owner response read and rerun the full Engine executor, including real SDK pairing, navigation, transmission, continuous hold, arbitration and final physical gates. Never execute the expired pedals or synthesize drive from newer ACC/Policy alone. Account for a complete response published just before the consumer creates its request.
+- Acknowledge only successful application using a separate token slot, avoiding deletion of a concurrently published next request. A new causal renewal follows a qualified response; genuinely missing/late responses still stop and latch the first fault.
+- Preserve the first actual timely response-publication witness across subsequent Autopilot ticks before Engine acknowledgement. A single bounded publisher-local receipt also covers publication just before the request exists. New commands still require their own complete validation; the witness never renews old pedals or observations.
+- Preserve compact original cause/token, response comparison and exact final vehicle pairing through the existing bounded automatic pedal incident and immutable codec. Keep existing codec dictionaries, export hashes, byte budgets, workers, and quiet logging.
+- Core-only change: no plugin implementation, version, regulator, geometry, native DLL, parking control or safety timeout change. The afternoon incident proves expiry of a zero-drive wait; historical availability of the complete AP response before its bound remains unrecorded. See PHASE7_REFRESH_RESPONSE_PROTOCOL_20261015.md. Offline evidence is not ETS2 verification.
+
 ## Core longitudinal execution handoff — unreleased, 2026-10-15
 
 - Preserve the validated command envelope through final Engine arbitration, including validity and decision source. A recoverable late dependency expiry can now enter the existing bounded zero-drive handoff instead of being misclassified as unqualified evidence. The old command is never renewed or executed after expiry; a full new producer decision must take over.

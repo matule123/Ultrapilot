@@ -250,9 +250,12 @@ def _pack_pairing(pairing):
         observed = vehicle['observation']
         return [vehicle.get(k) for k in ('sdk_frame_us', 'gear', 'speed_mps', 'park_brake')] + [
             observed.get(k) for k in ('schema_version', 'sdk_frame_us', 'observed_at', 'valid', 'reason')]
-    return dict(schema=1, values=[row(pairing['initial_vehicle']),
+    result = dict(schema=1, values=[row(pairing['initial_vehicle']),
         row(pairing['compared_vehicle']), pairing['reread_count'],
         *(pairing[k] for k in ('command_read_started_at', 'command_read_at', 'checked_after_read_at'))])
+    if 'refresh_recovery' in pairing:
+        result['refresh_recovery'] = pairing['refresh_recovery']
+    return result
 
 
 def _expand_pairing(pairing):
@@ -264,9 +267,12 @@ def _expand_pairing(pairing):
             ('schema_version', 'sdk_frame_us', 'observed_at', 'valid', 'reason'), values[4:]))
         return result
     values = pairing['values']
-    return dict(initial_vehicle=row(values[0]), compared_vehicle=row(values[1]),
+    result = dict(initial_vehicle=row(values[0]), compared_vehicle=row(values[1]),
         reread_count=values[2], **dict(zip(
             ('command_read_started_at', 'command_read_at', 'checked_after_read_at'), values[3:])))
+    if 'refresh_recovery' in pairing:
+        result['refresh_recovery'] = pairing['refresh_recovery']
+    return result
 
 
 def emergency_evidence(traffic, source, source_observation_timestamp):
@@ -385,6 +391,13 @@ def bounded_fault_details(value, *, packed=False):
         selected['comparison_fields'] = sum(1 << i for i, k in enumerate(_COMPARISON_FIELDS) if k in selected)
         selected['comparison_values'] = [selected.pop(k) for k in _COMPARISON_FIELDS if k in selected]
     result = bounded_copy(selected, limit=8192)[0]
+    if result.get('snapshot_status') and isinstance(value.get('refresh_protocol'), dict):
+        # Refresh attribution is priority evidence, not a verbose optional
+        # subtree. Existing exact codec and SAME 8 KiB allocation; dictionary
+        # tables remain unchanged so historical incidents still decode.
+        compact = bounded_copy(pack_source(selected), limit=8192)[0]
+        if not compact.get('snapshot_status'):
+            result = unpack_source(compact)
     if result.get('snapshot_status') and (isinstance(value.get('traffic_comparison'),dict)
                                          or 'signal_comparison' in selected):
         # Preserve the first required traffic cause even when unrelated detail
@@ -466,7 +479,8 @@ def _pack_intervention(value):
     if not isinstance(value, dict) or not isinstance(value.get('details'), dict):
         return value
     details = bounded_fault_details(value['details'], packed=True)
-    if isinstance(details.get('traffic_comparison'),dict):
+    if (isinstance(details.get('traffic_comparison'),dict)
+            or isinstance(details.get('refresh_protocol'),dict)):
         # The outer 16 KiB first-fault allocation must not re-charge all the
         # expanded field names and duplicate identity/ID receipts. Reuse the
         # existing exact bounded codec; decode at the same public export edge.
@@ -512,7 +526,7 @@ def bounded_input(value):
     result['unavailable_field_schema'] = 1
     result['unavailable_field_mask'] = sum(1 << i for i,k in enumerate(keys) if value.get(k) is None)
     # Additive fields do not change schema-1 bitmap positions or byte limits.
-    for key in ('deadline_basis', 'traffic_availability', 'destination_brake_selected',
+    for key in ('deadline_basis', 'refresh_protocol', 'traffic_availability', 'destination_brake_selected',
                 'leader_prediction', 'stop_clearance', 'requested_acceleration_ms2',
                 'selected_acceleration_ms2', 'acceleration_basis', 'motion_constraint'):
         if key in value:

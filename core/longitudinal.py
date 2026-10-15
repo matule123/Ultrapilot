@@ -491,6 +491,8 @@ def rejection_details(value, binding, now):
     result.update({k: value.get(k) for k in ('sdk_frame_us', 'observation_timestamp',
         'computed_at', 'expires_at', 'valid', 'source', 'decision_source', 'reason',
         'deadline_basis', 'handoff_required', 'remaining_at_computation_s')})
+    if isinstance(value.get('refresh_protocol'), dict):
+        result['refresh_protocol'] = value['refresh_protocol']
     actual = value.get('context')
     if value.get('source') == 'traffic':
         following = value.get('following') or {}
@@ -818,6 +820,37 @@ def finalize(state, truck, throttle, brake, decision, binding):
                    dependencies=decision.get('dependencies', ()),
                    refresh_pending=decision.get('refresh_pending', False),
                    expires_at=decision.get("expires_at", float("inf")))
+    request = state.get('longitudinal_refresh_request')
+    response_to_publish = False
+    publication = None
+    if (isinstance(request, dict) and request.get('token')
+            and tuple(request.get('context', ())) == tuple(binding)):
+        if value.get('refresh_pending'):
+            value['refresh_protocol'] = refresh_receipt(request, 'pending')
+            if value['expires_at'] == request['expires_at']:
+                value['deadline_basis'] = dict(source='decision_refresh', kind='bounded_refresh',
+                    expires_at=request['expires_at'], token=request['token'])
+        elif value.get('valid') and not value.get('handoff_required'):
+            completed = state.get('longitudinal_refresh_completed') or {}
+            if completed.get('token') != request['token']:
+                prior = state.get('longitudinal_refresh_response') or {}
+                proof = prior.get('publication') if prior.get('token') == request['token'] else None
+                local = getattr(state, '_longitudinal_owner_publication', None)
+                if (not proof and isinstance(local, dict)
+                        and refresh_response_qualifies(local['command'], request)
+                        and local['command']['computed_at'] <= local['returned_at'] <= request['expires_at']):
+                    proof = dict({k:v for k,v in local['command'].items() if k != 'context'},
+                        publish_completed_at=local['returned_at'])
+                value['refresh_protocol'] = refresh_receipt(request, 'response')
+                if proof:
+                    value['refresh_protocol']['publication'] = proof
+                if not refresh_response_qualifies(value, request):
+                    value.pop('refresh_protocol')
+                else:
+                    # Preserve the FIRST actual publication witness across AP
+                    # ticks while Engine has not yet acknowledged application.
+                    response_to_publish = prior.get('token') != request['token']
+                    publication = proof
     # Manager.dict assigns this complete dictionary as one value. Scalars are
     # compatibility/UI mirrors; the production Engine never mixes them.
     observed = truck.get('_control_observation') or {}
@@ -832,7 +865,57 @@ def finalize(state, truck, throttle, brake, decision, binding):
             from core.navigation.longitudinal_diagnostics import bounded_input
             value['producer_trace']['eco'] = bounded_input(eco)
     state.set(COMMAND_KEY, value)
+    returned_at = time.monotonic()
+    if response_to_publish:
+        if publication is not None or returned_at <= request['expires_at']:
+            state.set('longitudinal_refresh_response', dict(token=request['token'],
+                publication=publication or dict(
+                    {k:value.get(k) for k in ('source','valid','computed_at','expires_at',
+                        'sdk_frame_us','observation_timestamp','throttle','brake','decision_source')},
+                    publish_completed_at=returned_at)))
+    if value.get('valid') and not value.get('refresh_pending') and not value.get('handoff_required'):
+        # One publisher-local receipt, not another IPC read or command history.
+        # Retain across pending ticks, never across a different authority match.
+        state._longitudinal_owner_publication = dict(returned_at=returned_at,
+            command={k:value.get(k) for k in ('source','valid','context','computed_at','expires_at',
+                'sdk_frame_us','observation_timestamp','throttle','brake','decision_source')})
     return value
+
+
+def refresh_receipt(request, status):
+    """Fixed-size protocol provenance, not a mutable shared-slot reference."""
+    original = request['rejected']
+    return dict(token=request['token'], state=status, started_at=request['started_at'],
+        expires_at=request['expires_at'], cause=dict(original['deadline_basis']),
+        original={k: original.get(k) for k in ('source', 'sdk_frame_us',
+            'observation_timestamp', 'computed_at', 'expires_at')})
+
+
+def refresh_response_qualifies(value, request):
+    """A complete newer owner decision, including publication/request races.
+
+    Engine can issue the request after AP already computed the replacement.
+    The response therefore need not carry an acknowledgement added by AP, but
+    must supersede the original decision AND its deadline before the fixed bound.
+    Ordinary schema/identity/vehicle/input checks still apply at every consumer.
+    """
+    try:
+        proof = (value.get('refresh_protocol') or {}) if isinstance(value, dict) else {}
+        publication = proof.get('publication') or {}
+        timely_publication = (proof.get('token') == request.get('token')
+            and request['rejected']['computed_at'] < publication.get('computed_at', 0.)
+            <= publication.get('publish_completed_at', 0.) <= request['expires_at']
+            and publication.get('expires_at', 0.) > request['rejected']['expires_at']
+            and publication.get('computed_at', 0.) <= value['computed_at'])
+        return (isinstance(value, dict) and value.get('source') == 'autopilot'
+            and value.get('valid') is True and not value.get('refresh_pending')
+            and not value.get('handoff_required')
+            and tuple(value.get('context', ())) == tuple(request['context'])
+            and request['rejected']['computed_at'] < value['computed_at']
+            and (value['computed_at'] <= request['expires_at'] or timely_publication)
+            and value['expires_at'] > request['rejected']['expires_at'])
+    except (KeyError, TypeError, ValueError):
+        return False
 
 
 def refresh_handoff(state, truck, value, binding, reason):
@@ -858,18 +941,39 @@ def refresh_handoff(state, truck, value, binding, reason):
             or not isinstance(value, dict) or value.get('valid') is not True
             or tuple(value.get('context', value.get('actual_context', ()))) != tuple(binding)
             or vehicle_control_observation_rejection(state, truck, now)
+            or truck.get('gear', -1) < 0 or truck.get('speed', -1.) < -.10
             or state.get('autopilot_control_state') == 'controlled_stop'):
         return None
     try:
+        current = state.get('longitudinal_refresh_request')
+        if value.get('refresh_pending'):
+            # Both receipt and final-write recovery follow the SAME original
+            # cause/bound, never the zero command's synthetic legacy deadline.
+            proof = value.get('refresh_protocol') or {}
+            if (not isinstance(current, dict) or not current.get('token')
+                    or proof.get('token') != current['token']
+                    or tuple(current.get('context', ())) != tuple(binding)):
+                return None
+            value = current['rejected']
         obs, computed, expiry = (float(value[k]) for k in (
             'observation_timestamp', 'computed_at', 'expires_at'))
         if not 0 < obs <= computed <= now or now-obs > LEASE_S or expiry > obs+LEASE_S:
             return None
         basis = value['deadline_basis']
         source = basis['source']
-        current = state.get('longitudinal_refresh_request')
         same_request = (isinstance(current, dict)
             and tuple(current.get('context', ())) == tuple(binding))
+        response = value.get('refresh_protocol') or {}
+        completed = state.get('longitudinal_refresh_completed') or {}
+        acknowledged = (same_request and completed.get('token') == current.get('token'))
+        if (same_request and (acknowledged or response.get('state') == 'response'
+                and response.get('token') == current.get('token'))
+                and computed >= current['started_at']
+                and expiry > current['rejected']['expires_at']):
+            # A new complete response can itself encounter a later independent
+            # dependency deadline. It is a new causal attempt, not rearming the
+            # old producer's repeated expired candidate.
+            same_request = False
         if source == 'curve':
             fresh = curve_input(state, binding=binding,
                 handoff_deadline=expiry if now <= expiry else None)
@@ -925,7 +1029,11 @@ def refresh_handoff(state, truck, value, binding, reason):
     if not same_request:
         # Both processes can notice the SAME rejected decision concurrently.
         # Anchor the bound to its ORIGINAL deadline, not a racing read time.
-        current = dict(context=binding, started_at=now, expires_at=expiry+HANDOFF_WAIT_S,
+        import hashlib
+        import json
+        token = hashlib.sha256(json.dumps([binding, basis], sort_keys=True,
+            separators=(',', ':')).encode()).hexdigest()[:24]
+        current = dict(context=binding, token=token, started_at=now, expires_at=expiry+HANDOFF_WAIT_S,
                        reason=reason, rejected=value, source=source)
         state.set('longitudinal_refresh_request', current)
     if now > current['expires_at']:
@@ -955,12 +1063,57 @@ def handoff_decision(state, truck, value, binding, reason):
         fresh.update(brake=1., emergency=True, source='traffic_emergency',
                      reason='emergency brake demand')
         fresh['expires_at'] = min(fresh['expires_at'], traffic['expires_at'])
+        if fresh['expires_at'] == traffic['expires_at']:
+            fresh['deadline_basis'] = dependency(traffic)['deadline_basis']
     fresh['context'] = binding
     fresh['sdk_frame_us'] = truck['sdkFrameTimeUs']
     fresh['source'] = fresh['decision_source'] if not fresh['emergency'] else 'traffic_emergency'
     fresh['refresh_pending'] = True
     fresh['refresh_evidence'] = request.get('refresh_evidence')
+    if request.get('token'):
+        fresh['refresh_protocol'] = refresh_receipt(request, 'pending')
+        if fresh['expires_at'] == request['expires_at']:
+            fresh['deadline_basis'] = dict(source='decision_refresh', kind='bounded_refresh',
+                expires_at=request['expires_at'], token=request['token'])
     return fresh
+
+
+def refresh_response_pair(state, previous, rejected, reason, *, diagnostic=None):
+    """At most ONE actual owner reread; never compute/relabel drive in Engine.
+
+    A complete response published within the fixed wait may be available when
+    an older zero command reaches its write gate. Re-run the entire executor
+    with the paired real SDK snapshot. If absent, foreign or late, fail closed.
+    """
+    if (not isinstance(rejected, dict) or not rejected.get('refresh_pending')
+            or reason not in ('longitudinal input lease expired before write',
+                              'longitudinal observation is stale or incoherent')):
+        return None
+    request = state.get('longitudinal_refresh_request')
+    if not isinstance(request, dict) or not request.get('token'):
+        return None
+    pair = capture_command_observation(state, previous.truck)
+    value = pair.command
+    now = time.monotonic()
+    if diagnostic is not None:
+        diagnostic.update(request=refresh_receipt(request, 'response_checked'),
+            checked_at=now, reason=reason, pairing=pair.provenance,
+            candidate={k:value.get(k) for k in ('source', 'valid', 'context', 'sdk_frame_us',
+                'observation_timestamp', 'computed_at', 'expires_at', 'refresh_pending',
+                'refresh_protocol', 'throttle', 'brake')} if isinstance(value, dict) else None)
+    if (not isinstance(value, dict) or value.get('refresh_pending')
+            or value.get('source') != 'autopilot' or rejection(value, pair.binding, now)
+            or vehicle_control_observation_rejection(state, pair.truck, now)
+            or pair.truck.get('gear', -1) < 0 or pair.truck.get('speed', -1.) < -.10
+            or tuple(request['context']) != pair.binding or pair.binding != context(state)
+            or not refresh_response_qualifies(value, request)
+            or state.get('autopilot_control_state') == 'controlled_stop'):
+        return None
+    return CommandObservation(pair.binding, value, pair.truck, dict(pair.provenance,
+        refresh_recovery=dict(request=refresh_receipt(request, 'response_received'),
+            rejected={k: rejected.get(k) for k in ('sdk_frame_us', 'observation_timestamp',
+                'computed_at', 'expires_at', 'deadline_basis')},
+            received_at=now, reason=reason)))
 
 
 def _vehicle_receipt(truck):
@@ -1032,7 +1185,9 @@ def engine_decision(state, truck, now=None, *, diagnostic=None, rejection_info=N
         rejection_info=details, command_observation=pair)
     request = state.get('longitudinal_refresh_request') if reason else None
     if (reason and isinstance(request, dict) and isinstance(pair.command, dict)
-            and pair.command.get('refresh_pending')):
+            and pair.command.get('refresh_pending')
+            and (not request.get('token') or (pair.command.get('refresh_protocol') or {}).get('token')
+                 == request.get('token'))):
         # Plugin already requested this SAME bounded transition. Do not use the
         # newly zeroed packet as provenance for the rejected original decision.
         compared, original = request['rejected'], request['reason']
@@ -1074,6 +1229,27 @@ def _engine_decision(state, truck, now=None, *, diagnostic=None, rejection_info=
     reason = rejection(value, binding, decision_time())
     if reason:
         return reject(reason)
+    request = state.get('longitudinal_refresh_request')
+    completed = state.get('longitudinal_refresh_completed') or {}
+    response_receipt = None
+    if (isinstance(request, dict) and request.get('token')
+            and tuple(request.get('context', ())) == tuple(binding)
+            and completed.get('token') != request['token']
+            and refresh_response_qualifies(value, request)):
+        response_receipt = refresh_receipt(request, 'response')
+        original_proof = value.get('refresh_protocol') or {}
+        if original_proof.get('token') == request['token'] and original_proof.get('publication'):
+            response_receipt['publication'] = original_proof['publication']
+    if (isinstance(request, dict) and request.get('token')
+            and tuple(request.get('context', ())) == tuple(binding)
+            and completed.get('token') != request['token']
+            and not value.get('refresh_pending')
+            and decision_time() > request['expires_at']
+            and response_receipt is None):
+        result = reject('longitudinal refresh response missed fixed deadline')
+        if rejection_info is not None:
+            rejection_info['refresh_protocol'] = refresh_receipt(request, 'timed_out')
+        return result
     if (value.get("source") != "autopilot"
             or not isinstance(value.get("emergency"), bool)
             or not isinstance(value.get("decision_source"), str)
@@ -1213,6 +1389,10 @@ def _engine_decision(state, truck, now=None, *, diagnostic=None, rejection_info=
                   computed_at=value["computed_at"],
                   refresh_pending=bool(value.get('refresh_pending')),
                   expires_at=min(p['expires_at'] for p in dependencies))
+    if isinstance(value.get('refresh_protocol'), dict):
+        result['refresh_protocol'] = value['refresh_protocol']
+    if response_receipt is not None:
+        result['refresh_protocol'] = response_receipt
     if moving_scope:
         result['moving_target_ids']=tuple(t['id'] for t in moving_scope['targets'])
     winner = min(dependencies, key=lambda p: (p['expires_at'], p.get('source', '')))

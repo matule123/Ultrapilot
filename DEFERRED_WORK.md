@@ -1,5 +1,19 @@
 # Odložená a nedokončená práca
 
+## Refresh response lifecycle — 15 October 2026 afternoon
+
+See [PHASE7_REFRESH_RESPONSE_PROTOCOL_20261015.md](PHASE7_REFRESH_RESPONSE_PROTOCOL_20261015.md).
+The deployed validity-envelope fix did not cover expiry of the zero-drive wait
+itself. Core now binds original cause/token, admits one actual complete response
+through the whole executor, and acknowledges physical application separately
+from a concurrently published next request. The fixed bound and all original
+observation leases remain unchanged. No plugin/DLL version change or deployment.
+The new branch has production-flow counterexamples and paired offline stress;
+ETS2 remains GAME NOT VERIFIED. The historical initial token, complete AP reply
+availability and roughly 457 ms completion gap remain unrecorded/unattributed.
+The 93/134 ms historical outliers are not explained by newly measured harness GC.
+Existing significant-event originals/quota are unchanged; no new ride requested.
+
 ## Traffic lease handoff — 15 October 2026
 
 See [PHASE7_TRAFFIC_LEASE_HANDOFF_20261015.md](PHASE7_TRAFFIC_LEASE_HANDOFF_20261015.md).

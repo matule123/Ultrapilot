@@ -2924,7 +2924,7 @@ class UltraPilotEngine:
         self._gps_output_expiry = min(deadlines, key=lambda item: item[0])
         return ""
 
-    def _flush_controls_unlocked(self):
+    def _flush_controls_unlocked(self, *, refresh_pair=None):
         """Apply the latest control intents to the physical device.
 
         Gated by the master switch.  When the autopilot is NOT active we release
@@ -3190,7 +3190,8 @@ class UltraPilotEngine:
             from core.longitudinal import capture_command_observation, command_observation_details
             truck_telemetry = ((self.shared_state.get("telemetry", {}) or {})
                                .get("truck", {}) or {})
-            command_observation = capture_command_observation(self.shared_state, truck_telemetry)
+            command_observation = (refresh_pair if refresh_pair is not None else
+                capture_command_observation(self.shared_state, truck_telemetry))
             truck_telemetry = command_observation.truck
             if journal is not None and journal.enabled:
                 metadata = truck_telemetry.get('_control_observation') or {}
@@ -3206,7 +3207,8 @@ class UltraPilotEngine:
                     observed_gear=truck_telemetry.get("gear"))
                 from core.navigation.longitudinal_diagnostics import bounded_input
                 self._longitudinal_trace['requested'] = bounded_input(command_observation.command)
-                if command_observation.provenance['reread_count']:
+                if (command_observation.provenance['reread_count']
+                        or command_observation.provenance.get('refresh_recovery')):
                     self._longitudinal_trace['command_observation_pairing'] = command_observation.provenance
             vehicle_reason = vehicle_control_observation_rejection(
                 self.shared_state, truck_telemetry)
@@ -3299,6 +3301,15 @@ class UltraPilotEngine:
                 rejection_info=self._longitudinal_rejection_detail,
                 command_observation=command_observation)
             if pedal_reason:
+                if refresh_pair is None:
+                    from core.longitudinal import refresh_response_pair
+                    attempt = {}
+                    response = refresh_response_pair(self.shared_state, command_observation,
+                        command_observation.command, pedal_reason, diagnostic=attempt)
+                    if response is not None:
+                        return self._flush_controls_unlocked(refresh_pair=response)
+                    if attempt:
+                        self._longitudinal_rejection_detail['refresh_attempt'] = attempt
                 if self._wait_for_first_pedal_command(truck_telemetry, pedal_reason):
                     return
                 self._automatic_safety_stop(pedal_reason)
@@ -3502,11 +3513,24 @@ class UltraPilotEngine:
             commit_reason = source_reason or write_rejection(longitudinal, commit_context, commit_at)
             if not commit_reason:
                 return True
+            attempt = {}
+            if refresh_pair is None:
+                from core.longitudinal import refresh_response_pair
+                response = refresh_response_pair(self.shared_state, command_observation,
+                    longitudinal, commit_reason, diagnostic=attempt)
+                if response is not None:
+                    # No pedal is authorized by this retry. The complete GPS,
+                    # drivetrain/hold, arbitration and physical gates rerun on
+                    # one actual paired snapshot, under the same I/O owner.
+                    self._flush_controls_unlocked(refresh_pair=response)
+                    return False
             if not source_reason:
                 from core.longitudinal import command_observation_details
                 self._longitudinal_rejection_detail = command_observation_details(
                     command_observation, commit_at, value=longitudinal,
                     binding=commit_context)
+                if attempt:
+                    self._longitudinal_rejection_detail['refresh_attempt'] = attempt
             replacement = handoff_decision(self.shared_state, truck_telemetry,
                 longitudinal, commit_context, commit_reason)
             if replacement is None:
@@ -3725,7 +3749,15 @@ class UltraPilotEngine:
         })
         if (longitudinal and not longitudinal.get('refresh_pending')
                 and self.shared_state.get('autopilot_control_state') != 'controlled_stop'):
-            self.shared_state.set('longitudinal_refresh_request', None)
+            request = self.shared_state.get('longitudinal_refresh_request')
+            response = longitudinal.get('refresh_protocol') or {}
+            if (isinstance(request, dict) and response.get('state') == 'response'
+                    and response.get('token') == request.get('token')):
+                # Separate acknowledgement cannot erase a newer request that
+                # Autopilot published during the preceding IPC read.
+                self.shared_state.set('longitudinal_refresh_completed', dict(
+                    token=request['token'], written_at=pedal_write_returned_at,
+                    command_computed_at=longitudinal['computed_at']))
         if (simple_auto_forward and starting
                 and not getattr(getattr(self.controller, "scs", None), "connected", False)):
             self._revoke_simple_auto_launch(
