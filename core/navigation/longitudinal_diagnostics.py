@@ -269,6 +269,67 @@ def _expand_pairing(pairing):
             ('command_read_started_at', 'command_read_at', 'checked_after_read_at'), values[3:])))
 
 
+def emergency_evidence(traffic, source, source_observation_timestamp):
+    """Priority fixed-shape cause, never an oversized optional following tree."""
+    traffic = traffic or {}
+    following = traffic.get('following') or {}
+    basis = traffic.get('brake_basis') or {}
+    decisive = basis.get('decisive') or {}
+    row = {k:traffic.get(k) for k in ('sdk_frame_us','observation_timestamp','computed_at',
+                                     'expires_at','traffic_brake','light_brake','valid')}
+    row['source_acquisition'] = following.get('source_acquisition')
+    row['following'] = {k:following[k] for k in ('status','target_id','protective_target_id',
+        'gap_m','speed_mps','speed_cap_mps','emergency','protective_brake','unassigned_protective_brake') if k in following}
+    row['brake_basis'] = {k:basis.get(k) for k in ('kind','source_acquisition','model',
+        'stop_contract','conflict_count','confirmed_route_conflict','complete_envelope_verified')}
+    # At most one decisive actor/four measured ego boxes. Do not copy an actor
+    # list, route geometry or all forecast candidates into the 8 KiB fault.
+    row['brake_basis']['decisive'] = {k:decisive.get(k) for k in (
+        'id','body_index','distance_m','route_progress_m','actor_arrival_s',
+        'ego_arrival_earliest_s','ego_arrival_latest_s','reserve_s','brake',
+        'predicted_contact_s','contact_from_source_observation_s','source_age_s',
+        'contact_basis','motion_model','actor_motion_basis','actor','ego_anchor_xyz',
+        'ego_observed_speed_mps') if k in decisive}
+    if isinstance(decisive.get('ego_bodies'),list):
+        row['brake_basis']['decisive']['ego_bodies'] = decisive['ego_bodies'][:4]
+    small_basis,_ = bounded_copy(basis,limit=4096)
+    if 'snapshot_status' not in small_basis:
+        row['brake_basis'] = small_basis  # Preserve the existing small public contract verbatim.
+    row = {k:v for k,v in row.items() if v is not None and v != {}}
+    result = dict(traffic=row,source=source,source_observation_timestamp=source_observation_timestamp,
+        optional_candidate_details_omitted=True,game_consumption_verified=False)
+    public,_ = bounded_copy(result,limit=4096)
+    if 'snapshot_status' not in public:
+        return public
+    # Existing immutable tree codec removes repeated literal keys BEFORE the
+    # fault's conservative 8 KiB accounting; no larger memory budget.
+    return {'emergency_evidence_schema':1,'packed':pack_source(result)}
+
+
+def expand_emergency_evidence(value):
+    if isinstance(value,dict) and value.get('emergency_evidence_schema')==1:
+        return unpack_source(value['packed'])
+    return value
+
+
+def compact_traffic_cause(traffic):
+    """Exact fixed scalar cause taken before optional input-tree accounting."""
+    traffic=traffic or {}
+    basis=traffic.get('brake_basis') or {}
+    decisive=basis.get('decisive') or {}
+    actor=decisive.get('actor') or {}
+    if not decisive:
+        return None
+    return dict(kind=basis.get('kind'),stop_contract=basis.get('stop_contract'),
+        sdk_frame_us=traffic.get('sdk_frame_us'),observation_timestamp=traffic.get('observation_timestamp'),
+        source_acquisition=basis.get('source_acquisition'),
+        decisive={k:decisive.get(k) for k in ('id','distance_m','route_progress_m',
+            'actor_arrival_s','ego_arrival_earliest_s','ego_arrival_latest_s',
+            'assumed_ego_acceleration_mps2','ego_motion_basis','predicted_contact_s','contact_basis','brake')},
+        actor={k:actor.get(k) for k in ('id','source','slot','record_fingerprint',
+            'x','y','z','yaw','speed','dimensions_whl')})
+
+
 def bounded_fault_details(value, *, packed=False):
     """Account identical compared identities once inside one fault receipt.
 
@@ -282,6 +343,9 @@ def bounded_fault_details(value, *, packed=False):
             and isinstance(value.get('expected_context'), (list, tuple))
             and tuple(value['actual_context']) == tuple(value['expected_context']))
     selected = {k: v for k, v in value.items() if not (same and k == 'expected_context')}
+    emergency = selected.get('evidence')
+    if isinstance(emergency,dict) and 'traffic' in emergency:
+        selected['evidence'] = {'emergency_evidence_schema':1,'packed':pack_source(emergency)}
     signal = selected.get('signal')
     if isinstance(signal,dict) and any((signal.get('coverage') or {}).get(k) is True
                                       for k in ('requires_takeover','requires_approach')):
@@ -349,6 +413,8 @@ def bounded_fault_details(value, *, packed=False):
 
 def _expand_fault_details(result, *, same=False):
     result = dict(result)
+    if 'evidence' in result:
+        result['evidence'] = expand_emergency_evidence(result['evidence'])
     signal = result.pop('signal_comparison',None)
     if isinstance(signal,dict) and signal.get('schema') in (1,2):
         values = signal['values']
@@ -495,6 +561,20 @@ def bounded_input(value):
                 packed, _ = bounded_copy(pack_source(original), limit=2048)
                 if not packed.get('snapshot_status'):
                     result[key] = unpack_source(packed)
+            if key == 'brake_basis' and result[key].get('snapshot_status'):
+                # Added scalar actor evidence can exceed the conservative
+                # escaped-key/node estimate while its entire wire value fits
+                # the SAME 2 KiB attribution allocation. Bound traversal first
+                # by the existing overall input budget; accept only <=2 KiB
+                # decoded JSON as well as <=2 KiB compressed storage. Long
+                # compressible strings cannot bypass either size guard.
+                candidate,_ = bounded_copy(original,limit=16384)
+                if not candidate.get('snapshot_status'):
+                    wire=json.dumps(candidate,separators=(',',':'),allow_nan=False).encode('utf-8')
+                    if len(wire)<=2048:
+                        packed,_=bounded_copy(zlib.compress(wire),limit=2048)
+                        if isinstance(packed,bytes):
+                            result[key]=json.loads(zlib.decompress(packed))
             if result[key].get('snapshot_status'):
                 result['capture_incomplete'] = True
     saved = bounded_copy(result)[0]
@@ -745,6 +825,7 @@ HISTORY_FIELDS = (
     'traffic_departure',
     'load_observation', 'sdk_user_throttle', 'sdk_user_brake',
     'motion_constraint',
+    'traffic_cause',
 )
 
 
@@ -756,6 +837,7 @@ def _decision_summary(source):
     following=acc.get('following') or {}
     traffic=inputs.get('traffic') or {}
     traffic_target=traffic.get('following') or {}
+    traffic_cause=source.get('traffic_cause') or compact_traffic_cause(traffic)
     signal=traffic.get('signal') or {}
     head=signal.get('candidate') or signal.get('stop_candidate') or {}
     policy=inputs.get('policy') or {}
@@ -810,6 +892,7 @@ def _decision_summary(source):
         traffic_target_id=traffic_target.get('target_id'),traffic_target_status=traffic_target.get('status'),
         traffic_gap_m=traffic_target.get('gap_m'),traffic_target_confirmed=traffic_target.get('confirmed'),
         traffic_departure=_expand_departure(traffic_target),
+        traffic_cause=traffic_cause,
         speed_control_reason=acc.get('speed_control_reason'),
         traffic_brake=traffic.get('traffic_brake'),light_brake=traffic.get('light_brake'),
         policy_brake=policy.get('brake'),curve_brake=curve_brake,
@@ -935,6 +1018,8 @@ class _DecisionHistory:
              'traffic_target_id','traffic_target_status',
              'last_backend_status','last_backend_error','first_reason')),
             (row.get('traffic_departure') or {}).get('target_id'),
+            ((row.get('traffic_cause') or {}).get('kind'),
+             ((row.get('traffic_cause') or {}).get('actor') or {}).get('id')),
             (row.get('signal_lock') or {}).get('id'),(row.get('stop_target') or {}).get('passage_key'))
         changed=self.last_signature is not None and signature!=self.last_signature
         mode_changed=self.last_signature is not None and row.get('pedal_mode')!=self.aggregate.get('last_mode')

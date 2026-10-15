@@ -19,7 +19,7 @@ class Plugin(BasePlugin):
     """
 
     NAME = "acc"
-    VERSION = "1.3.1"
+    VERSION = "1.3.2"
 
     def on_start(self):
         logging.info("ACC Plugin started with bounded speed PID control.")
@@ -113,6 +113,16 @@ class Plugin(BasePlugin):
             self._followed_target = False
             self._following_target_id = None
             self._following_fault = ''
+            if strict:
+                # Observation continues at Engine, but a revoked activation
+                # cannot repeatedly generate pedals or voice an old emergency.
+                # A subsequent N owns pending activation and resumes normal
+                # fresh producer processing; no previous request is restored.
+                self._reset_control()
+                self._was_driving = False
+                self.sdk.set('acc_following_status','inactive: no pedal authority')
+                self._publish_pedals(truck,binding,0.,0.,reason='inactive: no pedal authority')
+                return
         following = traffic.get('following') if traffic else None
         native_lifecycle = ((following or {}).get('source_acquisition') or {}).get('lifecycle')
         if native_lifecycle is not None:

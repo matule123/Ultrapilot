@@ -4,6 +4,7 @@ No deployment. Report/tools may be edited afterward, runtime may not: the ZIP
 preparer refuses to package content different from the before/after test receipt.
 """
 import hashlib
+import argparse
 import json
 import os
 from pathlib import Path
@@ -19,7 +20,12 @@ if __name__=='__main__':
     sha=lambda value:hashlib.sha256(value).hexdigest()
     hashes=lambda:{name:sha((ROOT/name).read_bytes()) for name in RUNTIME}
     before=hashes()
-    log=ROOT/'docs/steering-audit/oct14-completion/full-suite-completion-v4.log'
+    source_head=subprocess.check_output(['git','rev-parse','HEAD'],cwd=ROOT).decode().strip()
+    parser=argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--log',type=Path,required=True)
+    args=parser.parse_args();log=args.log.resolve()
+    if not log.is_relative_to(ROOT/'docs/steering-audit'):
+        parser.error('Verification log must remain in workspace audit directory')
     if log.exists():raise ValueError('Preserve existing evidence; use a new verification revision')
     env=dict(os.environ,PYTHONCASEOK='1')
     with log.open('x',encoding='utf-8') as out:
@@ -28,7 +34,7 @@ if __name__=='__main__':
     after=hashes()
     if after != before:raise ValueError('Runtime changed during verification')
     receipt=dict(exit_code=result.returncode,runtime_sha256=after,log_sha256=sha(log.read_bytes()),
-        source_head=subprocess.check_output(['git','rev-parse','HEAD'],cwd=ROOT).decode().strip(),
+        source_head=source_head,
         game_verified=False)
     log.with_suffix('.verified.json').write_text(json.dumps(receipt,indent=2)+'\n',encoding='utf-8')
     print('\n'.join(log.read_text(errors='replace').splitlines()[-35:]),flush=True)

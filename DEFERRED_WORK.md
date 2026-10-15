@@ -687,3 +687,16 @@ moving the early intervention is not completion of signal coverage. The
 existing bounded incident receipt now retains owner, compared map input and
 derived-target/reserve fields without arming or new SDK/IPC reads. No new drive
 is requested, and unknown color/disappearance is never automatic clearance.
+
+## Roundabout traffic incident — 14 October
+
+[PHASE7_ROUNDABOUT_TRAFFIC_INCIDENT_20261014.md](PHASE7_ROUNDABOUT_TRAFFIC_INCIDENT_20261014.md)
+records the acquisition-timed crossing/terminal-stop correction, current-frame
+departure continuity, inactive planner/ACC speech lifecycle and priority first
+evidence/quota preservation. Existing signals, 5 m offset, green restart,
+indicators, geometry, regulators and native DLL are preserved. No deployment.
+Historical initiating actor poses and the first emergency's decisive input were
+not retained, so the whole historical classification remains NOT VERIFIED.
+Normal significant-event storage is still full; originals require separately
+approved archival, while the existing automatic fault export retains priority.
+New game behavior is unverified. The cancelled GPS-arrival task is not reopened.

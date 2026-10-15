@@ -134,8 +134,13 @@ def predict(route, ego_bodies, actors, speed, progress, anchor, *, source_age=0.
                 contact_from_source_observation_s=contact, source_age_s=source_age,
                 brake=brake, route_progress_m=projected[1]+speed*contact,
                 contact_basis=contact_basis,
+                actor={k:actor.get(k) for k in ('id','source','slot','record_fingerprint',
+                    'x','y','z','yaw','speed','dimensions_whl')},
+                ego_bodies=[dict(e) for e in ego_bodies],
+                ego_anchor_xyz=list(anchor), ego_observed_speed_mps=speed,
                 actor_motion_basis=('native_parked_classification_static_model' if parked
                                     else 'native_observed_speed_constant_heading_model')))
     result.update(status='protective_observed_body_prediction', unsupported_actors=missing,
+        prediction_duration_s=max(0.,(len(samples)-1)*STEP_S),
         brake=max((c['brake'] for c in result['conflicts']), default=0.))
     return result

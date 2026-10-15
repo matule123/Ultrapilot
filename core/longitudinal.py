@@ -1082,6 +1082,8 @@ def _engine_decision(state, truck, now=None, *, diagnostic=None, rejection_info=
         required=bool(state.get("longitudinal_policy_active")), diagnostic=diagnostic,
         rejection_info=rejection_info)
     if diagnostic is not None:
+        from core.navigation.longitudinal_diagnostics import compact_traffic_cause
+        diagnostic['traffic_cause'] = compact_traffic_cause(traffic)
         diagnostic['inputs'] = {k: bounded_input(v) for k, v in (
             ('traffic', traffic), ('acc', current_acc), ('policy', policy))}
         diagnostic['regulator_mode'] = current_acc.get('speed_control_reason') if current_acc else None
@@ -1230,12 +1232,9 @@ def _engine_decision(state, truck, now=None, *, diagnostic=None, rejection_info=
     if reason:
         return reject(reason, compared)
     if result['emergency']:
-        from core.navigation.longitudinal_diagnostics import bounded_copy
-        result['emergency_evidence'] = bounded_copy(dict(
-            traffic=traffic and {k: traffic.get(k) for k in ('sdk_frame_us',
-                'observation_timestamp', 'traffic_brake', 'following', 'brake_basis')},
-            source=value['decision_source'], source_observation_timestamp=value['observation_timestamp']),
-            limit=8192)[0]
+        from core.navigation.longitudinal_diagnostics import emergency_evidence
+        result['emergency_evidence'] = emergency_evidence(
+            traffic,value['decision_source'],value['observation_timestamp'])
     if result['brake'] > 0 or traffic_required(traffic) or destination:
         # Runtime stop witness, separate from the lossy diagnostic byte budget.
         # Only fixed scalar fields from the SAME consumed packets are retained;
@@ -1266,7 +1265,8 @@ def _engine_decision(state, truck, now=None, *, diagnostic=None, rejection_info=
             if isinstance(decisive, dict):
                 stop['traffic']['brake_basis']['decisive'] = {k: decisive[k] for k in
                     ('id', 'distance_m', 'route_progress_m', 'actor_arrival_s',
-                     'ego_arrival_earliest_s', 'brake') if k in decisive}
+                     'ego_arrival_earliest_s', 'ego_arrival_latest_s', 'brake',
+                     'actor', 'ego_motion_basis') if k in decisive}
         if destination:
             stop['destination'] = {k: destination[k] for k in
                 ('distance_m', 'cap_ms', 'terminal', 'target_kind', 'stop_line_verified')}

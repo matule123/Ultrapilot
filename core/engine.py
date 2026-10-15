@@ -1146,8 +1146,51 @@ class UltraPilotEngine:
         self.shared_state.set('lead_distance',following.get('gap_m'))
         brake=self._route_crossing_brake(following,brake)
         scope=following.get('motion_constraint')
+        crossing=following.get('crossing') or {}
+        bodies=following.get('body_prediction') or {}
+        if (not following.get('emergency') and crossing.get('conflicts')
+                and bodies.get('status')=='protective_observed_body_prediction'
+                and bodies.get('brake')==0. and bodies.get('unsupported_actors')==0
+                and bodies.get('prediction_duration_s')==3.
+                and following.get('source_acquisition')):
+            # A broad centreline/time-reserve intersection is caution, not an
+            # observed box-contact stop. Delay arrival through the SAME speed
+            # PID, instead of latching every tiny heuristic brake into hold.
+            # Actual overlap/swept contact retains its independent safety path.
+            targets={t['id']:dict(t) for t in (scope or {}).get('targets',())}
+            complete=True
+            for conflict in crossing.get('conflicts',()):
+                actor=conflict.get('actor') or {}
+                dims=actor.get('dimensions_whl') or ()
+                v=actor.get('speed')
+                if (actor.get('source')!='moving' or not isinstance(v,(int,float)) or v<=.1
+                        or len(dims)!=3 or any(not math.isfinite(n) or n<=0 for n in dims)):
+                    complete=False;break
+                until=conflict['actor_arrival_s']+conflict['reserve_s']+dims[2]/(2.*v)
+                cap=conflict['distance_m']/until
+                if not math.isfinite(cap) or cap<=1.:
+                    complete=False;break  # Terminal/unknown conditions stay protected.
+                aid=str(actor['id'])
+                target=dict(id=aid,speed_mps=v,cap_mps=cap,source=actor['source'],slot=actor['slot'])
+                if aid in targets:target['cap_mps']=min(target['cap_mps'],targets[aid]['cap_mps'])
+                targets[aid]=target
+            if complete and 0<len(targets)<=16:
+                scope=dict(schema=1,kind='observed_positive_motion_speed_constraint',
+                    targets=sorted(targets.values(),key=lambda t:t['id']),complete=True,
+                    source_acquisition=dict(following['source_acquisition']),coverage_confirmed=False)
+                self._traffic_brake_basis=dict(self._traffic_brake_basis or dict(
+                    kind='directed_crossing_speed_constraint',
+                    decisive=min(crossing['conflicts'],key=lambda c:c['distance_m']),
+                    source_acquisition=dict(following['source_acquisition']),
+                    confirmed_route_conflict=False,coverage_confirmed=False),
+                    stop_contract='observed_positive_motion_speed_constraint')
+                brake=0.
+                # This is a speed constraint, not a clearance witness. The
+                # original crossing receipt still prevents terminal release.
+                following['motion_constraint']=scope
+                self._acc_selector.retain_crossing_target(scope['targets'],following.get('receiver_time'))
         if (scope and not following.get('emergency')
-                and (following.get('crossing') or {}).get('brake',0.) == 0.
+                and (crossing.get('brake',0.) == 0. or brake==0.)
                 and (following.get('body_prediction') or {}).get('brake',0.) == 0.):
             following['motion_constraint']=dict(scope,authority=tuple(binding))
             if (self._traffic_brake_basis or {}).get('kind') == 'protective_route_candidate':
@@ -1204,6 +1247,60 @@ class UltraPilotEngine:
             motion_constraint=following.get('motion_constraint'),
             dependencies=following.get('deadline_dependencies', ()),
             expires_at=following.get('expires_at', float('inf')))
+
+    def _update_planner_presentation(self, perception_data, telemetry_data, delta_time, published_traffic):
+        """One presentation owner; never synthesize actuator authority.
+
+        Preserve an existing first emergency through disengagement. Passive
+        traffic fluctuations cannot repeatedly announce active driving modes.
+        The finite release delay applies to presentation only, not pedals/AEB.
+        """
+        from core.planner import SystemState
+        state = self.shared_state
+        fault = state.get('autopilot_intervention') or {}
+        epoch = state.get('autopilot_failure_epoch')
+        active = bool(state.get('autopilot_active') or state.get('auto_drive_pending'))
+        first_emergency = fault.get('epoch') == epoch and fault.get('kind') == 'emergency'
+        now = time.monotonic()
+        previous = self.planner.current_state
+        alert = None
+        if first_emergency:
+            self.planner.set_state(SystemState.EMERGENCY)
+            event = (epoch, fault.get('sequence'))
+            if getattr(self, '_planner_emergency_announced', None) != event:
+                self._planner_emergency_announced = event
+                alert = fault.get('reason') or 'Emergency stop! Collision imminent!'
+        elif not active:
+            self.planner.set_state(SystemState.IDLE)
+            self.planner.set_blinker('off')
+            self._planner_obstacle_until = 0.
+        else:
+            data = dict(perception_data)
+            obstacle = dict(data.get('obstacle') or {})
+            level = obstacle.get('level', 0.)
+            if level > .3:
+                self._planner_obstacle_until = now + .5
+                self._planner_obstacle_level = level
+            elif previous == SystemState.AVOID_OBSTACLE and now < getattr(self, '_planner_obstacle_until', 0.):
+                obstacle['level'] = getattr(self, '_planner_obstacle_level', 0.)
+                data['obstacle'] = obstacle
+            _, alert = self.planner.update(data, telemetry_data, delta_time)
+            # Same observed cause in one activation is one spoken episode.
+            basis = (published_traffic or {}).get('brake_basis') or {}
+            ids = tuple(basis.get('candidate_ids') or ())
+            cause = (epoch, basis.get('kind'), ids, self.planner.current_state.name)
+            if alert and getattr(self, '_planner_last_alert', None) == cause:
+                alert = None
+            elif alert:
+                self._planner_last_alert = cause
+        current = self.planner.current_state
+        if active and current == SystemState.AVOID_OBSTACLE and previous != current:
+            journal = getattr(self.controller, '_pedal_journal', None)
+            if journal is not None:
+                journal.significant('AVOID_OBSTACLE', published_traffic, now)
+        state.update_batch({'system_state': current.name, 'planner_blinker': self.planner.active_blinker})
+        if alert:
+            self.voice.say(alert)
 
     def _light_brake(self, light):
         """Shared stop-envelope demand; ending qualified green can also stop.
@@ -2629,6 +2726,7 @@ class UltraPilotEngine:
             return
         writer=getattr(self,'_automatic_replay_writer',None)
         if writer is not None and writer.status.get('busy'):return
+        self._harvest_significant_export(journal)
         snapshot = journal.snapshot(expanded=False,include_history=True)
         if not snapshot['events']:
             return
@@ -2653,6 +2751,19 @@ class UltraPilotEngine:
             sample_kind='longitudinal_boundary_incident', longitudinal=snapshot)):
             self._automatic_longitudinal_export_epoch = fault['epoch']
 
+    def _harvest_significant_export(self, journal):
+        sequence = getattr(self, '_significant_export_sequence', None)
+        writer = getattr(self, '_automatic_replay_writer', None)
+        if sequence is None or writer is None or writer.status.get('busy'):
+            return
+        self._significant_export_sequence = None
+        if writer.status.get('path'):
+            journal.significant_submitted(sequence)
+        else:
+            # Keep the sole immutable pending receipt for the eventual fault.
+            # Never delete older evidence or spin a failing exporter each tick.
+            self._significant_export_blocked = writer.status.get('error_detail') or 'EVENT_EXPORT_FAILED'
+
     def _finish_significant_longitudinal_event(self,journal,*,shutdown=False):
         directory=getattr(self,'_automatic_replay_directory',None)
         if not directory:return
@@ -2660,6 +2771,9 @@ class UltraPilotEngine:
         if fault and fault['epoch']!=getattr(self,'_automatic_longitudinal_export_epoch',None):return
         writer=getattr(self,'_automatic_replay_writer',None)
         if writer is not None and writer.status.get('busy'):return
+        self._harvest_significant_export(journal)
+        if getattr(self, '_significant_export_blocked', None):
+            return  # Original quota unchanged; fault export still owns priority.
         pending=journal.ready_significant(time.monotonic(),shutdown=shutdown)
         if pending is None:return
         if fault and pending.get('context') and fault['epoch']==pending['context'][0]:return
@@ -2678,7 +2792,7 @@ class UltraPilotEngine:
                 identity={'event_sequence':pending['sequence'],'context':pending['context']},
                 sample_kind='longitudinal_significant_event',longitudinal=snapshot,
                 maximum_output_bytes=remaining)
-        if writer.submit(write):journal.significant_submitted(pending['sequence'])
+        if writer.submit(write):self._significant_export_sequence=pending['sequence']
 
     def _record_drive_boundary(self, action, truck, *, selector=None,
                                returned=None, steering=None, throttle=None,
@@ -4164,18 +4278,8 @@ class UltraPilotEngine:
                 }
                 telemetry_data = self.shared_state.get("telemetry", {})
 
-                previous_planner_state=getattr(self.planner.current_state,'name','')
-                current_state, voice_alert = self.planner.update(
-                    perception_data, telemetry_data, delta_time)
-                if getattr(current_state,'name','')=='AVOID_OBSTACLE' and previous_planner_state!='AVOID_OBSTACLE':
-                    journal=getattr(self.controller,'_pedal_journal',None)
-                    if journal is not None:journal.significant('AVOID_OBSTACLE',published_traffic,time.monotonic())
-                self.shared_state.set("system_state",
-                                      getattr(current_state, "name", str(current_state)))
-                self.shared_state.set("planner_blinker",
-                                      self.planner.active_blinker)
-                if voice_alert:
-                    self.voice.say(voice_alert)
+                self._update_planner_presentation(perception_data, telemetry_data,
+                                                  delta_time, published_traffic)
 
                 # 4. Core modules + plugin supervision
                 self.module_manager.update_all(delta_time)

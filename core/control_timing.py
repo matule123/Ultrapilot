@@ -60,7 +60,7 @@ def record_control_intervention(state, producer, code, reason, kind, *, details=
     A later emergency/token cleanup cannot replace the first terminal cause.
     The producer owns its signature slot; unchanged decisions do not log per tick.
     """
-    from core.navigation.longitudinal_diagnostics import bounded_copy
+    from core.navigation.longitudinal_diagnostics import bounded_fault_details
     first = first_control_fault_record(state)
     if first:
         state.set('autopilot_intervention', first)
@@ -72,7 +72,7 @@ def record_control_intervention(state, producer, code, reason, kind, *, details=
             and previous.get('code') == code and previous.get('reason') == reason):
         return previous
     record = _intervention_record(state, producer, code, reason, kind,
-                                  bounded_copy(details, limit=8192)[0])
+                                  bounded_fault_details(details))
     state.update_batch({key: record, 'autopilot_intervention': record})
     logging.warning('Control intervention: %s', record)
     return record

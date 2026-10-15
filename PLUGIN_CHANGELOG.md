@@ -2,6 +2,21 @@
 
 Release history for individual plugins. See [PLUGIN_VERSIONS.md](PLUGIN_VERSIONS.md) for versioning rules.
 
+## Core observed crossing and incident preservation — unreleased, 2026-10-14
+
+- Use actual constant-speed ego arrival for acquisition-timed crossing candidates. Do not promote a guessed +2 m/s² departure from standstill into an imminent collision; actual observed overlap and swept-box AEB remain independently effective. Untimed legacy captures retain their conservative behavior.
+- With a complete original timed actor acquisition and a full three-second no-contact body prediction, deliver the existing positive crossing-arrival cap to the authoritative speed PID instead of converting a tiny broad time-window brake into a terminal hold. Recompute the original owner's cap from each actual source frame until a same-body receding witness or a genuine contact/terminal requirement supersedes it. Missing/reassigned actors, incomplete bodies or source loss cannot clear ownership.
+- Pair departure checks with the current native acquisition before evaluating them; reject discontinuous same-ID motion as clearance. Reproject retained ownership on validated same-authority geometry changes.
+- Stop passive planner mode/voice oscillation after authority is revoked; retain and announce the first emergency once. A short AVOID presentation release delay does not delay pedal or emergency decisions.
+- Preserve compact decisive actor/slot/source-time/contact evidence ahead of optional detail within existing bounded codecs and pedal history. On a full significant-event quota, retain one pending immutable receipt for automatic fault export and stop futile retries. Preserve all original files and existing memory/file budgets.
+- See [PHASE7_ROUNDABOUT_TRAFFIC_INCIDENT_20261014.md](PHASE7_ROUNDABOUT_TRAFFIC_INCIDENT_20261014.md). Original initiating actor poses are missing and the exact first emergency input exceeded the old detail budget; reconstructed examples are not presented as historical poses or game verification. No DLL, geometry, steering, PID, 5 m signal offset, timeout, parking or other plugin release change.
+
+## ACC
+
+### 1.3.2 — unreleased, 2026-10-14
+
+- Stop generating pedal requests and repeating emergency speech for an inactive strict-schema activation. Reset private control/following state while Engine observation continues; a later pending N resumes current validated producer processing without restoring old output. Retain immediate emergency priority during active or pending authority and the existing regulator/actuator mapping.
+
 ## Core stop ownership and destination handover — unreleased, 2026-10-14
 
 - Distinguish a fresh native-source positive moving-actor speed constraint from a terminal conflict stop. Ordinary positive caps feed the existing speed PID; they no longer apply an independent legacy distance brake or create a terminal hold. Missing actors, legacy/unqualified records, source resets, crossing/body conflicts, red signals and other stop causes cannot authorize restart or clear a terminal receipt.

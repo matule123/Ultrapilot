@@ -11,7 +11,7 @@ ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT))
 RUNTIME=(
     'core/acc_acceleration.py', 'core/acc_body_prediction.py', 'core/acc_following.py',
-    'core/engine.py', 'core/longitudinal.py', 'core/pid.py', 'core/service_brake_hold.py',
+    'core/engine.py', 'core/control_timing.py', 'core/longitudinal.py', 'core/pid.py', 'core/service_brake_hold.py',
     'core/navigation/traffic_producer.py', 'core/navigation/longitudinal_diagnostics.py',
     'core/sdk/traffic_snapshot.py', 'core/sdk/scs_sdk.py', 'core/telemetry.py',
     'plugins/acc/main.py', 'plugins/drivepolicy/main.py',
@@ -19,7 +19,7 @@ RUNTIME=(
 )
 
 
-def prepare(output):
+def prepare(output, test_log):
     if not output.resolve().is_relative_to(ROOT/'docs/steering-audit'):
         raise ValueError('Candidate must remain in workspace audit directory')
     if output.exists():raise ValueError('Use a new ZIP; never overwrite a candidate')
@@ -30,7 +30,6 @@ def prepare(output):
     if sha(dll)!=receipt['dll_sha256']:raise ValueError('Native build receipt mismatch')
     for path,digest in receipt['files'].items():
         if sha((native/path).read_bytes())!=digest:raise ValueError('Native source/artifact mismatch: '+path)
-    test_log=ROOT/'docs/steering-audit/oct14-completion/full-suite-completion-v4.log'
     log=test_log.read_text(errors='replace')
     if 'failed' in log.lower() or 'passed' not in log or '[100%]' not in log:
         raise ValueError('Final complete pytest PASS is required before packaging')
@@ -52,6 +51,8 @@ def prepare(output):
     payload['runtime/assets/ets2la_plugin.dll']=dll
     payload['game-plugin/ets2la_plugin.dll']=dll
     manifest=dict(schema=1,kind='candidate_not_deployment',runtime_authorized=False,
+        scope='oct14-roundabout-traffic-intervention',
+        supersedes_candidate='oct14-v4',native_changed=False,
         source_head=subprocess.check_output(['git','rev-parse','HEAD'],cwd=ROOT).decode().strip(),
         working_tree_uncommitted=bool(subprocess.check_output(['git','status','--porcelain'],cwd=ROOT)),
         versions=dict(acc=versions['acc'],drivepolicy=versions['drivepolicy'],native='1.59.4-up-traffic-timed'),
@@ -63,9 +64,11 @@ def prepare(output):
         deployment_requirements=['Separate user approval, both applications off, whole-set rollback backup',
             'Install runtime payload and the same DLL into the already receipt-identified game plugin location',
             'Preserve settings/map-cache/diagnostic records/commit marker; verify every installed hash'],
-        blockers=['Producer-owned complete destination identity and completion/cancellation lifecycle unavailable; local Map endpoint is not proof',
-            'Positive-distance planning stop requires explicit driver handover; fully automatic destination shutdown not implemented',
-            'Calibrated load mapper and certified coverage/full swept envelope not implemented'],
+        blockers=['Historical first emergency actor poses/bodies were not retained; synthetic reproduction is not that source frame',
+            'New behavior has no ETS2 game verification; requires separately approved deployment',
+            'Normal significant-event quota is full; old originals require approved archival, automatic fault export remains available',
+            'Certified coverage/full swept envelope and calibrated load mapping are not claimed',
+            'Native GPS-arrival work remains unavailable and cancelled; it is outside this candidate task'],
         game_verified=False)
     with zipfile.ZipFile(output,'x',zipfile.ZIP_DEFLATED) as archive:
         for name,content in payload.items():archive.writestr(name,content)
@@ -82,4 +85,5 @@ def prepare(output):
 
 if __name__=='__main__':
     p=argparse.ArgumentParser(description=__doc__);p.add_argument('--output',type=Path,required=True)
-    args=p.parse_args();prepare(args.output.resolve())
+    p.add_argument('--verification-log',type=Path,required=True)
+    args=p.parse_args();prepare(args.output.resolve(),args.verification_log.resolve())

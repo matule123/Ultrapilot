@@ -143,6 +143,7 @@ class RouteLeadSelector:
         self.target_id = None
         self._last_target_observation = None
         self._departure_observation = None
+        self._target_is_crossing = False
         self._native_previous = None
         self._native_current = None
 
@@ -150,6 +151,7 @@ class RouteLeadSelector:
         self.target_id = None
         self._last_target_observation = None
         self._departure_observation = None
+        self._target_is_crossing = False
         self._native_previous = None
         self._native_current = None
 
@@ -242,7 +244,7 @@ class RouteLeadSelector:
     def prepare(self, points, binding, *, preserve_target=False):
         if binding == self.binding:
             return
-        previous = (self.target_id, self._last_target_observation) if preserve_target else None
+        previous = (self.target_id, self._last_target_observation, self._target_is_crossing) if preserve_target else None
         self.binding = None
         self.reset()
         if not 2 <= len(points) <= 20000:
@@ -260,7 +262,7 @@ class RouteLeadSelector:
             arcs.append(arcs[-1]+length)
         self.points, self.arcs, self.edges, self.binding = pts, tuple(arcs), tuple(edges), binding
         if previous:
-            self.target_id, self._last_target_observation = previous
+            self.target_id, self._last_target_observation, self._target_is_crossing = previous
 
     def _body_clearance(self, body, low, high):
         """Exact native oriented-box/reference distance, not physical lane clearance."""
@@ -335,10 +337,13 @@ class RouteLeadSelector:
         if previous is None or receiver_time is None:
             return None
         old, at = previous
+        if self._target_is_crossing and (not self._native_previous or not self._native_current):
+            return None
         if not 0 < receiver_time-at <= .5:
             return None
-        old_projection=self._project(old,max(0.,ego[1]-20.),ego[1]+HORIZON_M)
-        if old_projection is None or old_projection[0]>PROTECTIVE_REFERENCE_GATE_M:
+        old_projection=self._project(old,max(0.,ego[1]-20.),ego[1]+HORIZON_M,
+                                     aligned=not self._target_is_crossing)
+        if old_projection is None or (not self._target_is_crossing and old_projection[0]>PROTECTIVE_REFERENCE_GATE_M):
             return None  # retained receiver history must still relate to this route
         actor = next((a for a in actors if a['id'] == old['id']), None)
         if (actor is None or actor.get('source') != old.get('source')
@@ -346,6 +351,17 @@ class RouteLeadSelector:
                 or not actor.get('record_fingerprint')
                 or actor['record_fingerprint'] == old.get('record_fingerprint')):
             return None  # absent/unchanged/reassigned records are not departure
+        if self._native_previous is not None and self._native_current is not None:
+            before, current = self._native_previous, self._native_current
+            native_old = before[1].get(old['id'])
+            dt = current[0][3]-before[0][3]
+            if (not native_old or not 0 < dt <= .5
+                    or current[0][0] != before[0][0]
+                    or native_old.get('record_fingerprint') == actor.get('record_fingerprint')
+                    or len(native_old['bodies']) != len(actor['bodies'])
+                    or math.hypot(actor['x']-native_old['x'],actor['z']-native_old['z'])
+                       > max(actor['speed'],native_old['speed'])*dt+1.):
+                return None  # Native ID/slot reuse or a torn motion pair is not departure.
         speed = actor.get('speed')
         if not isinstance(speed, (int, float)) or not math.isfinite(speed) or not 0 <= speed <= 70.:
             return None  # the same kinematics contract as ordinary candidates
@@ -364,6 +380,11 @@ class RouteLeadSelector:
                 return None  # outside observed route range / ambiguous occurrence
             clearance=self._body_clearance(body,max(0.,ego[1]-20.),ego[1]+HORIZON_M)
             if clearance is None: return None
+            if self._target_is_crossing:
+                native_old_body=native_old['bodies'][len(clearances)] if self._native_previous else None
+                old_clearance=self._body_clearance(native_old_body,max(0.,ego[1]-20.),ego[1]+HORIZON_M) if native_old_body else None
+                if old_clearance is None or clearance<=old_clearance:
+                    return None  # Same original body must actually recede after crossing.
             clearances.append(clearance)
         if not clearances or min(clearances) <= PROTECTIVE_REFERENCE_GATE_M:
             return None
@@ -379,6 +400,17 @@ class RouteLeadSelector:
         self._departure_observation = proof
         return proof
 
+    def retain_crossing_target(self, targets, receiver_time):
+        """Bind a positive crossing cap to the current native original owner."""
+        if not self._native_current or not targets:
+            return
+        chosen=min(targets,key=lambda t:(t['cap_mps'],t['id']))
+        actor=self._native_current[1].get(int(chosen['id']))
+        if actor is not None:
+            self.target_id=chosen['id']
+            self._last_target_observation=(dict(actor),receiver_time)
+            self._target_is_crossing=True
+
     def select(self, actors, truck, progress, *, receiver_time=None, source=None):
         if not math.isfinite(progress) or not 0 <= progress <= self.arcs[-1]:
             return dict(status='invalid_route_progress', confirmed=False)
@@ -392,6 +424,8 @@ class RouteLeadSelector:
         identity = actor_identity(actors)
         if identity['missing_count'] or identity['duplicate_count']:
             return dict(status='ambiguous_actor_id', confirmed=False, actor_identity=identity)
+        # Departure must compare this very acquisition, not the prior pair.
+        predictions = self.source_motion(actors, source)
         departure = self._departure(actors, ego, receiver_time)
         for actor in actors:
             try:
@@ -442,6 +476,7 @@ class RouteLeadSelector:
                 retained=next((c for c in protective if c[1]==self.target_id),None)
                 if retained and retained[0]<=selected[0]+RETENTION_M:selected=retained
                 self.target_id=selected[1]
+                self._target_is_crossing=False
                 actor=next(a for a in actors if str(a['id'])==selected[1])
                 self._last_target_observation=(dict(actor),receiver_time)
             return dict(status='no_candidate_unproven_coverage', confirmed=False,
@@ -453,11 +488,11 @@ class RouteLeadSelector:
         # Retention changes attribution only: all relevant candidates always cap
         # speed and emergency response, so a closer cut-in is never hidden.
         self.target_id = selected[1]
+        self._target_is_crossing=False
         if receiver_time is not None:
             actor = next(a for a in actors if str(a['id']) == selected[1])
             self._last_target_observation = (dict(actor), receiver_time)
             self._departure_observation = None
-        predictions = self.source_motion(actors, source)
         constraints = [following_demand(c[0], c[2], float(truck['speed']),include_brake=True) for c in candidates]
         # Negative anticipation only, over the existing 500 ms evidence horizon.
         # It can lower a cap but cannot relax TTC/AEB or certify lane membership.
@@ -480,7 +515,7 @@ class RouteLeadSelector:
     def crossing(self, actors, truck, progress):
         """All observed crossing candidates on the directed local reference.
 
-        Constant actor velocity and 0..2 m/s² nominal ego acceleration define
+        Constant observed actor/ego velocity defines
         a protective arrival window, NOT a measured acceleration bound or a
         certified gap. The 2 s reserve is the existing ACC headway. No result,
         including an empty buffer, can authorize entry or release a stop.
@@ -515,6 +550,11 @@ class RouteLeadSelector:
                     if lead is not None and lead[0] <= LATERAL_GATE_M:
                         continue  # directed same-lane lead already uses ACC
                     vx,vz = -math.sin(yaw)*v, -math.cos(yaw)*v
+                    dims = actor.get('dimensions_whl')
+                    body_time = (float(dims[2])/(2*v) if dims and len(dims)==3
+                        and all(math.isfinite(float(n)) and n > 0 for n in dims) else 0.)
+                    timed = self._native_current is not None
+                    retained = timed and self._target_is_crossing and str(actor['id']) == str(self.target_id)
                     candidates = []
                     for i in range(first,last):
                         ax,ay,az,dx,dy,dz,length,inv,_,start = self.edges[i]
@@ -525,28 +565,41 @@ class RouteLeadSelector:
                         t = (ox*dz-oz*dx)/den
                         u = (ox*vz-oz*vx)/den
                         distance = start+u*length-ego[1]
-                        if not (0 <= t <= 8. and 0 <= u <= 1. and 0 <= distance <= HORIZON_M
+                        if not ((0 <= t <= 8. or retained and -HEADWAY_S-body_time <= t <= 8.)
+                                and 0 <= u <= 1. and 0 <= distance <= HORIZON_M
                                 and abs(y-ay-u*dy) <= HEIGHT_GATE_M):
                             continue
-                        earliest = (math.sqrt(speed*speed+4.*distance)-speed)/2.
-                        latest = distance/speed if speed > .1 else float('inf')
+                        # A guessed +2 m/s² must not turn a stationary cab into
+                        # an imminent collider, or latch tiny distant demands.
+                        # Actual native-box overlap is independently protected
+                        # by body prediction even when this cab is stationary.
+                        if timed:
+                            if speed <= .1:
+                                continue
+                            earliest = latest = distance/speed
+                        else:
+                            # Old untimed captures retain their conservative
+                            # fallback; they cannot prove native motion/clearance.
+                            earliest = (math.sqrt(speed*speed+4.*distance)-speed)/2.
+                            latest = distance/speed if speed > .1 else float('inf')
                         # The immutable buffer dimensions remain explicitly raw;
                         # no cab/trailer outline or bumper distance is invented.
-                        dims = actor.get('dimensions_whl')
-                        body_time = (float(dims[2])/(2*v) if dims and len(dims)==3
-                            and all(math.isfinite(float(n)) and n > 0 for n in dims) else 0.)
-                        if earliest > t+HEADWAY_S+body_time or latest < t-HEADWAY_S-body_time:
+                        outside_window = earliest > t+HEADWAY_S+body_time or latest < t-HEADWAY_S-body_time
+                        if outside_window and not retained:
                             continue
                         urgency = min(t,earliest)
-                        brake = 1. if urgency <= 1. else ((5.-min(5.,urgency))/4.)**2
+                        brake = 0. if outside_window else (1. if urgency <= 1. else ((5.-min(5.,urgency))/4.)**2)
                         candidates.append(dict(id=actor['id'], route_progress_m=start+u*length,
                             distance_m=distance, actor_arrival_s=t, ego_arrival_earliest_s=earliest,
                             ego_arrival_latest_s=latest if math.isfinite(latest) else None,
-                            reserve_s=HEADWAY_S, assumed_ego_acceleration_mps2=2.,
+                            reserve_s=HEADWAY_S, assumed_ego_acceleration_mps2=0. if timed else 2.,
+                            ego_motion_basis='observed_speed_constant_motion' if timed else 'untimed_nominal_acceleration_fallback',
                             dimensions_whl=dims, brake=brake))
                     if candidates:
                         conflict = max(candidates,key=lambda c:c['brake'])
                         conflict.update(body_index=body_index,
+                            actor={k:actor.get(k) for k in ('id','source','slot','record_fingerprint',
+                                'x','y','z','yaw','speed','dimensions_whl')},
                             motion_model='constant_tractor_speed_raw_body_heading',
                             ego_body_envelope_confirmed=False)
                         result['conflicts'].append(conflict)
