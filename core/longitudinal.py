@@ -658,7 +658,10 @@ def _initialization_input_reason(state, source, value, binding, now, reason):
 
 def read(state, source, now=None, *, required=False, binding=None, diagnostic=None, rejection_info=None):
     """One IPC read per producer, never combine scalar throttle/brake reads."""
+    read_started_at = time.monotonic() if now is None else now
     value = state.get("longitudinal_" + source)
+    read_returned_at = time.monotonic() if now is None else now
+    reread_count = 0
     explicit_required = required
     if source == 'traffic' and traffic_required(value):
         required = True
@@ -674,7 +677,9 @@ def read(state, source, now=None, *, required=False, binding=None, diagnostic=No
         # Validate the returned immutable value after reading, never retimestamp.
         newer = state.get('longitudinal_' + source)
         rechecked = time.monotonic() if now is None else now
+        reread_count = 1
         if not rejection(newer, compared_binding, rechecked):
+            read_returned_at = rechecked
             value, reason, checked_at = newer, '', rechecked
     if not reason:
         fields = {"acc": ("throttle", "brake"), "policy": ("brake",),
@@ -705,6 +710,12 @@ def read(state, source, now=None, *, required=False, binding=None, diagnostic=No
         reason = ''
     if diagnostic is not None:
         from core.navigation.longitudinal_diagnostics import bounded_input
+        # Fixed-size receiver timing of the value actually validated. This is
+        # a sampled read, never a claim about first delivery/producer creation.
+        diagnostic.setdefault('input_read_timing', {})[source] = [read_started_at,
+            read_returned_at, checked_at, reread_count,
+            *[value.get(k) if isinstance(value, dict) else None for k in
+              ('sdk_frame_us', 'observation_timestamp', 'computed_at', 'expires_at')]]
         diagnostic.setdefault('input_rejections', {})[source] = reason or coverage_reason
         if reason or coverage_reason:
             diagnostic.setdefault('rejected_inputs', {})[source] = bounded_input(value)
@@ -902,6 +913,7 @@ def refresh_handoff(state, truck, value, binding, reason):
             fresh = None if invalid else dict(expires_at=observed['observed_at'] + LEASE_S)
         else:
             return None
+        source_read_returned_at = time.monotonic()
         newer = fresh and fresh['expires_at'] > expiry and fresh['expires_at']-now >= HANDOFF_RESERVE_S
         expiring = (fresh and fresh['expires_at'] == expiry and now <= expiry
             and (source != 'curve' or (fresh['sdk_frame_us'] == basis.get('sdk_frame_us')
@@ -920,7 +932,12 @@ def refresh_handoff(state, truck, value, binding, reason):
         return None  # Do not restart the wait on every rejected producer tick.
     if tuple(binding) != context(state):
         return None
-    return current
+    # A receiver witness for this bounded attempt, not fresh permission to use
+    # the rejected pedals. Store only compact original provenance in export.
+    return dict(current, refresh_evidence=dict(checked_at=now, source=source,
+        rejected_deadline=expiry, source_read_returned_at=source_read_returned_at,
+        replacement_deadline=fresh.get('expires_at') if fresh else None,
+        newer_live_source=bool(newer)))
 
 
 def handoff_decision(state, truck, value, binding, reason):
@@ -942,6 +959,7 @@ def handoff_decision(state, truck, value, binding, reason):
     fresh['sdk_frame_us'] = truck['sdkFrameTimeUs']
     fresh['source'] = fresh['decision_source'] if not fresh['emergency'] else 'traffic_emergency'
     fresh['refresh_pending'] = True
+    fresh['refresh_evidence'] = request.get('refresh_evidence')
     return fresh
 
 
@@ -1185,6 +1203,12 @@ def _engine_decision(state, truck, now=None, *, diagnostic=None, rejection_info=
     if policy and policy['brake'] > 0:
         dependencies.append(policy)
     result.update(context=binding, sdk_frame_us=value["sdk_frame_us"],
+                  # Preserve the validated envelope through selection. The
+                  # physical gate can discover expiry after this function;
+                  # bounded recovery must receive the original qualification,
+                  # not a pedal-only dict that looks like invalid evidence.
+                  schema_version=value['schema_version'], valid=value['valid'],
+                  decision_source=value['decision_source'],
                   observation_timestamp=value["observation_timestamp"],
                   computed_at=value["computed_at"],
                   refresh_pending=bool(value.get('refresh_pending')),

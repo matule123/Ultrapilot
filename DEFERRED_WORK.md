@@ -1,5 +1,19 @@
 # Odložená a nedokončená práca
 
+## Traffic lease handoff — 15 October 2026
+
+See [PHASE7_TRAFFIC_LEASE_HANDOFF_20261015.md](PHASE7_TRAFFIC_LEASE_HANDOFF_20261015.md).
+Core selection now preserves the validated envelope required by bounded final
+write recovery; actual consumed inputs/vehicle pairing survive a prewrite
+fault separately from safety output. No plugin/DLL or regulator release change.
+Historical traffic publication/first delivery and the initiating scheduling gap
+are not retained. They are not inferred from a later SDK frame or an older
+significant receipt. New behavior is GAME NOT VERIFIED. Performance outliers
+(including a 134.4 ms modeled recovery flush) remain explicitly reported,
+without claiming an identified GC/IPC cause. Existing significant-event quota
+is still full; no originals are archived or deleted, and automatic fault export
+retains its priority receipt. No new drive is requested in this task.
+
 ## October 14 final stop-completion continuation
 
 The final continuation in

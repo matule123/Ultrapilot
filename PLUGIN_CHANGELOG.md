@@ -2,6 +2,13 @@
 
 Release history for individual plugins. See [PLUGIN_VERSIONS.md](PLUGIN_VERSIONS.md) for versioning rules.
 
+## Core longitudinal execution handoff — unreleased, 2026-10-15
+
+- Preserve the validated command envelope through final Engine arbitration, including validity and decision source. A recoverable late dependency expiry can now enter the existing bounded zero-drive handoff instead of being misclassified as unqualified evidence. The old command is never renewed or executed after expiry; a full new producer decision must take over.
+- Keep the original producer reserve, 500 ms evidence deadline, fixed 100 ms handoff bound and final prewrite expiry check. Preserve physically acknowledged continuous service braking during qualified renewal. Reject an experimental extra prewrite reserve after it unnecessarily withdrew still-valid drive in the unchanged Map preparation regression.
+- Retain already consumed inputs and the rejected decision alongside subsequent safety writes. Record bounded sampled producer-read times and refresh witnesses in the existing journal/export without additional SDK/IPC reads, new workers or per-tick INFO logs. Use the actual compared vehicle snapshot in final rejection evidence.
+- Core-only implementation; ACC 1.3.2, DrivePolicy 1.1.4 and all other plugin versions/DLL remain unchanged. Historical traffic publication/first-delivery and the exact initiating delay were not captured; offline reproduction is not presented as historical scheduling proof or ETS2 verification.
+
 ## Core observed crossing and incident preservation — unreleased, 2026-10-14
 
 - Use actual constant-speed ego arrival for acquisition-timed crossing candidates. Do not promote a guessed +2 m/s² departure from standstill into an imminent collision; actual observed overlap and swept-box AEB remain independently effective. Untimed legacy captures retain their conservative behavior.

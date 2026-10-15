@@ -37,6 +37,7 @@ def distribution(values):
     return dict(n=len(values), minimum=min(values) if values else None,
         median=values[len(values)//2] if values else None,
         p95=values[max(0, math.ceil(len(values)*.95)-1)] if values else None,
+        p99=values[max(0, math.ceil(len(values)*.99)-1)] if values else None,
         maximum=max(values) if values else None)
 
 
@@ -54,6 +55,11 @@ def run_cadence(rolling, flow, *, seconds=75., phase=0., rpc=.00012, diagnostics
     from core.navigation.longitudinal_diagnostics import PedalJournal
     journal = engine.controller._pedal_journal = PedalJournal()
     journal.enabled = diagnostics
+    # Match the real wrapper's switches. Setting journal.enabled alone is
+    # overwritten by automatic capture on every flush, so was not an off case.
+    engine._automatic_longitudinal_diagnostics = diagnostics
+    if not diagnostics:
+        engine._maneuver_diagnostic_collector = None
     periods = dict(sdk=.033333, map=.36, traffic=.46, policy=.059, acc=.023,
                    autopilot=.026, engine=1/60.)
     due = {key: start+phase*(i+1) for i, key in enumerate(periods)}

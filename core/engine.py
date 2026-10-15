@@ -2588,11 +2588,17 @@ class UltraPilotEngine:
         self.controller.set_steering(steering)
         journal = getattr(self.controller, '_pedal_journal', None)
         if journal is not None and journal.enabled:
-            source = dict(journal.source() or {})
+            source = dict(getattr(self, '_longitudinal_trace', None) or journal.source() or {})
+            # Keep the rejected decision separate from the new safety output.
+            # A failure before the first active bind otherwise loses the exact
+            # inputs already consumed by arbitration. No later IPC snapshot.
+            rejected = source.get('selected')
             source.update(phase='safety_stop', safety_reason=first_control_fault(self.shared_state, reason),
                           intervention=fault,
                           selected={'throttle': 0., 'brake': brake, 'source': 'engine_safety',
                                     'reason': reason, 'emergency': True})
+            if rejected is not None:
+                source['rejected_decision'] = rejected
             journal.bind(source)
         self.controller.set_throttle(0.0)
         self.controller.set_brake(brake)
@@ -3497,8 +3503,10 @@ class UltraPilotEngine:
             if not commit_reason:
                 return True
             if not source_reason:
-                self._longitudinal_rejection_detail = rejection_details(
-                    longitudinal, commit_context, commit_at)
+                from core.longitudinal import command_observation_details
+                self._longitudinal_rejection_detail = command_observation_details(
+                    command_observation, commit_at, value=longitudinal,
+                    binding=commit_context)
             replacement = handoff_decision(self.shared_state, truck_telemetry,
                 longitudinal, commit_context, commit_reason)
             if replacement is None:
