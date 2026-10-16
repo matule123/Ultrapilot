@@ -887,6 +887,7 @@ class UltraPilotEngine:
         if capture.session != str(binding[1]):
             return dict(status='traffic_receiver_session_changed', confirmed=False)
         observed = observation(capture, time.monotonic())
+        self._dev_hud_observed = observed if getattr(self, '_dev_hud', None) is not None else None
         if observed['status'] not in ('observed', 'empty_unproven_coverage'):
             return dict(status=observed['status'], confirmed=False,
                 receiver_time=observed['receiver_time'], source_timestamp=None,
@@ -918,6 +919,7 @@ class UltraPilotEngine:
                     or debug.get('trajectory_identity') != identity
                     or not 0 <= time.monotonic()-float(debug['observation_timestamp']) <= .5):
                 raise ValueError('route calculation unavailable')
+            prior_crossing_id=selector.target_id if selector._target_is_crossing else None
             result = selector.select(observed['actors'], truck, float(debug['tracking_progress_m']),
                                      receiver_time=observed['receiver_time'], source=observed.get('source'))
             result['retained_target_continuity'] = selector.continuing_target()
@@ -934,6 +936,10 @@ class UltraPilotEngine:
                     debug_geometry=prediction_geometry)
                 result['body_prediction']['source_acquisition']={k:observed['source'][k]
                     for k in ('lifecycle','generation','frame_us','observed_at','ego_speed_observed_at')}
+            result['constraint_completion'] = selector.crossing_completion(
+                result['crossing'], result.get('body_prediction') or {},prior_crossing_id=prior_crossing_id)
+            if len(selector._completed_crossings)>1:
+                result['constraint_completions']=list(selector._completed_crossings.values())
             # A no-lead crossing still needs native motion history. select()
             # may return before its candidate-specific calculations.
             selector.source_motion(observed['actors'], observed.get('source'))
@@ -967,15 +973,31 @@ class UltraPilotEngine:
                         kind='native_acquisition', observation_timestamp=native['observed_at'],
                         sdk_frame_us=native['frame_us'], expires_at=native['observed_at']+.5)))
             if capture_dev:
-                try:
-                    from core.traffic_dev_hud import geometry
-                    dev_hud.capture(geometry(observed, selector, truck,
-                        float(debug['tracking_progress_m']), binding, result, prediction_geometry))
-                except Exception:
-                    pass  # Optional rendering cannot invalidate traffic control.
+                # Finish display admission AFTER the same control path selects
+                # its brake/cap owners. Retain one reference, not another queue.
+                self._dev_hud_pending = (selector,float(debug['tracking_progress_m']),prediction_geometry)
             return result
         except (KeyError, TypeError, ValueError, OverflowError):
             return dict(status='route_unavailable_or_ambiguous', confirmed=False)
+
+    def _capture_dev_traffic(self, truck, binding, result):
+        """Use only this tick's already decoded observation; never re-read SDK."""
+        dev_hud=getattr(self,'_dev_hud',None)
+        observed=getattr(self,'_dev_hud_observed',None)
+        pending=getattr(self,'_dev_hud_pending',None)
+        self._dev_hud_observed=self._dev_hud_pending=None
+        if dev_hud is None or observed is None:
+            return
+        if pending is None and not dev_hud.wants_geometry(time.monotonic()):
+            return
+        try:
+            from core.traffic_dev_hud import geometry
+            selector,progress,prediction=pending if pending is not None else (None,0.,None)
+            display=dict(result,display_brake_basis=getattr(self,'_traffic_brake_basis',None))
+            dev_hud.capture(geometry(observed,selector,truck,progress,binding,display,prediction,
+                applied=dev_hud.latest))
+        except Exception:
+            pass  # Presentation errors cannot alter any control decision.
 
     def _lead_brake(self, traffic, pos, heading, speed_ms=None, *, crossing_only=False):
         """Brake (0..1) for the closest vehicle ahead in our lane, else 0.
@@ -1142,6 +1164,7 @@ class UltraPilotEngine:
         capture or override a no-conflict result on the actual curved route.
         """
         self._traffic_brake_basis=None
+        self._dev_hud_pending=self._dev_hud_observed=None
         # Optional presentation is entirely outside the physical write gate.
         # The UI flag is not a sensor/authority input. No SDK reread is added.
         if self.shared_state.get('dev_hud_enabled', False):
@@ -1154,6 +1177,7 @@ class UltraPilotEngine:
         self.shared_state.set('lead_distance',None)
         following=self._route_lead_observation(capture,truck,binding)
         if following['status'] not in ('candidate','no_candidate_unproven_coverage'):
+            self._capture_dev_traffic(truck,binding,following)
             return following,0.  # Invalid/unavailable is never clear-road proof.
         brake=0.
         if following.get('emergency'):
@@ -1202,8 +1226,9 @@ class UltraPilotEngine:
                 if not math.isfinite(cap) or cap<=1.:
                     complete=False;break  # Terminal/unknown conditions stay protected.
                 aid=str(actor['id'])
-                target=dict(id=aid,speed_mps=v,cap_mps=cap,source=actor['source'],slot=actor['slot'])
-                if aid in targets:target['cap_mps']=min(target['cap_mps'],targets[aid]['cap_mps'])
+                target=dict(id=aid,speed_mps=v,cap_mps=cap,source=actor['source'],slot=actor['slot'],
+                    constraint_kind='crossing')
+                if aid in targets and targets[aid]['cap_mps']<=cap:target=targets[aid]
                 targets[aid]=target
             if complete and 0<len(targets)<=16:
                 scope=dict(schema=1,kind='observed_positive_motion_speed_constraint',
@@ -1234,6 +1259,7 @@ class UltraPilotEngine:
                 brake=0.
         else:
             following['motion_constraint']=None
+        self._capture_dev_traffic(truck,binding,following)
         return following,brake
 
     def _publish_traffic_control(self, truck, telemetry_timestamp, binding, traffic,

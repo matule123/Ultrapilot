@@ -519,6 +519,8 @@ def rejection_details(value, binding, now):
             signal_frame_us=signal.get('frame_us'),
             signal_requires_takeover=signal_coverage_required(value),
             traffic_brake=value.get('traffic_brake'), light_brake=value.get('light_brake'))
+        if isinstance(following.get('constraint_completion'),dict):
+            result['traffic_comparison']['constraint_completion']=following['constraint_completion']
     result['actual_context'] = actual
     if isinstance(actual, (tuple, list)):
         result['different_fields'] = [name for i, name in enumerate(fields)
@@ -1310,12 +1312,15 @@ def _engine_decision(state, truck, now=None, *, diagnostic=None, rejection_info=
     if current_acc and current_acc.get('following_required') is True:
         # Target loss is not clear-road evidence, including between ACC ticks.
         # The old candidate cannot outlive its source's original short lease.
-        from core.acc_following import observed_departure, observed_braking_continuation
-        candidate_present = isinstance(following, dict) and following.get('status') == 'candidate'
+        from core.acc_following import observed_departure, observed_braking_continuation, observed_crossing_completion
+        candidate_present = (isinstance(following, dict) and following.get('status') == 'candidate'
+            and following.get('target_id')==current_acc.get('following_target_id'))
         moving_target_present = bool(moving_scope and current_acc.get('following_target_id')
                                     in {t['id'] for t in moving_scope['targets']})
-        observed_lead_departure = observed_departure(
+        observed_lead_departure = (observed_departure(
             following, current_acc.get('following_target_id'), decision_time())
+            or current_acc.get('following_kind')=='crossing' and
+                observed_crossing_completion(following,current_acc.get('following_target_id'),decision_time()))
         continuing_brake = observed_braking_continuation(traffic,
             current_acc.get('following_target_id'), decision_time())
         if not candidate_present and not moving_target_present and not observed_lead_departure and not continuing_brake:

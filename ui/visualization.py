@@ -1,5 +1,6 @@
 import time
 import math
+import logging
 from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QFrame, QCheckBox
 from PyQt6.QtGui import QPainter, QColor, QFont, QPen, QPolygonF
 from PyQt6.QtCore import Qt, QTimer, QRectF, QPointF
@@ -29,6 +30,17 @@ def traffic_light_presentation(qualified, detected, coverage, relevance=None):
     return shown,color,label,detection_only
 
 
+def _map_point_xz(point):
+    """Map publishes XYZ; legacy display paths contain XZ pairs."""
+    try:
+        if len(point) not in (2, 3):
+            return None
+        x, z = float(point[0]), float(point[2] if len(point) == 3 else point[1])
+        return (x, z) if math.isfinite(x) and math.isfinite(z) else None
+    except (TypeError, ValueError, IndexError, KeyError, OverflowError):
+        return None
+
+
 class _TopDown(QWidget):
     """Top-down (map-style) view: road ahead + traffic around the truck."""
 
@@ -38,6 +50,16 @@ class _TopDown(QWidget):
         self.setMinimumSize(280, 280)
 
     def paintEvent(self, event):
+        try:
+            self._paint(event)
+            self._paint_failed = False
+        except Exception:
+            # An exception escaping a Qt paint callback can abort the UI.
+            if not getattr(self, '_paint_failed', False):
+                logging.exception('Visualization map paint failed')
+            self._paint_failed = True
+
+    def _paint(self, event):
         qp = QPainter(self)
         qp.setRenderHint(QPainter.RenderHint.Antialiasing)
         w, h = self.width(), self.height()
@@ -66,8 +88,20 @@ class _TopDown(QWidget):
 
         # Road ahead: wide faint glow under a brighter line for a neon feel.
         path = self.state.get("nav_path", []) or self.state.get("map_path", []) or []
-        if len(path) >= 2:
-            pts = [to_screen(px, pz) for px, pz in path]
+        points = [_map_point_xz(point) for point in path]
+        # Never join valid runs across a missing/invalid point.
+        runs = []
+        current = []
+        for point in points:
+            if point is None:
+                if len(current) >= 2:
+                    runs.append(current)
+                current = []
+            else:
+                current.append(to_screen(*point))
+        if len(current) >= 2:
+            runs.append(current)
+        for pts in runs:
             road_w = max(6, int(7 * scale))
             qp.setPen(QPen(QColor(37, 99, 235, 70), road_w + 6, Qt.PenStyle.SolidLine,
                            Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin))

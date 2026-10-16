@@ -543,7 +543,7 @@ def bounded_input(value):
     for key in ('deadline_basis', 'refresh_protocol', 'invalid_reason', 'traffic_availability', 'destination_brake_selected',
                 'leader_prediction', 'stop_clearance', 'requested_acceleration_ms2',
                 'selected_acceleration_ms2', 'acceleration_basis', 'motion_constraint', 'braking_actor_ids',
-                'braking_acquisition'):
+                'braking_acquisition','following_kind'):
         if key in value:
             result[key] = value[key]
     following_keys = (
@@ -551,8 +551,10 @@ def bounded_input(value):
         'reason', 'receiver_time', 'source_timestamp', 'source_sequence',
         'complete', 'atomic', 'confirmed', 'expires_at','protective_target_id',
         'protective_brake','unassigned_protective_brake','actor_identity',
-        'leader_prediction','source_acquisition','body_prediction','retained_target_continuity')
+        'leader_prediction','source_acquisition','body_prediction','retained_target_continuity','constraint_completion')
     result['following'] = {k: value['following'].get(k) for k in following_keys} if isinstance(value.get('following'), dict) else None
+    if result['following'] is not None and value['following'].get('constraint_completions'):
+        result['following']['constraint_completions']=value['following']['constraint_completions']
     if result['following'] is not None and isinstance(value['following'].get('departure'), dict):
         proof = value['following']['departure']
         # Fixed fields, exact immutable values, unchanged attribution budget.
@@ -610,7 +612,7 @@ def bounded_input(value):
                 # successfully exported historical contract with a summary.
                 compact = {k:original.get(k) for k in ('status','target_id','gap_m',
                     'speed_mps','speed_cap_mps','emergency','source_acquisition',
-                    'departure_schema','departure_values') if original.get(k) is not None}
+                    'departure_schema','departure_values','constraint_completion') if original.get(k) is not None}
                 compact['optional_prediction_details_omitted'] = True
                 kept = bounded_copy(pack_source(compact), limit=2048)[0]
                 if not kept.get('snapshot_status'):

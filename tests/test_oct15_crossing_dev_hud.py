@@ -261,7 +261,9 @@ def test_dev_old_authority_is_muted_not_reassigned(change):
     if change=='route':expected[6]='other'
     shown=for_display(snap,expected,change!='disabled')
     assert not shown['control_current']
-    assert actor_style(actor,shown,100.1)[0]=='invalid'
+    # Disengagement suppresses control attribution, not a still-fresh native
+    # detection. A retired route/activation remains unverified and muted.
+    assert actor_style(actor,shown,100.1)[0]==('passive' if change=='disabled' else 'invalid')
     assert shown['detection']['context']==binding
 
 

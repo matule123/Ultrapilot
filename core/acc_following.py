@@ -146,6 +146,8 @@ class RouteLeadSelector:
         self._target_is_crossing = False
         self._native_previous = None
         self._native_current = None
+        self._constraint_completion = None
+        self._completed_crossings = {}
 
     def reset(self):
         self.target_id = None
@@ -154,6 +156,8 @@ class RouteLeadSelector:
         self._target_is_crossing = False
         self._native_previous = None
         self._native_current = None
+        self._constraint_completion = None
+        self._completed_crossings = {}
 
     def source_motion(self, actors, source):
         """One immutable native frame pair; duplicate reads never advance it."""
@@ -244,7 +248,9 @@ class RouteLeadSelector:
     def prepare(self, points, binding, *, preserve_target=False):
         if binding == self.binding:
             return
-        previous = (self.target_id, self._last_target_observation, self._target_is_crossing) if preserve_target else None
+        previous = (self.target_id, self._last_target_observation, self._target_is_crossing,
+                    self._native_previous, self._native_current, self._constraint_completion,
+                    self._completed_crossings) if preserve_target else None
         self.binding = None
         self.reset()
         if not 2 <= len(points) <= 20000:
@@ -262,7 +268,9 @@ class RouteLeadSelector:
             arcs.append(arcs[-1]+length)
         self.points, self.arcs, self.edges, self.binding = pts, tuple(arcs), tuple(edges), binding
         if previous:
-            self.target_id, self._last_target_observation, self._target_is_crossing = previous
+            (self.target_id, self._last_target_observation, self._target_is_crossing,
+             self._native_previous, self._native_current, self._constraint_completion,
+             self._completed_crossings) = previous
 
     def _body_clearance(self, body, low, high):
         """Exact native oriented-box/reference distance, not physical lane clearance."""
@@ -400,24 +408,26 @@ class RouteLeadSelector:
         self._departure_observation = proof
         return proof
 
-    def continuing_target(self):
+    def continuing_target(self, target_id=None):
         """Same observed native owner across acquisitions, never clearance.
 
         A stronger brake can replace its speed cap without losing this actor.
         Missing, reassigned and discontinuously moved records do not qualify.
         """
-        if not self.target_id or not self._native_previous or not self._native_current:
+        target_id=self.target_id if target_id is None else target_id
+        if not target_id or not self._native_previous or not self._native_current:
             return None
         previous, current = self._native_previous, self._native_current
-        old = previous[1].get(int(self.target_id)); new = current[1].get(int(self.target_id))
+        old = previous[1].get(int(target_id)); new = current[1].get(int(target_id))
         dt = current[0][3]-previous[0][3]
         if (not old or not new or previous[0][0] != current[0][0] or not 0 < dt <= .5
+                or current[0][1]<=previous[0][1] or current[0][2]<=previous[0][2]
                 or old.get('source') != new.get('source') or old.get('slot') != new.get('slot')
                 or len(old.get('bodies', ())) != len(new.get('bodies', ()))
                 or math.hypot(new['x']-old['x'],new['z']-old['z'])
                    > max(new['speed'],old['speed'])*dt+1.):
             return None
-        return dict(target_id=str(self.target_id), source=new['source'], slot=new['slot'],
+        return dict(target_id=str(target_id), source=new['source'], slot=new['slot'],
             lifecycle=current[0][0], generation=current[0][1], observed_at=current[0][3],
             record_fingerprint=new.get('record_fingerprint'),
             basis='same_native_id_slot_continuous_observed_motion_not_clearance')
@@ -427,11 +437,60 @@ class RouteLeadSelector:
         if not self._native_current or not targets:
             return
         chosen=min(targets,key=lambda t:(t['cap_mps'],t['id']))
+        if chosen.get('constraint_kind','crossing')!='crossing':return
         actor=self._native_current[1].get(int(chosen['id']))
         if actor is not None:
+            self._completed_crossings.pop(str(chosen['id']),None)
+            if (self._constraint_completion or {}).get('target_id')==str(chosen['id']):
+                self._constraint_completion=None
             self.target_id=chosen['id']
             self._last_target_observation=(dict(actor),receiver_time)
             self._target_is_crossing=True
+
+    def crossing_completion(self, crossing, body_prediction, *, prior_crossing_id=None):
+        """End an observed heuristic constraint, NOT a lost lead or clear road.
+
+        Only its original still-observed owner can qualify, with a continuous
+        native acquisition pair, no remaining directed crossing ray, and the
+        actual complete body prediction. Absence never qualifies. Repeated reads
+        preserve the original witness time; they do not extend its short lease.
+        """
+        source=self._native_current[0] if self._native_current else None
+        primary=prior_crossing_id or (self.target_id if self._target_is_crossing else None)
+        old=self._completed_crossings
+        completed={}
+        # Same fixed 16-owner bound as the positive-motion scope. A new cap
+        # must not erase another owner's still-observed completion before an
+        # independently scheduled consumer reads it. No actor/packet queue.
+        ids=list(old)
+        if primary and primary not in ids:ids.append(primary)
+        usable=(source and crossing.get('status') in ('protective_crossing_candidates',
+                    'no_conflict_unproven_coverage')
+            and body_prediction.get('status')=='protective_observed_body_prediction'
+            and body_prediction.get('prediction_duration_s')==3.
+            and body_prediction.get('unsupported_actors')==0 and body_prediction.get('brake')==0.)
+        for target_id in ids if usable else ():
+            cached=old.get(target_id)
+            same=bool(cached and all(cached[k]==v for k,v in zip(
+                ('lifecycle','generation','frame_us','observed_at'),source)))
+            proof=self.continuing_target(target_id)
+            if (not proof or any(str(c.get('id'))==target_id for c in crossing.get('conflicts',()))
+                    or (target_id!=primary and not same and (not self._native_previous
+                        or tuple(cached[k] for k in ('lifecycle','generation','frame_us','observed_at'))
+                           != self._native_previous[0]
+                        or any(proof[k]!=cached[k] for k in ('source','slot','lifecycle'))))):
+                continue
+            completed[target_id]=cached if same else dict(proof,frame_us=source[2],
+                status='observed_original_crossing_model_ended',kind='crossing',
+                coverage_confirmed=False,game_consumption_verified=False)
+        while len(completed)>16:completed.pop(next(iter(completed)))
+        self._completed_crossings=completed
+        previous_id=(self._constraint_completion or {}).get('target_id')
+        self._constraint_completion=(completed.get(primary) or completed.get(previous_id)
+            or next(iter(completed.values()),None))
+        if primary in completed and self._target_is_crossing and self.target_id==primary:
+            self.target_id=None;self._target_is_crossing=False;self._last_target_observation=None
+        return self._constraint_completion
 
     def select(self, actors, truck, progress, *, receiver_time=None, source=None):
         if not math.isfinite(progress) or not 0 <= progress <= self.arcs[-1]:
@@ -481,7 +540,8 @@ class RouteLeadSelector:
                         or actor.get('speed_source') != 'buffer' or speed <= .1 or cap <= 1.):
                     break
                 targets.append(dict(id=aid, speed_mps=speed, cap_mps=cap,
-                                    source=actor['source'], slot=actor['slot']))
+                                    source=actor['source'], slot=actor['slot'],
+                                    constraint_kind='lead' if any(c[1]==aid for c in candidates) else 'protective_route'))
             if len(targets) == len(related):
                 moving_scope = dict(schema=1, kind='observed_positive_motion_speed_constraint',
                     targets=sorted(targets,key=lambda t:t['id']), complete=True,
@@ -651,6 +711,21 @@ def observed_braking_continuation(traffic, target_id, now):
             and all(proof[k] == source[k] for k in ('lifecycle', 'generation', 'observed_at'))
             and 0 <= now-proof['observed_at'] <= .5)
     except (KeyError, TypeError, ValueError):
+        return False
+
+
+def observed_crossing_completion(following, target_id, now):
+    """Shared original-witness validation for ACC and the final Engine gate."""
+    try:
+        source=following['source_acquisition']
+        proofs=following.get('constraint_completions') or [following.get('constraint_completion')]
+        if not isinstance(proofs,(tuple,list)) or len(proofs)>16:return False
+        return any(bool(target_id and isinstance(proof,dict) and proof['target_id']==target_id and proof['kind']=='crossing'
+            and proof['status']=='observed_original_crossing_model_ended'
+            and proof['basis']=='same_native_id_slot_continuous_observed_motion_not_clearance'
+            and all(proof[k]==source[k] for k in ('lifecycle','generation','frame_us','observed_at'))
+            and 0<=now-proof['observed_at']<=.5) for proof in proofs)
+    except (KeyError,TypeError,ValueError):
         return False
 
 

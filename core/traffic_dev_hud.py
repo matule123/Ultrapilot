@@ -32,10 +32,10 @@ def body_corners(body):
         for x,z in ((-w/2,-length/2),(w/2,-length/2),(w/2,length/2),(-w/2,length/2),(-w/2,-length/2))]
 
 
-def geometry(observed, selector, truck, progress, binding, result, prediction):
+def geometry(observed, selector, truck, progress, binding, result, prediction, *, applied=None):
     """Copy only existing decoded bodies/reference and actual prediction work."""
     actors = []
-    previous = selector._native_previous
+    previous = selector._native_previous if selector is not None else None
     for actor in observed.get('actors', ())[:80]:
         row = {k:actor.get(k) for k in ('id','slot','source','record_fingerprint','speed','speed_source')}
         row['bodies'] = [{k:b.get(k) for k in ('x','y','z','yaw','dimensions_whl')}
@@ -50,8 +50,8 @@ def geometry(observed, selector, truck, progress, binding, result, prediction):
                 [observed['source']['observed_at'],actor['x'],actor['y'],actor['z']]]
         actors.append(row)
     # Retain a local, ordered portion of the actual projection reference.
-    first=bisect.bisect_left(selector.arcs,progress-20)
-    last=bisect.bisect_right(selector.arcs,progress+150)
+    first=bisect.bisect_left(selector.arcs,progress-20) if selector is not None else 0
+    last=bisect.bisect_right(selector.arcs,progress+150) if selector is not None else 0
     selected=range(first,min(first+256,last))
     raw_source=observed.get('source') or {}
     crossing=result.get('crossing') or {}
@@ -63,6 +63,7 @@ def geometry(observed, selector, truck, progress, binding, result, prediction):
     frame = dict(schema=1, context=binding, source={k:raw_source.get(k) for k in
         ('valid','reason','lifecycle','generation','frame_us','observed_at')},
         receiver_time=observed.get('receiver_time'), status=observed.get('status'),
+        detections_valid=observed.get('status') in ('observed','empty_unproven_coverage'),
         ego={k:truck.get(k) for k in ('x','y','z','rotation','speed','gear','sdkFrameTimeUs','_control_observation')},
         actors=actors, omitted_actors=max(0,len(observed.get('actors',()))-80),
         reference=[selector.points[i] for i in selected],
@@ -71,17 +72,116 @@ def geometry(observed, selector, truck, progress, binding, result, prediction):
         body_prediction={k:(result.get('body_prediction') or {}).get(k) for k in
             ('status','brake','model','prediction_duration_s','unsupported_actors')},
         following={k:result.get(k) for k in ('status','target_id','gap_m','speed_cap_mps','emergency')})
-    owned=bounded_copy(frame, limit=FRAME_BUDGET)[0]
-    if owned.get('snapshot_status'):
-        # Keep actual actor identities/poses before optional sampled paths.
-        # Fixed budget is unchanged; any omitted prediction is explicit.
-        reduced=dict(frame,prediction=dict(status='UNAVAILABLE_FRAME_BUDGET',
-            omitted_actor_paths=len((prediction or {}).get('actor_paths') or ())),
-            prediction_incomplete=True)
-        owned=bounded_copy(reduced,limit=FRAME_BUDGET)[0]
+    # Budget admission is per immutable object, not all-or-nothing scene loss.
+    # Use exact intermediate owners first. Priority affects display only; it
+    # cannot grant authority or bind a new record to an old physical write.
+    applied=applied or {}
+    body=result.get('body_prediction') or {}
+    decisive=(result.get('display_brake_basis') or {}).get('decisive') or {}
+    emergency={str(c['id']) for c in body.get('conflicts',()) if c.get('brake',0.)>.7}
+    emergency.update(str(i) for i in result.get('emergency_actor_ids',()))
+    if (applied.get('source') or {}).get('emergency'):
+        emergency.update(str(i) for i in applied.get('braking_actor_ids') or ())
+    braking={str(c['id']) for c in body.get('conflicts',()) if c.get('brake',0.)>0.}
+    braking.update(str(i) for i in applied.get('braking_actor_ids') or ())
+    if decisive.get('id') is not None:braking.add(str(decisive['id']))
+    targets={str(t['id']) for t in (result.get('motion_constraint') or {}).get('targets',())}
+    targets.update(str(t['id']) for t in applied.get('targets') or ())
+    targets.update(str(i) for i in (result.get('target_id'),applied.get('target_id')) if i is not None)
+    def rank(actor):
+        aid=str(actor['id']);b=(actor.get('bodies') or [{}])[0]
+        distance=math.hypot(b.get('x',truck.get('x',0.))-truck.get('x',0.),
+            b.get('z',truck.get('z',0.))-truck.get('z',0.))
+        return (0 if aid in emergency else 1 if aid in braking else 2 if aid in targets else 3,
+                distance,aid,str(actor.get('source')),actor.get('slot',-1))
+    actors.sort(key=rank)
+    def record_key(actor):
+        return tuple(actor.get(k) for k in ('id','source','slot','record_fingerprint'))
+    # Preserve a small exact local reference; the classic HUD already draws
+    # the full live road path. No geometry is interpolated for this reduction.
+    frame.update(actors=[],prediction=None,reference=frame['reference'][::4],
+        reference_sample_stride=4,reference_incomplete=len(frame['reference'])>1,
+        crossing=dict(crossing,conflicts=[]),budget_reduced=True,
+        omitted_actors=len(observed.get('actors',())),omitted_bodies=0,
+        omitted_prediction_paths=0,omitted_prediction_points=0,
+        omitted_history_points=0,omitted_priority_actors=0)
+    base,cost=bounded_copy(frame,limit=FRAME_BUDGET)
+    if base.get('snapshot_status'):
+        # Pathological identity strings cannot cause a fabricated empty scene.
+        return dict(schema=1,snapshot_status='UNVERIFIED_IDENTITY_BUDGET_EXCEEDED',
+            actors=[],omitted_actors=len(actors),omitted_priority_actors=sum(rank(a)[0]<3 for a in actors))
+    remaining=FRAME_BUDGET-cost-4096
+    actor_budget=max(0,int(remaining*.75)) if prediction else remaining
+    admitted=[];used=0
+    for actor in actors:
+        row=dict(actor,observed_history=None)
+        owned,charge=bounded_copy(row,limit=max(1,actor_budget-used))
         if owned.get('snapshot_status'):
-            owned.update(source=frame['source'],context=list(binding),
-                omitted_actors=len(actors),omitted_prediction=True)
+            frame['omitted_priority_actors']+=rank(actor)[0]<3
+            continue
+        admitted.append(owned);used+=charge
+        frame['omitted_history_points']+=len(actor.get('observed_history') or ())
+    frame['actors']=admitted
+    frame['omitted_actors']=len(observed.get('actors',()))-len(admitted)
+    admitted_keys={record_key(a) for a in admitted}
+    frame['omitted_bodies']=sum(len(a.get('bodies') or ()) for a in observed.get('actors',())
+        if record_key(a) not in admitted_keys)+sum(max(0,len(a.get('bodies') or ())-4)
+            for a in observed.get('actors',()) if record_key(a) in admitted_keys)
+    frame['omitted_history_points']+=sum(len(a.get('observed_history') or ())
+        for a in actors if record_key(a) not in admitted_keys)
+    remaining-=used
+    # Admit original prediction samples and history only AFTER actual bodies.
+    prediction=prediction or {}
+    reduced={k:prediction.get(k) for k in ('status','model','horizon_s','step_s') if k in prediction}
+    reduced.update(actor_paths=[],ego_samples=[],sampling='exact_subset; no new prediction')
+    paths=prediction.get('actor_paths') or ()
+    priorities={record_key(a):i for i,a in enumerate(actors)}
+    for path in sorted(paths,key=lambda p:(priorities.get(record_key(p),80),p.get('body_index',0))):
+        original=path.get('points') or ()
+        points=original[::4]
+        row=dict(path,points=points,sample_stride=4)
+        owned,charge=bounded_copy(row,limit=max(1,remaining))
+        if record_key(path) not in admitted_keys or owned.get('snapshot_status'):
+            frame['omitted_prediction_paths']+=1
+            frame['omitted_prediction_points']+=len(original)
+        else:
+            reduced['actor_paths'].append(owned);remaining-=charge
+            frame['omitted_prediction_points']+=len(original)-len(points)
+    frame['omitted_prediction_paths']+=prediction.get('omitted_actor_paths',0)
+    for sample in (prediction.get('ego_samples') or ())[::4]:
+        owned,charge=bounded_copy(sample,limit=max(1,remaining))
+        if isinstance(owned,dict) and owned.get('snapshot_status'):break
+        reduced['ego_samples'].append(owned);remaining-=charge
+    frame['omitted_ego_samples']=len(prediction.get('ego_samples') or ())-len(reduced['ego_samples'])
+    for conflict in crossing['conflicts']:
+        owned,charge=bounded_copy(conflict,limit=max(1,remaining))
+        if owned.get('snapshot_status'):continue
+        frame['crossing']['conflicts'].append(owned);remaining-=charge
+    frame['crossing']['omitted_conflicts']=len(conflicts)-len(frame['crossing']['conflicts'])
+    original_records={record_key(a):a for a in actors}
+    for row in admitted:
+        original=original_records[record_key(row)]
+        history=original.get('observed_history')
+        if history:
+            owned,charge=bounded_copy(history,limit=max(1,remaining))
+            if isinstance(owned,list):
+                row['observed_history']=owned;remaining-=charge
+                frame['omitted_history_points']-=len(history)
+    frame['prediction']=reduced
+    frame['prediction_incomplete']=bool(frame['omitted_prediction_paths'] or frame['omitted_prediction_points'])
+    owned=bounded_copy(frame,limit=FRAME_BUDGET)[0]
+    # Scalar metadata/container overhead has a reserved 4 KiB. Preserve an
+    # explicit nonempty priority subset even if future optional fields grow.
+    if owned.get('snapshot_status'):
+        frame['omitted_prediction_paths']+=len(reduced['actor_paths'])
+        frame['omitted_prediction_points']+=sum(len(p.get('points') or ()) for p in reduced['actor_paths'])
+        frame['omitted_ego_samples']+=len(reduced['ego_samples'])
+        frame['omitted_history_points']+=sum(len(r.get('observed_history') or ()) for r in frame['actors'])
+        frame.update(prediction=None,prediction_incomplete=True)
+        frame['crossing']['conflicts']=[]
+        frame['crossing']['omitted_conflicts']=len(conflicts)
+        for row in frame['actors']:row['observed_history']=None
+        owned=bounded_copy(frame,limit=FRAME_BUDGET)[0]
     return owned
 
 
@@ -204,10 +304,14 @@ def actor_style(actor, snapshot, now, *, stale=False):
     """Colour requires the SAME consumed owner, not mere presence in a buffer."""
     applied = snapshot.get('applied') or {}
     consumed = snapshot.get('consumed_geometry') or {}
-    source = consumed.get('source') or (snapshot.get('detection') or {}).get('source') or {}
-    if (stale or snapshot.get('control_current') is False
+    source = ((snapshot.get('detection') or {}).get('source') if snapshot.get('control_current') is False
+        else consumed.get('source')) or (snapshot.get('detection') or {}).get('source') or {}
+    if (stale or snapshot.get('detection_current') is False
+            or (snapshot.get('detection') or {}).get('detections_valid') is False
             or not 0 <= now-source.get('observed_at', float('-inf')) <= .5):
         return 'invalid', 'stale / unverified'
+    if snapshot.get('control_current') is False:
+        return 'passive', 'fresh detection; control inactive/unverified'
     own = next((a for a in consumed.get('actors', ()) if
         all(a.get(k) == actor.get(k) for k in ('id','source','slot','record_fingerprint'))), None)
     if own is None:
@@ -243,6 +347,7 @@ def for_display(snapshot, expected, active):
     applied=value.get('applied') or {}
     value['control_current']=bool(active and freeze(frame.get('context'))==freeze(expected)
         and freeze(applied.get('context'))==freeze(expected))
+    value['detection_current']=freeze(frame.get('context'))==freeze(expected)
     return value
 
 
@@ -259,8 +364,9 @@ def draw_overlay(qp, rect, snapshot, project, now=None, *, test_data=False):
     frame=snapshot.get('detection') or {}
     source=frame.get('source') or {}
     age=None if source.get('observed_at') is None else now-source['observed_at']
-    source_stale=bool(age is None or not 0<=age<=.5 or frame.get('snapshot_status'))
-    stale=source_stale or snapshot.get('control_current') is False
+    invalid_data=bool(frame.get('detections_valid') is False or frame.get('snapshot_status'))
+    source_stale=bool(age is None or not 0<=age<=.5)
+    stale=source_stale or invalid_data or snapshot.get('detection_current') is False
     qp.setFont(QFont('Consolas',9))
     def poly(points, colour, dashed=False, width=1.4):
         qp.setPen(QPen(QColor(colour),width,Qt.PenStyle.DashLine if dashed else Qt.PenStyle.SolidLine))
@@ -343,7 +449,7 @@ def draw_overlay(qp, rect, snapshot, project, now=None, *, test_data=False):
     def fmt(v):return '?' if v is None else f'{v:.3f}' if isinstance(v,float) else str(v)
     read_age=None if frame.get('receiver_time') is None else now-frame['receiver_time']
     title='DEV / TEST DATA' if test_data else 'DEV / CONTROL EVIDENCE'
-    lines=[title+(' / STALE' if source_stale else
+    lines=[title+(' / INVALID' if invalid_data else ' / STALE' if source_stale else
         ' / CONTROL UNVERIFIED' if snapshot.get('control_current') is False else ''),
         f"native frame {fmt(source.get('frame_us'))} gen {fmt(source.get('generation'))}",
         f"source at {fmt(source.get('observed_at'))} / age {fmt(None if age is None else age*1000)}ms",
@@ -361,8 +467,9 @@ def draw_overlay(qp, rect, snapshot, project, now=None, *, test_data=False):
         str((applied.get('first_fault') or {}).get('reason') or 'first fault not captured')[:54],
         'constant native motion: bodies 3s / crossing rays 8s',
         ('EXACT consumed acquisition' if snapshot.get('consumed_geometry') else 'consumed geometry unavailable'),
-        f"omitted labels/actors {omitted}/{frame.get('omitted_actors',0)}; backend != game"]
-    card=QRectF(rect.right()-345,rect.top()+6,337,258)
+        f"omitted labels/actors {omitted}/{frame.get('omitted_actors',0)}; priority {frame.get('omitted_priority_actors',0)}",
+        f"omitted bodies/paths/points {frame.get('omitted_bodies',0)}/{frame.get('omitted_prediction_paths',0)}/{frame.get('omitted_prediction_points',0)}; backend != game"]
+    card=QRectF(rect.right()-345,rect.top()+6,337,274)
     qp.setPen(QPen(QColor('#435365'),1));qp.setBrush(QColor(13,20,29,220));qp.drawRoundedRect(card,8,8)
     qp.setPen(QColor('#dce8f5'));qp.setFont(QFont('Consolas',8))
     qp.drawText(card.adjusted(9,6,-8,-4),Qt.AlignmentFlag.AlignTop,'\n'.join(lines))

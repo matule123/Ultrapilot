@@ -19,7 +19,7 @@ class Plugin(BasePlugin):
     """
 
     NAME = "acc"
-    VERSION = "1.3.3"
+    VERSION = "1.3.4"
 
     def on_start(self):
         logging.info("ACC Plugin started with bounded speed PID control.")
@@ -47,8 +47,11 @@ class Plugin(BasePlugin):
         self._following_binding = None
         self._followed_target = False
         self._following_target_id = None
+        self._following_kind = None
         self._following_fault = ''
         self._signal_control_active = False
+        self._signal_approach_owner = None
+        self._signal_stop_started = False
         self._native_following_lifecycle = None
 
     def on_stop(self):
@@ -59,6 +62,7 @@ class Plugin(BasePlugin):
         self._followed_target = False
         self._following_target_id = None
         self._following_binding = None
+        self._following_kind = None
         self._following_fault = ''
         self.sdk.set('acc_following_status', 'disabled')
         self.sdk.set("longitudinal_acc_active", False)
@@ -82,6 +86,7 @@ class Plugin(BasePlugin):
             if not same_dependency:
                 self._followed_target = False
                 self._following_target_id = None
+                self._following_kind = None
                 self._following_fault = ''
                 self._native_following_lifecycle = None
                 self._reset_control()
@@ -117,6 +122,7 @@ class Plugin(BasePlugin):
         if not owns_activation:
             self._followed_target = False
             self._following_target_id = None
+            self._following_kind = None
             self._following_fault = ''
             if strict:
                 # Observation continues at Engine, but a revoked activation
@@ -172,13 +178,18 @@ class Plugin(BasePlugin):
         # No cached pedal/target lease is extended. After target loss the
         # existing required-producer guard removes drive and controls stopping.
         # Empty/uncovered buffers cannot prove that the old target departed.
-        from core.acc_following import observed_departure
+        from core.acc_following import observed_departure, observed_crossing_completion
         if (strict and self._followed_target and not self._following_fault and traffic is not None
-                and observed_departure(following,self._following_target_id,time.monotonic())):
+                and (observed_departure(following,self._following_target_id,time.monotonic())
+                    or self._following_kind=='crossing' and
+                        observed_crossing_completion(following,self._following_target_id,time.monotonic()))):
+            was_crossing=self._following_kind=='crossing'
             self._followed_target = False
             self._following_target_id = None
+            self._following_kind = None
             self._following_fault = ''
-            following_reason = 'observed lead left route; coverage remains unproven'
+            following_reason = ('observed crossing constraint ended; coverage remains unproven' if was_crossing
+                else 'observed lead left route; coverage remains unproven')
         from core.acc_following import observed_braking_continuation
         braking_replaces_cap = observed_braking_continuation(traffic,
             self._following_target_id, time.monotonic())
@@ -302,7 +313,9 @@ class Plugin(BasePlugin):
             if owns_activation and (following_cap < effective_target_speed
                     or following_cap < speed_kmh or following.get('emergency') is True):
                 self._followed_target = True
-                self._following_target_id = following.get('target_id') or motion_target['id']
+                motion_owns=motion_target is not None and motion_target['cap_mps']*3.6<=following_cap+1e-9
+                self._following_target_id = motion_target['id'] if motion_owns else following.get('target_id')
+                self._following_kind = motion_target.get('constraint_kind','protective_route') if motion_owns else 'lead'
             effective_target_speed = min(effective_target_speed, following_cap)
             hard_limits.append(following_cap)
             if following_cap < 3.6 and speed < 1.:
@@ -321,8 +334,23 @@ class Plugin(BasePlugin):
                                  reason="invalid constrained speed target")
             return
         active = bool(self.sdk.get("autopilot_active", False))
+        # A brake response belongs to the qualified stop target, not to a PID
+        # reset or this route buffer's geometry publication. Never carry the
+        # phase to a different activation/session/intent/head/physical target.
+        def freeze(value):
+            return tuple(freeze(v) for v in value) if isinstance(value,(tuple,list)) else value
+        stop_owner = (tuple(binding[:5]),candidate.get('id'),freeze(candidate.get('passage_key')),
+            freeze(candidate.get('entry_xyz')),candidate.get('stop_target_kind'),
+            candidate.get('front_allowance_m'),candidate.get('junction_standoff_m')) if signal_control else None
+        continuing_signal_stop = bool(active and self._was_driving
+            and stop_owner is not None and stop_owner==self._signal_approach_owner
+            and getattr(self,'_signal_stop_started',False))
+        if self._signal_approach_owner is not None and stop_owner != self._signal_approach_owner:
+            self._reset_control()
         if binding != self._control_context or active != self._was_driving:
             self._reset_control()
+        self._signal_approach_owner=stop_owner
+        self._signal_stop_started=continuing_signal_stop
         self._control_context, self._was_driving = binding, active
         signal_owns_plan = bool(signal_control and
             effective_target_speed >= signal_control['cap_ms']*3.6-1e-9)
@@ -341,6 +369,10 @@ class Plugin(BasePlugin):
             or (policy is not None and policy["brake"] > 0))
         if externally_braking:
             self._reset_control()
+            if (continuing_signal_stop and self.sdk.get('system_state') not in
+                    ('EMERGENCY','CONTROLLED_STOP','PAY_TOLL') and truck.get('parkBrake') is not True):
+                self._signal_approach_owner=stop_owner
+                self._signal_stop_started=True
             self._publish_pedals(truck, binding, 0., 0., target=effective_target_speed,
                                  reason="external braking inhibits speed drive")
             return
@@ -482,9 +514,10 @@ class Plugin(BasePlugin):
                     else "signal distance recovery" if throttle_val > 0 else "signal distance coast")
                     if signal_owns_plan else "speed service brake" if self._speed_braking else "speed tracking",
                 following_status=following_reason,
-                following_target_id=(following.get('target_id') or self._following_target_id)
-                    if isinstance(following, dict) else self._following_target_id,
+                following_target_id=(self._following_target_id if self._followed_target else
+                    following.get('target_id') if isinstance(following,dict) else None),
                 following_confirmed=False,
+                following_kind=self._following_kind,
                 braking_actor_ids=(following_owners if self._speed_braking
                     and following_cap is not None and abs(effective_target_speed-following_cap)<1e-9
                     and self._control_target>=following_cap-1e-9
@@ -521,6 +554,7 @@ class Plugin(BasePlugin):
         self._last_requested_drive = 0.
         self._signal_stop_started = False
         self._signal_control_active = False
+        self._signal_approach_owner = None
 
     def _publish_pedals(self, truck, binding, throttle, brake, *, valid=True,
                         target=None, reason="speed controller reset"):
@@ -534,4 +568,5 @@ class Plugin(BasePlugin):
                 requested_speed_kmh=target, constrained_speed_kmh=target,
                 speed_control_reason=reason, following_required=self._followed_target,
                 following_target_id=self._following_target_id,
+                following_kind=self._following_kind,
                 following_confirmed=False)

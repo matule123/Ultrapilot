@@ -1,5 +1,26 @@
 # Odložená a nedokončená práca
 
+## Crossing completion, dense DEV budget and red-stop phase — 16 October 2026
+
+See [PHASE7_CROSSING_COMPLETION_DEV_BUDGET_AND_SIGNAL_20261016.md](PHASE7_CROSSING_COMPLETION_DEV_BUDGET_AND_SIGNAL_20261016.md).
+The new candidate separates an observed ending crossing heuristic from a lost
+lead, preserves priority native bodies within the existing display budgets and
+keeps same-stop braking phase across ordinary external braking. ACC 1.3.4 is
+the only changed plugin; no DLL/regulator/5 m offset/timeout change. Existing
+XYZ/XZ Visualization corrections are preserved. Offline reproductions and
+closed-model comparisons are separate from the missing exact original actor
+array and earlier red pedal chain. No deployment or game confirmation; original
+evidence and significant-event quota are unchanged. See the report for final
+verification, performance costs and the single hash-bound runtime candidate.
+
+Final source-bound result: 2,813 tests and 1,592 subtests pass (11:16), plus
+179 focused contracts. The 19-file ACC 1.3.4 candidate is prepared and verified,
+not deployed. Historical rejected actor array/earlier red decision chain remain
+missing. Final dense offscreen render max is 18.970 ms; earlier 261.781 ms draw
+and 81.178 ms control-step extremes remain unexplained, so hard timing and game
+smoothness are not declared verified. These limits remain open without a new
+ride request, new collector or changed safety timeouts.
+
 ## Crossing ownership and classic 3-D developer HUD — 16 October 2026
 
 See [PHASE7_CROSSING_AND_DEV_HUD_20261016.md](PHASE7_CROSSING_AND_DEV_HUD_20261016.md).
