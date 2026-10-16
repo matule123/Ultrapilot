@@ -400,7 +400,8 @@ def bounded_fault_details(value, *, packed=False):
     if result.get('snapshot_status') and value.get('invalid_reason'):
         # A compact producer cause survives optional-tree budget exhaustion.
         priority = {k:value[k] for k in (*_COMPARISON_FIELDS, 'invalid_reason',
-            'speed_control_reason', 'actual_context', 'different_fields') if k in value}
+            'speed_control_reason', 'actual_context', 'different_fields', 'following_target_id',
+            'decisive_brake_actor_id', 'target_evidence') if k in value}
         result = bounded_copy(priority, limit=8192)[0]
         result['optional_details_omitted'] = True
         if same and 'actual_context' in result:
@@ -494,7 +495,8 @@ def _pack_intervention(value):
         return value
     details = bounded_fault_details(value['details'], packed=True)
     if (isinstance(details.get('traffic_comparison'),dict)
-            or isinstance(details.get('refresh_protocol'),dict)):
+            or isinstance(details.get('refresh_protocol'),dict)
+            or details.get('invalid_reason')):
         # The outer 16 KiB first-fault allocation must not re-charge all the
         # expanded field names and duplicate identity/ID receipts. Reuse the
         # existing exact bounded codec; decode at the same public export edge.
@@ -543,7 +545,7 @@ def bounded_input(value):
     for key in ('deadline_basis', 'refresh_protocol', 'invalid_reason', 'traffic_availability', 'destination_brake_selected',
                 'leader_prediction', 'stop_clearance', 'requested_acceleration_ms2',
                 'selected_acceleration_ms2', 'acceleration_basis', 'motion_constraint', 'braking_actor_ids',
-                'braking_acquisition','following_kind'):
+                'braking_acquisition','following_kind','following_owner','target_evidence'):
         if key in value:
             result[key] = value[key]
     following_keys = (
@@ -555,6 +557,9 @@ def bounded_input(value):
     result['following'] = {k: value['following'].get(k) for k in following_keys} if isinstance(value.get('following'), dict) else None
     if result['following'] is not None and value['following'].get('constraint_completions'):
         result['following']['constraint_completions']=value['following']['constraint_completions']
+    if result['following'] is not None:
+        for key in ('retained_target_continuities','owner_witnesses_schema','owner_witnesses','candidate_ids'):
+            if key in value['following']:result['following'][key]=value['following'][key]
     if result['following'] is not None and isinstance(value['following'].get('departure'), dict):
         proof = value['following']['departure']
         # Fixed fields, exact immutable values, unchanged attribution budget.

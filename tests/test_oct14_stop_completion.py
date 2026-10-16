@@ -63,7 +63,10 @@ def test_parallel_protective_speed_brake_can_recover_with_same_observed_actor(jo
     for generation in range(2,61):
         # Genuine increasing reference gap lowers the same protective request.
         # Allow the unchanged 6 km/h/s upward target pacing to recover drive.
-        timed_step(joint,[dict(actor,z=44.+generation)],generation=generation,speed=8.)
+        # Native source frames are 1/30 s apart: move this 10 m/s actor by
+        # speed*dt, not the former first 2 m jump (about 60 m/s).
+        timed_step(joint,[dict(actor,z=44.+(generation-1)*10./30.)],
+                   generation=generation,speed=8.)
     assert state.get('simple_auto_service_hold') is None
     assert physical('abackward') < initial_brake
     assert physical('abackward')==0. and physical('aforward')>0., (
@@ -127,8 +130,14 @@ def test_motion_constraint_source_survives_existing_integrity_export(joint,tmp_p
     timed_step(joint,actors,generation=1,speed=10.)
     original=state.get('longitudinal_traffic')['motion_constraint']
     for generation in range(2,12):
-        timed_step(joint,[dict(a,z=a['z']+generation) for a in reversed(actors)],
+        # This helper serializes list positions as actual native array slots.
+        # Reversing it reassigns both acquired IDs, rather than merely changing
+        # selector iteration order. Preserve their slots and coherent motion;
+        # the owner-handoff suite separately requires slot reassignment to fail.
+        following=timed_step(joint,[dict(a,z=a['z']+(generation-1)*10./30.) for a in actors],
                    generation=generation,speed=8.)
+        assert all(w['chain_valid'] and w['slot']==int(w['target_id'])-31
+                   for w in following['owner_witnesses'])
     assert state.get('simple_auto_service_hold') is None
     assert state.get('autopilot_active')
     assert not state.get('autopilot_intervention')

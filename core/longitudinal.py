@@ -502,6 +502,10 @@ def rejection_details(value, binding, now):
     # their original budget rather than spending it on two empty field names.
     result.update({k:value[k] for k in ('invalid_reason', 'speed_control_reason')
                    if value.get(k) is not None})
+    if value.get('following_target_id') is not None:
+        result['following_target_id']=value['following_target_id']
+    if isinstance(value.get('target_evidence'),dict):
+        result['target_evidence']=value['target_evidence']
     if isinstance(value.get('refresh_protocol'), dict):
         result['refresh_protocol'] = value['refresh_protocol']
     actual = value.get('context')
@@ -1312,9 +1316,16 @@ def _engine_decision(state, truck, now=None, *, diagnostic=None, rejection_info=
     if current_acc and current_acc.get('following_required') is True:
         # Target loss is not clear-road evidence, including between ACC ticks.
         # The old candidate cannot outlive its source's original short lease.
-        from core.acc_following import observed_departure, observed_braking_continuation, observed_crossing_completion
+        from core.acc_following import observed_departure, observed_braking_continuation, observed_crossing_completion, observed_owner_chain
+        if not observed_owner_chain(following or {},current_acc.get('following_owner')):
+            result=reject('ACC original native owner continuity unavailable',traffic)
+            if rejection_info is not None:
+                rejection_info['following_target_id']=current_acc.get('following_target_id')
+                rejection_info['decisive_brake_actor_id']=((traffic or {}).get('brake_basis') or {}).get('decisive',{}).get('id')
+            return result
         candidate_present = (isinstance(following, dict) and following.get('status') == 'candidate'
-            and following.get('target_id')==current_acc.get('following_target_id'))
+            and (following.get('target_id')==current_acc.get('following_target_id')
+                or current_acc.get('following_target_id') in following.get('candidate_ids',())[:16]))
         moving_target_present = bool(moving_scope and current_acc.get('following_target_id')
                                     in {t['id'] for t in moving_scope['targets']})
         observed_lead_departure = (observed_departure(
@@ -1453,6 +1464,10 @@ def _engine_decision(state, truck, now=None, *, diagnostic=None, rejection_info=
         return reject("longitudinal identity changed during arbitration", value, context(state))
     if reason:
         return reject(reason, compared)
+    if current_acc and current_acc.get('following_required'):
+        # Cache-retention hint for the same already validated owner. No extra
+        # IPC, new sensor observation, permission or renewed command lifetime.
+        result['required_acc_owner_id']=current_acc.get('following_target_id')
     if result['emergency']:
         from core.navigation.longitudinal_diagnostics import emergency_evidence
         result['emergency_evidence'] = emergency_evidence(

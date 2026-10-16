@@ -101,7 +101,7 @@ def test_crossing_does_not_overwrite_stronger_leads_departure_owner(joint):
     assert engine._acc_selector.target_id=='29'
 
 
-def test_published_owner_is_actual_stronger_crossing_not_projected_lead(joint):
+def test_published_owner_is_actual_stronger_crossing_not_projected_lead(joint,monkeypatch):
     state,engine,ap,acc,policy,tick,_,_,physical,writes,clock=joint
     lead=dict(id=29,x=2.25,y=10.,z=65.,yaw=math.pi,speed=5.)
     actor=crossing(at=32.,arrival=4.1)
@@ -111,7 +111,19 @@ def test_published_owner_is_actual_stronger_crossing_not_projected_lead(joint):
     assert engine._acc_selector.target_id=='83'
     # Losing an unused projection must not masquerade as losing the actual
     # acquired owner. The original controlling crossing still has fresh data.
-    step(joint,[dict(actor,x=actor['x']+.1)],2)
+    # Native slots do not compact when another object disappears. Preserve
+    # the acquired actor's slot 1 and clear slot 0 in the actual ABI buffer;
+    # [actor] incorrectly moved the owner from slot 1 to slot 0.
+    from tests.test_acc_following import capture
+    from core.navigation.traffic_producer import TrafficCapture
+    from core.sdk.ets2la_data import _TRAFFIC_FMT
+    def cleared_slot(actors,at):
+        raw=capture(actors,at)
+        values=list(struct.unpack(_TRAFFIC_FMT,raw.moving));values[:46]=[0]*46
+        return TrafficCapture(raw.session,raw.observed_at,struct.pack(_TRAFFIC_FMT,*values),raw.parked,True)
+    monkeypatch.setattr('tests.test_oct15_crossing_dev_hud.capture',cleared_slot)
+    following,_=step(joint,[lead,dict(actor,x=actor['x']+.1)],2)
+    assert next(w for w in following['owner_witnesses'] if w['target_id']=='83')['slot']==1
     assert state.get('autopilot_active'),state.get('autopilot_intervention')
     assert not acc._following_fault
 

@@ -19,7 +19,7 @@ class Plugin(BasePlugin):
     """
 
     NAME = "acc"
-    VERSION = "1.3.4"
+    VERSION = "1.3.5"
 
     def on_start(self):
         logging.info("ACC Plugin started with bounded speed PID control.")
@@ -48,6 +48,7 @@ class Plugin(BasePlugin):
         self._followed_target = False
         self._following_target_id = None
         self._following_kind = None
+        self._following_owner = None
         self._following_fault = ''
         self._signal_control_active = False
         self._signal_approach_owner = None
@@ -63,6 +64,7 @@ class Plugin(BasePlugin):
         self._following_target_id = None
         self._following_binding = None
         self._following_kind = None
+        self._following_owner = None
         self._following_fault = ''
         self.sdk.set('acc_following_status', 'disabled')
         self.sdk.set("longitudinal_acc_active", False)
@@ -87,6 +89,7 @@ class Plugin(BasePlugin):
                 self._followed_target = False
                 self._following_target_id = None
                 self._following_kind = None
+                self._following_owner = None
                 self._following_fault = ''
                 self._native_following_lifecycle = None
                 self._reset_control()
@@ -123,6 +126,7 @@ class Plugin(BasePlugin):
             self._followed_target = False
             self._following_target_id = None
             self._following_kind = None
+            self._following_owner = None
             self._following_fault = ''
             if strict:
                 # Observation continues at Engine, but a revoked activation
@@ -178,8 +182,9 @@ class Plugin(BasePlugin):
         # No cached pedal/target lease is extended. After target loss the
         # existing required-producer guard removes drive and controls stopping.
         # Empty/uncovered buffers cannot prove that the old target departed.
-        from core.acc_following import observed_departure, observed_crossing_completion
+        from core.acc_following import observed_departure, observed_crossing_completion, observed_owner_chain
         if (strict and self._followed_target and not self._following_fault and traffic is not None
+                and observed_owner_chain(following,self._following_owner)
                 and (observed_departure(following,self._following_target_id,time.monotonic())
                     or self._following_kind=='crossing' and
                         observed_crossing_completion(following,self._following_target_id,time.monotonic()))):
@@ -187,16 +192,20 @@ class Plugin(BasePlugin):
             self._followed_target = False
             self._following_target_id = None
             self._following_kind = None
+            self._following_owner = None
             self._following_fault = ''
             following_reason = ('observed crossing constraint ended; coverage remains unproven' if was_crossing
                 else 'observed lead left route; coverage remains unproven')
         from core.acc_following import observed_braking_continuation
         braking_replaces_cap = observed_braking_continuation(traffic,
             self._following_target_id, time.monotonic())
+        if strict and self._followed_target and not observed_owner_chain(following or {},self._following_owner):
+            self._following_fault='ACC original native owner continuity unavailable; driver takeover required'
         if strict and self._followed_target and following_cap is None and not braking_replaces_cap:
             self._following_fault = 'ACC target unavailable or unconfirmed departure; driver takeover required'
         if (strict and self._followed_target and motion_scope is not None
-                and self._following_target_id not in {t['id'] for t in motion_scope['targets']}):
+                and self._following_target_id not in {t['id'] for t in motion_scope['targets']}
+                and not braking_replaces_cap):
             self._following_fault='ACC original moving target unavailable; driver takeover required'
         self.sdk.set('acc_following_status', following_reason)
 
@@ -218,7 +227,7 @@ class Plugin(BasePlugin):
         if self._following_fault:
             self._reset_control()
             self._publish_pedals(truck, binding, 0., 0., valid=False,
-                reason=self._following_fault)
+                reason=self._following_fault, traffic_evidence=traffic)
             return
 
         # 3. Dynamic Target Speed Calculation
@@ -312,10 +321,29 @@ class Plugin(BasePlugin):
             # its absence is never clear-road evidence.
             if owns_activation and (following_cap < effective_target_speed
                     or following_cap < speed_kmh or following.get('emergency') is True):
-                self._followed_target = True
                 motion_owns=motion_target is not None and motion_target['cap_mps']*3.6<=following_cap+1e-9
-                self._following_target_id = motion_target['id'] if motion_owns else following.get('target_id')
-                self._following_kind = motion_target.get('constraint_kind','protective_route') if motion_owns else 'lead'
+                next_id=motion_target['id'] if motion_owns else following.get('target_id')
+                next_kind=motion_target.get('constraint_kind','protective_route') if motion_owns else 'lead'
+                # Ordinary closer-lead handoff is supported only while BOTH
+                # lead records are currently projected. This is not crossing
+                # clearance, disappearance, or replacement by another brake.
+                lead_handoff=(self._following_kind=='lead' and next_kind=='lead'
+                    and not braking_replaces_cap and self._following_target_id
+                    in following.get('candidate_ids',()) and next_id in following.get('candidate_ids',()))
+                # A lower new cap applies immediately, but is not evidence that
+                # the original acquired dependency ended. Only its own witness
+                # above may release it; another body brake cannot erase it.
+                if not self._followed_target or lead_handoff:
+                    self._followed_target = True
+                    self._following_target_id = next_id
+                    self._following_kind = next_kind
+                    self._following_owner=next((dict(w) for w in following.get('owner_witnesses',())
+                        if w.get('target_id')==self._following_target_id and w.get('chain_valid') is True),None)
+                    if following.get('owner_witnesses_schema')==1 and self._following_owner is None:
+                        self._following_fault='ACC native owner witness unavailable; driver takeover required'
+                        self._reset_control()
+                        self._publish_pedals(truck,binding,0.,0.,valid=False,reason=self._following_fault,traffic_evidence=traffic)
+                        return
             effective_target_speed = min(effective_target_speed, following_cap)
             hard_limits.append(following_cap)
             if following_cap < 3.6 and speed < 1.:
@@ -518,6 +546,7 @@ class Plugin(BasePlugin):
                     following.get('target_id') if isinstance(following,dict) else None),
                 following_confirmed=False,
                 following_kind=self._following_kind,
+                following_owner=self._following_owner,
                 braking_actor_ids=(following_owners if self._speed_braking
                     and following_cap is not None and abs(effective_target_speed-following_cap)<1e-9
                     and self._control_target>=following_cap-1e-9
@@ -557,16 +586,27 @@ class Plugin(BasePlugin):
         self._signal_approach_owner = None
 
     def _publish_pedals(self, truck, binding, throttle, brake, *, valid=True,
-                        target=None, reason="speed controller reset"):
+                        target=None, reason="speed controller reset", traffic_evidence=None):
         if target is not None:
             self.tags.acc_speed = target
         self.tags.acc_status = reason
         self.sdk.set('acc_following_status', reason)
         self.sdk.shared_state.update_batch({"acc_throttle": throttle, "acc_brake": brake})
+        diagnostic={}
+        if traffic_evidence is not None:
+            from core.acc_following import observed_braking_continuation
+            follow=traffic_evidence.get('following') or {}
+            decisive=(traffic_evidence.get('brake_basis') or {}).get('decisive') or {}
+            diagnostic=dict(target_evidence=dict(original_target_id=self._following_target_id,
+                candidate_id=follow.get('target_id'),status=follow.get('status'),
+                decisive_brake_actor_id=decisive.get('id'),
+                source_acquisition=follow.get('source_acquisition'),
+                continuity_observed=observed_braking_continuation(traffic_evidence,self._following_target_id,time.monotonic())))
         publish(self.sdk.shared_state, truck, "acc", binding=binding, evidence_valid=valid,
                 throttle=throttle, brake=brake, emergency=False,
                 requested_speed_kmh=target, constrained_speed_kmh=target,
                 speed_control_reason=reason, following_required=self._followed_target,
                 following_target_id=self._following_target_id,
                 following_kind=self._following_kind,
-                following_confirmed=False)
+                following_owner=self._following_owner,
+                following_confirmed=False, **diagnostic)

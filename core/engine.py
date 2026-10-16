@@ -919,10 +919,17 @@ class UltraPilotEngine:
                     or debug.get('trajectory_identity') != identity
                     or not 0 <= time.monotonic()-float(debug['observation_timestamp']) <= .5):
                 raise ValueError('route calculation unavailable')
-            prior_crossing_id=selector.target_id if selector._target_is_crossing else None
+            prior_target_id=selector.target_id
+            prior_crossing_id=prior_target_id if selector._target_is_crossing else None
             result = selector.select(observed['actors'], truck, float(debug['tracking_progress_m']),
                                      receiver_time=observed['receiver_time'], source=observed.get('source'))
-            result['retained_target_continuity'] = selector.continuing_target()
+            # select() may acquire a new geometric candidate while ACC still
+            # owns the previous constraint. A stronger body brake must carry
+            # continuity of that original owner, not the newly projected one.
+            continuities=selector.continuing_owners()
+            result['retained_target_continuity']=next((p for p in continuities
+                if p['target_id']==prior_target_id),None)
+            if continuities:result['retained_target_continuities']=continuities
             result['crossing'] = selector.crossing(observed['actors'], truck, float(debug['tracking_progress_m']))
             dev_hud = getattr(self, '_dev_hud', None)
             capture_dev = dev_hud is not None and dev_hud.wants_geometry(time.monotonic())
@@ -1259,6 +1266,12 @@ class UltraPilotEngine:
                 brake=0.
         else:
             following['motion_constraint']=None
+        if selector is not None and selector._native_current is not None:
+            pinned=getattr(self,'_acc_owner_watch',None)
+            if pinned and pinned[0]==tuple(binding[:5]):selector.remember_target(pinned[1])
+            for target in (following.get('motion_constraint') or {}).get('targets',()):
+                selector.remember_target(target['id'],target.get('constraint_kind','lead'))
+            following.update(owner_witnesses_schema=1,owner_witnesses=selector.owner_witnesses())
         self._capture_dev_traffic(truck,binding,following)
         return following,brake
 
@@ -2571,6 +2584,8 @@ class UltraPilotEngine:
             details=getattr(self, '_longitudinal_rejection_detail', None))
         self._request_automatic_longitudinal_incident(fault)
         first_reason = first_control_fault(self.shared_state, reason)
+        from core.control_timing import fault_explanation
+        display_reason=fault_explanation(fault) if fault else first_reason
         if (getattr(self, '_service_brake_hold', None) or {}).get('phase') == 'holding':
             # A technical fault is not an automatic clearance of a planned
             # stop. Do not ramp a new positive brake at unknown standstill or
@@ -2584,7 +2599,7 @@ class UltraPilotEngine:
             "autopilot_stop_epoch": self.shared_state.get("autopilot_failure_epoch"),
             "navigation_status": (
                 "Prevezmite riadenie – príslušnosť semafora je nepotvrdená. Bezpečne spomaľujem."
-                if 'signal regulation coverage' in first_reason else f"Bezpečne spomaľujem: {first_reason}"),
+                if 'signal regulation coverage' in first_reason else f"Bezpečne spomaľujem: {display_reason}"),
         })
         now = time.monotonic()
         previous_time = float(getattr(self, "_last_control_flush", now - 0.02))
@@ -2634,7 +2649,7 @@ class UltraPilotEngine:
                     'autopilot_active': False, 'longitudinal_command': None,
                     'autopilot_disable_reason': first_reason,
                     'autopilot_terminal_reason': reason,
-                    'navigation_status': f'Autopilot vypnutý: {first_reason}',
+                    'navigation_status': f'Autopilot vypnutý: {display_reason}',
                 })
         self._last_output_steering = steering
         self._last_output_brake = brake
@@ -2789,6 +2804,9 @@ class UltraPilotEngine:
         if (getattr(self,'_automatic_longitudinal_fault',None) or {}).get('epoch') == fault.get('epoch'):
             return  # Preserve the first cause and the original finite tail window.
         self._automatic_longitudinal_fault = fault
+        dev_hud=getattr(self,'_dev_hud',None)
+        if dev_hud is not None:
+            dev_hud.record_fault(fault)
         self._automatic_longitudinal_tail_until = time.monotonic()+.1
         journal=getattr(self.controller,'_pedal_journal',None)
         if journal is not None:
@@ -3385,6 +3403,9 @@ class UltraPilotEngine:
                     return
                 self._automatic_safety_stop(pedal_reason)
                 return
+            if not longitudinal.get('refresh_pending'):
+                owner_id=longitudinal.get('required_acc_owner_id')
+                self._acc_owner_watch=(tuple(longitudinal['context'][:5]),owner_id) if owner_id else None
             if not longitudinal.get('refresh_pending'):
                 self._first_pedal_request = None
                 self._first_pedal_started_at = None

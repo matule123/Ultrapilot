@@ -54,6 +54,22 @@ def _intervention_record(state, producer, code, reason, kind, details):
         observation_timestamp=observation.get('observed_at'), details=details)
 
 
+def fault_explanation(record):
+    """Presentation only: preserve canonical first reason and original evidence."""
+    details=record.get('details') or {}
+    evidence=details.get('target_evidence') or {}
+    reason=details.get('invalid_reason') or record.get('reason') or 'reason unavailable'
+    producer=details.get('rejected_source') or details.get('source') or record.get('producer') or '?'
+    owner=details.get('following_target_id') or evidence.get('original_target_id')
+    brake=details.get('decisive_brake_actor_id') or evidence.get('decisive_brake_actor_id')
+    title=('Technical stop' if record.get('kind')=='technical' else
+        'Emergency intervention' if record.get('kind')=='emergency' else 'Driver takeover')
+    text=f'{title} [{producer}]'
+    if owner is not None:text+=f' / ACC target {owner} (not confirmed clear)'
+    if brake is not None:text+=f' / brake object {brake}'
+    return (text+': '+reason)[:512]
+
+
 def record_control_intervention(state, producer, code, reason, kind, *, details=None):
     """Bounded decision-edge evidence; never grants authority or a safe gap.
 
@@ -73,6 +89,7 @@ def record_control_intervention(state, producer, code, reason, kind, *, details=
         return previous
     record = _intervention_record(state, producer, code, reason, kind,
                                   bounded_fault_details(details))
+    record['explanation']=fault_explanation(record)
     state.update_batch({key: record, 'autopilot_intervention': record})
     logging.warning('Control intervention: %s', record)
     return record
@@ -92,6 +109,7 @@ def record_control_fault(state, producer, reason, *, details=None):
         from core.navigation.longitudinal_diagnostics import bounded_fault_details
         record = _intervention_record(state, producer, 'TECHNICAL_CONTROL_STOP',
             reason, 'technical', bounded_fault_details(details))
+        record['explanation']=fault_explanation(record)
         state.set(key, record)
         first = first_control_fault_record(state)
         state.set('autopilot_intervention', first)

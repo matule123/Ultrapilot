@@ -772,3 +772,23 @@ not retained, so the whole historical classification remains NOT VERIFIED.
 Normal significant-event storage is still full; originals require separately
 approved archival, while the existing automatic fault export retains priority.
 New game behavior is unverified. The cancelled GPS-arrival task is not reopened.
+
+## Original ACC owner and actual reverse at signal — 16 October
+
+[PHASE7_BRAKE_OWNER_HANDOFF_AND_INTERVENTION_20261016.md](PHASE7_BRAKE_OWNER_HANDOFF_AND_INTERVENTION_20261016.md)
+separates the reproduced ID 28 owner/candidate handoff defect from the recorded
+ID 26 constant-motion body brake and the earlier qualified red-head 1 stop.
+The bounded original-owner chain and historical DEV intervention display are
+implemented; final verification is recorded in that report. No game result or
+deployment is implied. Unmatched geometry is explicitly unavailable and cannot
+colour a newly observed object with the same native short ID.
+
+The red incident's first inner cause is `reverse gear observed`, not lease loss.
+Its final retained pre-fault brake writes are positive, with no recorded zero
+before R. Why the game selected reverse remains OPEN: Python mapping-return
+receipts do not record the input DLL callback's consumption/mixing threshold.
+Do not remove the R guard or call the signal cycle game-fixed. The exact ID 26
+future directed path/full actor body array and rejected ID 28 acquisition are
+also absent; model contact is not a confirmed impact or lane assignment. These
+are specific remaining evidence boundaries, not reasons to repeat a whole drive
+or reopen the cancelled GPS-arrival work. Originals must be retained.

@@ -148,6 +148,7 @@ class RouteLeadSelector:
         self._native_current = None
         self._constraint_completion = None
         self._completed_crossings = {}
+        self._retained_owners = {}
 
     def reset(self):
         self.target_id = None
@@ -158,6 +159,7 @@ class RouteLeadSelector:
         self._native_current = None
         self._constraint_completion = None
         self._completed_crossings = {}
+        self._retained_owners = {}
 
     def source_motion(self, actors, source):
         """One immutable native frame pair; duplicate reads never advance it."""
@@ -170,7 +172,45 @@ class RouteLeadSelector:
             return self._native_predictions()
         self._native_previous = current if current and stamp[0] == current[0][0] else None
         self._native_current = (stamp, {a['id']: dict(a) for a in actors})
+        # Original dependency witnesses survive candidate projection changes,
+        # not missing/reassigned acquisitions. A broken chain stays broken for
+        # this authority; seeing the same short ID later cannot revive it.
+        for aid, owner in self._retained_owners.items():
+            proof = self.continuing_target(aid)
+            if (owner['last'] != (self._native_previous[0] if self._native_previous else None)
+                    or not proof or any(proof[k] != owner[k] for k in ('source','slot'))):
+                owner['last'] = None
+            else:
+                owner['last'] = stamp
         return self._native_predictions()
+
+    def remember_target(self, target_id=None, kind=None):
+        """At most 16 original observed owners; no permission or clearance."""
+        aid=target_id or self.target_id
+        if self._native_current:
+            now=self._native_current[0][3]
+            self._retained_owners={k:v for k,v in self._retained_owners.items()
+                if now-v.get('last_relevant',now)<=.5
+                    and not (v.get('completed_at') is not None and now-v['completed_at']>.5)}
+            if aid in self._retained_owners:self._retained_owners[aid]['last_relevant']=now
+        if not aid or not self._native_current or aid in self._retained_owners:
+            return
+        actor=self._native_current[1].get(int(aid))
+        if actor is not None and len(self._retained_owners)<16:
+            self._retained_owners[aid]=dict(source=actor['source'],slot=actor['slot'],
+                kind=kind or ('crossing' if self._target_is_crossing else 'lead'),last=self._native_current[0],
+                acquired_generation=self._native_current[0][1],lifecycle=self._native_current[0][0],
+                last_relevant=self._native_current[0][3])
+
+    def owner_witnesses(self):
+        stamp=self._native_current[0] if self._native_current else None
+        return [dict(target_id=aid,**{k:o[k] for k in ('source','slot','lifecycle','acquired_generation')},
+            chain_valid=o['last']==stamp) for aid,o in self._retained_owners.items()]
+
+    def continuing_owners(self):
+        stamp=self._native_current[0] if self._native_current else None
+        return [proof for aid,owner in self._retained_owners.items()
+            if owner['last']==stamp and (proof:=self.continuing_target(aid)) is not None]
 
     def _native_predictions(self):
         if not self._native_previous or not self._native_current:
@@ -250,7 +290,7 @@ class RouteLeadSelector:
             return
         previous = (self.target_id, self._last_target_observation, self._target_is_crossing,
                     self._native_previous, self._native_current, self._constraint_completion,
-                    self._completed_crossings) if preserve_target else None
+                    self._completed_crossings,self._retained_owners) if preserve_target else None
         self.binding = None
         self.reset()
         if not 2 <= len(points) <= 20000:
@@ -270,7 +310,7 @@ class RouteLeadSelector:
         if previous:
             (self.target_id, self._last_target_observation, self._target_is_crossing,
              self._native_previous, self._native_current, self._constraint_completion,
-             self._completed_crossings) = previous
+             self._completed_crossings,self._retained_owners) = previous
 
     def _body_clearance(self, body, low, high):
         """Exact native oriented-box/reference distance, not physical lane clearance."""
@@ -423,12 +463,17 @@ class RouteLeadSelector:
         if (not old or not new or previous[0][0] != current[0][0] or not 0 < dt <= .5
                 or current[0][1]<=previous[0][1] or current[0][2]<=previous[0][2]
                 or old.get('source') != new.get('source') or old.get('slot') != new.get('slot')
+                or old.get('temporary') or new.get('temporary')
+                or any(not isinstance(a.get('speed'),(int,float)) or not math.isfinite(a['speed'])
+                    or not 0<=a['speed']<=70. for a in (old,new))
                 or len(old.get('bodies', ())) != len(new.get('bodies', ()))
+                or any(tuple(a.get('dimensions_whl') or ()) != tuple(b.get('dimensions_whl') or ())
+                    for a,b in zip(old.get('bodies',()),new.get('bodies',())))
                 or math.hypot(new['x']-old['x'],new['z']-old['z'])
                    > max(new['speed'],old['speed'])*dt+1.):
             return None
         return dict(target_id=str(target_id), source=new['source'], slot=new['slot'],
-            lifecycle=current[0][0], generation=current[0][1], observed_at=current[0][3],
+            lifecycle=current[0][0], generation=current[0][1], frame_us=current[0][2], observed_at=current[0][3],
             record_fingerprint=new.get('record_fingerprint'),
             basis='same_native_id_slot_continuous_observed_motion_not_clearance')
 
@@ -446,6 +491,11 @@ class RouteLeadSelector:
             self.target_id=chosen['id']
             self._last_target_observation=(dict(actor),receiver_time)
             self._target_is_crossing=True
+            self.remember_target()
+            if chosen['id'] in self._retained_owners:
+                owner=self._retained_owners[chosen['id']]
+                owner['kind']='crossing'
+                owner.pop('completed_at',None)
 
     def crossing_completion(self, crossing, body_prediction, *, prior_crossing_id=None):
         """End an observed heuristic constraint, NOT a lost lead or clear road.
@@ -463,6 +513,9 @@ class RouteLeadSelector:
         # must not erase another owner's still-observed completion before an
         # independently scheduled consumer reads it. No actor/packet queue.
         ids=list(old)
+        continuing={p['target_id']:p for p in self.continuing_owners()}
+        for aid,owner in self._retained_owners.items():
+            if owner['kind']=='crossing' and aid in continuing and aid not in ids:ids.append(aid)
         if primary and primary not in ids:ids.append(primary)
         usable=(source and crossing.get('status') in ('protective_crossing_candidates',
                     'no_conflict_unproven_coverage')
@@ -474,8 +527,9 @@ class RouteLeadSelector:
             same=bool(cached and all(cached[k]==v for k,v in zip(
                 ('lifecycle','generation','frame_us','observed_at'),source)))
             proof=self.continuing_target(target_id)
-            if (not proof or any(str(c.get('id'))==target_id for c in crossing.get('conflicts',()))
-                    or (target_id!=primary and not same and (not self._native_previous
+            if (not proof or (target_id in self._retained_owners and target_id not in continuing)
+                    or any(str(c.get('id'))==target_id for c in crossing.get('conflicts',()))
+                    or (target_id!=primary and target_id not in continuing and not same and (not self._native_previous
                         or tuple(cached[k] for k in ('lifecycle','generation','frame_us','observed_at'))
                            != self._native_previous[0]
                         or any(proof[k]!=cached[k] for k in ('source','slot','lifecycle'))))):
@@ -483,6 +537,8 @@ class RouteLeadSelector:
             completed[target_id]=cached if same else dict(proof,frame_us=source[2],
                 status='observed_original_crossing_model_ended',kind='crossing',
                 coverage_confirmed=False,game_consumption_verified=False)
+            owner=self._retained_owners.get(target_id)
+            if owner is not None:owner.setdefault('completed_at',source[3])
         while len(completed)>16:completed.pop(next(iter(completed)))
         self._completed_crossings=completed
         previous_id=(self._constraint_completion or {}).get('target_id')
@@ -561,6 +617,7 @@ class RouteLeadSelector:
                 self._target_is_crossing=False
                 actor=next(a for a in actors if str(a['id'])==selected[1])
                 self._last_target_observation=(dict(actor),receiver_time)
+                self.remember_target()
             return dict(status='no_candidate_unproven_coverage', confirmed=False,
                 emergency_actor_ids=sorted(c[1] for c,d in zip(protective,caution) if d['emergency']),
                 protective_brake=caution_brake, emergency=any(c['emergency'] for c in caution),**caution_fields)
@@ -576,6 +633,7 @@ class RouteLeadSelector:
             actor = next(a for a in actors if str(a['id']) == selected[1])
             self._last_target_observation = (dict(actor), receiver_time)
             self._departure_observation = None
+        self.remember_target()
         constraints = [following_demand(c[0], c[2], float(truck['speed']),include_brake=True) for c in candidates]
         # Negative anticipation only, over the existing 500 ms evidence horizon.
         # It can lower a cap but cannot relax TTC/AEB or certify lane membership.
@@ -586,6 +644,7 @@ class RouteLeadSelector:
                 demand['speed_cap_mps'] = min(demand['speed_cap_mps'],
                     following_demand(candidate[0], predicted, float(truck['speed']))['speed_cap_mps'])
         return dict(status='candidate', target_id=selected[1], gap_m=selected[0],
+                    candidate_ids=[c[1] for c in candidates] if len(candidates)<=16 else [],
                     speed_mps=selected[2], confirmed=False,
                     gap_kind='route_reference_points',
                     leader_prediction=predictions.get(selected[1]),
@@ -700,16 +759,29 @@ class RouteLeadSelector:
         return result
 
 
+def observed_owner_chain(following, owner):
+    """A candidate cannot replace an acquired native owner with a reused ID."""
+    if not isinstance(following,dict):return False
+    if owner is None:return following.get('owner_witnesses_schema') != 1
+    if not isinstance(owner,dict) or not owner.get('target_id'):return False
+    witnesses=following.get('owner_witnesses')
+    if not isinstance(witnesses,(list,tuple)) or len(witnesses)>16:return False
+    return any(w.get('chain_valid') is True and all(w.get(k)==owner.get(k) for k in
+        ('target_id','source','slot','lifecycle','acquired_generation'))
+        for w in witnesses if isinstance(w,dict))
+
+
 def observed_braking_continuation(traffic, target_id, now):
     """A current stronger brake supersedes regulation, never releases a target."""
     try:
         following = traffic['following']
-        proof = following['retained_target_continuity']
         source = following['source_acquisition']
-        return bool(traffic['traffic_brake'] > 0. and target_id and proof['target_id'] == target_id
+        proofs=following.get('retained_target_continuities') or [following.get('retained_target_continuity')]
+        if not isinstance(proofs,(tuple,list)) or len(proofs)>16:return False
+        return any(bool(isinstance(proof,dict) and traffic['traffic_brake'] > 0. and target_id and proof['target_id'] == target_id
             and proof['basis'] == 'same_native_id_slot_continuous_observed_motion_not_clearance'
-            and all(proof[k] == source[k] for k in ('lifecycle', 'generation', 'observed_at'))
-            and 0 <= now-proof['observed_at'] <= .5)
+            and all(proof[k] == source[k] for k in ('lifecycle', 'generation', 'frame_us', 'observed_at'))
+            and 0 <= now-proof['observed_at'] <= .5) for proof in proofs)
     except (KeyError, TypeError, ValueError):
         return False
 

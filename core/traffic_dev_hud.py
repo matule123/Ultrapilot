@@ -15,6 +15,7 @@ from core.navigation.longitudinal_diagnostics import bounded_copy
 
 FRAME_BUDGET = 192 * 1024
 RECEIPT_BUDGET = 64 * 1024
+HISTORY_RECEIPT_BUDGET = 16 * 1024  # carved out of RECEIPT_BUDGET, not added
 PERIOD_S = .1
 COLORS = dict(passive='#929ba9', tracked='#50aaff', protective='#facc15',
               service='#ff982d', emergency='#ff4b57', invalid='#536071')
@@ -197,6 +198,8 @@ class DevHUDFeed:
         self.skipped = 0
         self.active = True
         self.geometry_next_at = 0.
+        self.last_intervention = None
+        self.last_fault = None
 
     def wants_geometry(self, now):
         if not self.active or now < self.geometry_next_at:
@@ -207,6 +210,7 @@ class DevHUDFeed:
     def pause(self):
         self.active = False
         self.frames.clear(); self.latest = None
+        self.last_intervention = self.last_fault = None
 
     def resume(self):
         self.active = True
@@ -215,9 +219,60 @@ class DevHUDFeed:
         # Engine traffic thread owns frames. Repeated source reads cannot
         # renew frame freshness and do not add history entries.
         if self.active and (not self.frames or acquisition(self.frames[-1].get('source')) != acquisition(frame.get('source'))):
+            old=(self.frames[-1].get('context') or ()) if self.frames else ()
+            if old and tuple(old[:5]) != tuple((frame.get('context') or ())[:5]):
+                self.last_intervention=self.last_fault=None
+                self.latest=None
             self.frames.append(frame)
+            latest=self.latest
+            if (latest and not self.last_fault and latest.get('context')==frame.get('context')
+                    and acquisition(latest.get('traffic_source'))==acquisition(frame.get('source'))
+                    and self._positive_brake(latest)):
+                self._remember_intervention(latest,frame)
+            # The retained historical frame shares the SAME two-frame budget.
+            # Keep one live frame when history is no longer in the live deque.
+            history=(self.last_intervention or {}).get('geometry')
+            if history is not None and all(history is not f for f in self.frames):
+                while len(self.frames)>1:self.frames.popleft()
+
+    def record_fault(self, fault):
+        if not self.active or not isinstance(fault,dict):return
+        binding=(self.frames[-1].get('context') or ()) if self.frames else ()
+        if binding and binding[0] not in (None,fault.get('epoch')):return
+        if self.last_fault and self.last_fault.get('epoch')==fault.get('epoch'):return
+        from core.control_timing import fault_explanation
+        value={k:fault.get(k) for k in ('epoch','observed_at','producer','kind','sdk_frame_us')}
+        value['explanation']=fault_explanation(fault)[:384]
+        latest=self.latest or {}
+        value['brake_geometry_unavailable']=bool(self._positive_brake(latest) and not any(
+            f.get('context')==latest.get('context') and
+            acquisition(f.get('source'))==acquisition(latest.get('traffic_source')) for f in self.frames))
+        self.last_fault=bounded_copy(value,limit=4096)[0]
+
+    @staticmethod
+    def _positive_brake(value):
+        stats=value.get('write_stats') or {}
+        return (stats.get('write_error_count',0)==0 and (stats.get('backend_brake_max') or 0.)>0.
+            and (value.get('backend_pair') or {}).get('brake',0.)>0.)
+
+    def _remember_intervention(self,value,matched):
+        if matched is None and (self.last_intervention or {}).get('geometry') is not None:
+            return  # keep the last exact scene; current unmatched receipt stays explicit
+        summary={k:value[k] for k in ('context','activation','source','sequence',
+            'sdk_frame_us','observation_timestamp','traffic_source','target_id','braking_actor_ids',
+            'brake_basis','write_stats','backend_pair','recorded_at','game_consumption_verified')}
+        summary['source']={k:value['source'].get(k) for k in ('source','reason','emergency')}
+        summary['write_stats']={k:value['write_stats'].get(k) for k in ('write_success_count','write_error_count',
+            'backend_brake_max','write_last_sequence','write_last_returned_at_s')}
+        compact=bounded_copy(summary,limit=HISTORY_RECEIPT_BUDGET-4096)[0]
+        if not compact.get('snapshot_status'):
+            self.last_intervention=dict(applied=compact,geometry=matched,recorded_at=value['recorded_at'],
+                attribution='EXACT_NATIVE_ACQUISITION_AND_ROUTE' if matched else 'CONSUMED_GEOMETRY_UNAVAILABLE')
+            if matched is not None:
+                while len(self.frames)>1 and all(matched is not f for f in self.frames):self.frames.popleft()
 
     def written(self, trace, journal, fault, now):
+        if fault:self.record_fault(fault)
         if not self.active or now < self.write_next_at:
             return
         self.write_next_at = now+PERIOD_S
@@ -259,7 +314,19 @@ class DevHUDFeed:
             write_stats=dict(getattr(journal._local,'writes',{})),
             backend_pair=dict(journal._held), last_successful_pair=dict(journal._last_successful),
             game_consumption_verified=False, recorded_at=now)
-        self.latest = bounded_copy(value, limit=RECEIPT_BUDGET)[0]
+        self.latest = bounded_copy(value, limit=RECEIPT_BUDGET-HISTORY_RECEIPT_BUDGET)[0]
+        if self.latest.get('snapshot_status'):return
+        value=self.latest  # same immutable list/tuple normalization as geometry
+        stats=value['write_stats']
+        # Only a returned positive BRAKE-channel call establishes this receipt.
+        # The aggregate pair or a successful throttle call alone cannot do so.
+        if (stats.get('write_error_count',0)==0 and stats.get('backend_brake_max',0.) is not None
+                and stats.get('backend_brake_max',0.)>0. and value['backend_pair'].get('brake',0.)>0.
+                and not fault):
+            matched=next((f for f in self.frames if f.get('context')==value['context']
+                and acquisition(f.get('source'))==acquisition(value['traffic_source'])),None)
+            # Hold the exact immutable frame; never attach today's same-ID box.
+            self._remember_intervention(value,matched)
 
     def snapshot(self):
         latest = self.latest
@@ -272,8 +339,10 @@ class DevHUDFeed:
                     matched = frame
         return dict(schema=1, detection=frames[-1] if frames else None,
             consumed_geometry=matched, applied=latest, skipped_publications=self.skipped,
+            last_intervention=self.last_intervention,last_fault=self.last_fault,
             attribution='EXACT_NATIVE_ACQUISITION_AND_ROUTE' if matched else 'CONSUMED_GEOMETRY_UNAVAILABLE',
             limits=dict(frames=2, frame_accounted_bytes=FRAME_BUDGET, receipt_accounted_bytes=RECEIPT_BUDGET,
+                history_shares_frame_budget=True,history_receipt_bytes=HISTORY_RECEIPT_BUDGET,
                 actors=80, bodies_per_actor=4, actor_paths=64, reference_points=256, publication_hz=10))
 
     def offer(self, state, now):
@@ -306,11 +375,12 @@ def actor_style(actor, snapshot, now, *, stale=False):
     consumed = snapshot.get('consumed_geometry') or {}
     source = ((snapshot.get('detection') or {}).get('source') if snapshot.get('control_current') is False
         else consumed.get('source')) or (snapshot.get('detection') or {}).get('source') or {}
-    if (stale or snapshot.get('detection_current') is False
+    history=snapshot.get('history_only') is True
+    if (not history and (stale or snapshot.get('detection_current') is False
             or (snapshot.get('detection') or {}).get('detections_valid') is False
-            or not 0 <= now-source.get('observed_at', float('-inf')) <= .5):
+            or not 0 <= now-source.get('observed_at', float('-inf')) <= .5)):
         return 'invalid', 'stale / unverified'
-    if snapshot.get('control_current') is False:
+    if snapshot.get('control_current') is False and not history:
         return 'passive', 'fresh detection; control inactive/unverified'
     own = next((a for a in consumed.get('actors', ()) if
         all(a.get(k) == actor.get(k) for k in ('id','source','slot','record_fingerprint'))), None)
@@ -326,10 +396,10 @@ def actor_style(actor, snapshot, now, *, stale=False):
               and pair['brake']>0 and stats.get('write_error_count',0)==0
               and stats.get('backend_brake_max') is not None and stats['backend_brake_max']>0.)
     acc_cause = str(actor['id']) in {str(v) for v in applied.get('braking_actor_ids') or ()}
-    if selected.get('emergency') and actual and (cause or selected.get('source')=='acc' and acc_cause):
+    if selected.get('emergency') and selected.get('source') in ('acc','traffic','traffic_emergency') and actual and (cause or selected.get('source')=='acc' and acc_cause):
         return 'emergency', selected.get('reason') or 'selected emergency'
     if actual and ((selected.get('source')=='acc' and acc_cause) or
-                   (selected.get('source') in ('traffic','traffic_emergency') and cause)):
+                   (selected.get('source') in ('traffic','traffic_emergency','continuous_service_hold') and cause)):
         return 'service', selected.get('reason') or 'selected service brake'
     if any(str(t.get('id'))==str(actor['id']) for t in applied.get('targets') or ()):
         return 'protective', 'positive protective speed constraint'
@@ -348,6 +418,13 @@ def for_display(snapshot, expected, active):
     value['control_current']=bool(active and freeze(frame.get('context'))==freeze(expected)
         and freeze(applied.get('context'))==freeze(expected))
     value['detection_current']=freeze(frame.get('context'))==freeze(expected)
+    historical=value.get('last_intervention') or {}
+    # Display a separate immutable historical scene, never recolour live actors.
+    # A new activation is cleared by capture(); an absent exact frame stays absent.
+    value['history_only']=bool(not active and historical.get('geometry'))
+    if value['history_only']:
+        value.update(live_detection=frame,detection=historical['geometry'],
+            consumed_geometry=historical['geometry'],applied=historical['applied'])
     return value
 
 
@@ -366,7 +443,7 @@ def draw_overlay(qp, rect, snapshot, project, now=None, *, test_data=False):
     age=None if source.get('observed_at') is None else now-source['observed_at']
     invalid_data=bool(frame.get('detections_valid') is False or frame.get('snapshot_status'))
     source_stale=bool(age is None or not 0<=age<=.5)
-    stale=source_stale or invalid_data or snapshot.get('detection_current') is False
+    stale=source_stale or invalid_data or snapshot.get('detection_current') is False or snapshot.get('history_only') is True
     qp.setFont(QFont('Consolas',9))
     def poly(points, colour, dashed=False, width=1.4):
         qp.setPen(QPen(QColor(colour),width,Qt.PenStyle.DashLine if dashed else Qt.PenStyle.SolidLine))
@@ -448,7 +525,8 @@ def draw_overlay(qp, rect, snapshot, project, now=None, *, test_data=False):
     ctx=applied.get('context') or frame.get('context') or ()
     def fmt(v):return '?' if v is None else f'{v:.3f}' if isinstance(v,float) else str(v)
     read_age=None if frame.get('receiver_time') is None else now-frame['receiver_time']
-    title='DEV / TEST DATA' if test_data else 'DEV / CONTROL EVIDENCE'
+    title=('DEV / HISTORY — NOT LIVE' if snapshot.get('history_only') else
+        'DEV / TEST DATA' if test_data else 'DEV / CONTROL EVIDENCE')
     lines=[title+(' / INVALID' if invalid_data else ' / STALE' if source_stale else
         ' / CONTROL UNVERIFIED' if snapshot.get('control_current') is False else ''),
         f"native frame {fmt(source.get('frame_us'))} gen {fmt(source.get('generation'))}",
@@ -469,6 +547,18 @@ def draw_overlay(qp, rect, snapshot, project, now=None, *, test_data=False):
         ('EXACT consumed acquisition' if snapshot.get('consumed_geometry') else 'consumed geometry unavailable'),
         f"omitted labels/actors {omitted}/{frame.get('omitted_actors',0)}; priority {frame.get('omitted_priority_actors',0)}",
         f"omitted bodies/paths/points {frame.get('omitted_bodies',0)}/{frame.get('omitted_prediction_paths',0)}/{frame.get('omitted_prediction_points',0)}; backend != game"]
+    if snapshot.get('last_fault'):
+        lines[0]+=' / TECHNICAL STOP' if snapshot['last_fault'].get('kind')=='technical' else ' / INTERVENTION'
+    if (snapshot.get('last_intervention') or {}).get('geometry') is None and snapshot.get('last_intervention'):
+        lines.insert(1,'Brake intervention — exact object geometry unavailable')
+    if (snapshot.get('last_fault') or {}).get('brake_geometry_unavailable'):
+        lines.insert(1,'Latest brake geometry unavailable; HISTORY is older')
+    explanation=(snapshot.get('last_fault') or {}).get('explanation')
+    if explanation:
+        alert=QRectF(rect.left()+12,rect.top()+8,max(160,min(640,rect.width()-375)),76)
+        qp.setPen(QPen(QColor('#facc15'),1));qp.setBrush(QColor(13,20,29,235));qp.drawRoundedRect(alert,7,7)
+        qp.setFont(QFont('Segoe UI',9));qp.setPen(QColor('#f7e3ab'))
+        qp.drawText(alert.adjusted(9,6,-9,-6),Qt.TextFlag.TextWordWrap,explanation)
     card=QRectF(rect.right()-345,rect.top()+6,337,274)
     qp.setPen(QPen(QColor('#435365'),1));qp.setBrush(QColor(13,20,29,220));qp.drawRoundedRect(card,8,8)
     qp.setPen(QColor('#dce8f5'));qp.setFont(QFont('Consolas',8))
