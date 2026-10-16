@@ -446,15 +446,22 @@ def packet(state, truck, source, *, binding=None, evidence_valid=True, **values)
     computed = time.monotonic()
     if signal_stamp is not None and signal_stamp>computed:
         evidence_valid = False
+    # Keep the producing branch even when the optional full packet exceeds a
+    # diagnostic budget. This is evidence only; rejection still checks valid.
+    publication_binding = context(state)
+    invalid_reason = (reason or values.get('speed_control_reason') or 'producer evidence rejected'
+                      if evidence_valid is not True or reason or observed.get('valid') is not True
+                      else 'identity changed during publication' if binding != publication_binding else None)
     return dict(schema_version=SCHEMA, source=source, context=binding,
                 sdk_frame_us=truck.get("sdkFrameTimeUs"),
                 observation_timestamp=observed_at, expires_at=expires,
                 computed_at=computed, deadline_basis=basis, lease_dependencies=inputs,
                 remaining_at_computation_s=expires-computed,
+                invalid_reason=invalid_reason,
                 handoff_required=(source in ('acc', 'autopilot')
                     and not values.get('emergency') and expires-computed < HANDOFF_RESERVE_S),
                 valid=evidence_valid is True and not reason and observed.get("valid") is True
-                    and binding == context(state), **values)
+                    and binding == publication_binding, **values)
 
 
 def rejection(value, binding, now):
@@ -491,6 +498,10 @@ def rejection_details(value, binding, now):
     result.update({k: value.get(k) for k in ('sdk_frame_us', 'observation_timestamp',
         'computed_at', 'expires_at', 'valid', 'source', 'decision_source', 'reason',
         'deadline_basis', 'handoff_required', 'remaining_at_computation_s')})
+    # Absent producer extensions add no evidence. Keep ordinary receipts within
+    # their original budget rather than spending it on two empty field names.
+    result.update({k:value[k] for k in ('invalid_reason', 'speed_control_reason')
+                   if value.get(k) is not None})
     if isinstance(value.get('refresh_protocol'), dict):
         result['refresh_protocol'] = value['refresh_protocol']
     actual = value.get('context')
@@ -1299,13 +1310,15 @@ def _engine_decision(state, truck, now=None, *, diagnostic=None, rejection_info=
     if current_acc and current_acc.get('following_required') is True:
         # Target loss is not clear-road evidence, including between ACC ticks.
         # The old candidate cannot outlive its source's original short lease.
-        from core.acc_following import observed_departure
+        from core.acc_following import observed_departure, observed_braking_continuation
         candidate_present = isinstance(following, dict) and following.get('status') == 'candidate'
         moving_target_present = bool(moving_scope and current_acc.get('following_target_id')
                                     in {t['id'] for t in moving_scope['targets']})
         observed_lead_departure = observed_departure(
             following, current_acc.get('following_target_id'), decision_time())
-        if not candidate_present and not moving_target_present and not observed_lead_departure:
+        continuing_brake = observed_braking_continuation(traffic,
+            current_acc.get('following_target_id'), decision_time())
+        if not candidate_present and not moving_target_present and not observed_lead_departure and not continuing_brake:
             result = reject('ACC target unavailable or unconfirmed departure', traffic)
             if rejection_info is not None:
                 rejection_info['following_target_id'] = current_acc.get('following_target_id')

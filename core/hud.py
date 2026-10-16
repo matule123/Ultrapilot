@@ -600,7 +600,7 @@ class UltraPilotHUD(QWidget):
         rear_visible = explicit_rear or now < self._rear_cam_until
         if not rear_visible:
             self._rear_cam_side = "off"
-        return {
+        result = {
             "state": state,
             "speed_kmh": abs(speed) * 3.6 if abs(speed) < 200 else abs(speed),
             "gear": truck.get("gear", 0),
@@ -639,6 +639,12 @@ class UltraPilotHUD(QWidget):
             "lanes": int(s.get("road_lanes", 2) or 2),
             "vision_lane_offset": float(s.get("lane_offset", 0.0) or 0.0),
         }
+        if s.get('dev_hud_enabled', False):
+            from core.traffic_dev_hud import for_display
+            from core.longitudinal import context
+            result['dev_snapshot'] = for_display(s.get('dev_hud_snapshot') or {},
+                context(s),result['active'])
+        return result
 
     # --- Painting -------------------------------------------------------------
     def paintEvent(self, event):
@@ -685,7 +691,8 @@ class UltraPilotHUD(QWidget):
 
         # 6) Rear-view camera inset (bottom-right of the panel). Shows a glance
         #    behind whenever a turn signal is on or the rear_cam flag is set.
-        self._draw_rear_cam(qp, d)
+        if not self.shared_state.get('dev_hud_enabled', False):
+            self._draw_rear_cam(qp, d)
 
         # Presentation only: existing map progress, no authority or new poller.
         from core.map_load_log import hud_map_loading_text
@@ -1293,7 +1300,7 @@ class UltraPilotHUD(QWidget):
 
             # Surrounding vehicles as solid 3D models (far → near for overlap).
             vehs = []
-            for v in d["traffic"]:
+            for v in ([] if 'dev_snapshot' in d else d["traffic"]):
                 a, l = to_truck(v["x"], v["z"])
                 relative_y = float(v.get("y", d["altitude"]) or 0.0) - d["altitude"]
                 # Never flatten traffic from another bridge level onto the
@@ -1336,6 +1343,13 @@ class UltraPilotHUD(QWidget):
         self._draw_low_poly_ego(qp, view, articulation,
                                 d.get("trailer_attached", False),
                                 self._ego_road_lateral)
+        if 'dev_snapshot' in d:
+            from core.traffic_dev_hud import draw_overlay
+            def project_world(x, y, z):
+                ahead, lateral = to_truck(x, z)
+                return self._project(ahead, lateral, view, y-d['altitude'])
+            draw_overlay(qp, view, d['dev_snapshot'], project_world,
+                         now=d.get('dev_now'), test_data=d.get('dev_test_data', False))
 
     def _draw_low_poly_ego(self, qp, view, articulation=0.0, attached=True,
                            road_lateral=0.0):

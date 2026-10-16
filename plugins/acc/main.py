@@ -19,7 +19,7 @@ class Plugin(BasePlugin):
     """
 
     NAME = "acc"
-    VERSION = "1.3.2"
+    VERSION = "1.3.3"
 
     def on_start(self):
         logging.info("ACC Plugin started with bounded speed PID control.")
@@ -92,15 +92,20 @@ class Plugin(BasePlugin):
             gear = int(truck.get("gear", 0))
             dt = float(delta_time)
             invalid = not math.isfinite(speed) or not math.isfinite(dt) or not 0 < dt <= .5
+            invalid_detail = ('non-finite vehicle speed' if not math.isfinite(speed)
+                else 'control interval outside (0, 0.5] seconds' if not math.isfinite(dt) or not 0 < dt <= .5 else '')
         except (KeyError, TypeError, ValueError, OverflowError):
             invalid = True
             speed, dt, gear = 0., 0., 0
-        if strict and vehicle_control_observation_rejection(self.sdk.shared_state, truck):
+            invalid_detail = 'missing or malformed speed, gear or control interval'
+        observation_rejection = vehicle_control_observation_rejection(self.sdk.shared_state, truck) if strict else ''
+        if observation_rejection:
             invalid = True
+            invalid_detail = observation_rejection
         if invalid or speed < -.1 or gear < 0:
             self._reset_control()
             self._publish_pedals(truck, binding, 0., 0., valid=False,
-                                 reason="invalid speed observation or control interval")
+                                 reason=invalid_detail or ('reverse gear observed' if gear < 0 else 'backward motion observed'))
             return
         speed_kmh = abs(speed) * 3.6
 
@@ -131,11 +136,13 @@ class Plugin(BasePlugin):
                 self._following_fault = 'ACC native producer lifecycle changed; driver takeover required'
             self._native_following_lifecycle = native_lifecycle
         following_cap = None
+        following_owners = []
         following_reason = ('traffic unavailable; cruise only' if following is None
                             else 'no route candidate; traffic coverage unproven')
         if isinstance(following, dict) and following.get('status') == 'candidate':
             try:
                 following_cap = float(following['speed_cap_mps']) * 3.6
+                following_owners = following.get('speed_cap_owners') or []
                 if (not math.isfinite(following_cap) or not 0 <= following_cap <= 500.
                         or not isinstance(following.get('target_id'), str)
                         or not following['target_id']):
@@ -158,6 +165,8 @@ class Plugin(BasePlugin):
                 return
             motion_target=min(qualified['targets'],key=lambda t:(t['cap_mps'],t['id']))
             cap=motion_target['cap_mps']*3.6
+            if following_cap is None or cap <= following_cap:
+                following_owners=[t['id'] for t in qualified['targets'] if t['cap_mps']*3.6==cap]
             following_cap=cap if following_cap is None else min(following_cap,cap)
             following_reason='observed moving protective speed constraint; coverage unproven'
         # No cached pedal/target lease is extended. After target loss the
@@ -170,7 +179,10 @@ class Plugin(BasePlugin):
             self._following_target_id = None
             self._following_fault = ''
             following_reason = 'observed lead left route; coverage remains unproven'
-        if strict and self._followed_target and following_cap is None:
+        from core.acc_following import observed_braking_continuation
+        braking_replaces_cap = observed_braking_continuation(traffic,
+            self._following_target_id, time.monotonic())
+        if strict and self._followed_target and following_cap is None and not braking_replaces_cap:
             self._following_fault = 'ACC target unavailable or unconfirmed departure; driver takeover required'
         if (strict and self._followed_target and motion_scope is not None
                 and self._following_target_id not in {t['id'] for t in motion_scope['targets']}):
@@ -184,6 +196,10 @@ class Plugin(BasePlugin):
             self.sdk.shared_state.set("acc_brake", 1.0)
             publish(self.sdk.shared_state, truck, "acc", binding=binding,
                     throttle=0., brake=1., emergency=True, requested_speed_kmh=None,
+                    braking_actor_ids=([str(traffic['brake_basis']['decisive']['id'])]
+                        if ((traffic or {}).get('brake_basis') or {}).get('decisive')
+                        else (following or {}).get('emergency_actor_ids') or []),
+                    braking_acquisition=(following or {}).get('source_acquisition'),
                     constrained_speed_kmh=None, dependencies=[traffic] if traffic else [])
             self.sdk.shared_state.set("tts_message", "Collision alert! Emergency braking.")
             return
@@ -469,6 +485,11 @@ class Plugin(BasePlugin):
                 following_target_id=(following.get('target_id') or self._following_target_id)
                     if isinstance(following, dict) else self._following_target_id,
                 following_confirmed=False,
+                braking_actor_ids=(following_owners if self._speed_braking
+                    and following_cap is not None and abs(effective_target_speed-following_cap)<1e-9
+                    and self._control_target>=following_cap-1e-9
+                    and not signal_owns_plan and not destination_owns_plan else []),
+                braking_acquisition=(following or {}).get('source_acquisition'),
                 leader_prediction=following.get('leader_prediction') if isinstance(following, dict) else None,
                 requested_acceleration_ms2=desired_acceleration,
                 selected_acceleration_ms2=selected_acceleration,

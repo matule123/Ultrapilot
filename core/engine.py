@@ -336,6 +336,9 @@ class UltraPilotEngine:
         self._cancel_auto_drive_engagement("Engine sa vypína")
         self.shared_state.set("auto_drive_park_hold", False)
         self._release_controller()
+        dev_hud = getattr(self, '_dev_hud', None)
+        if dev_hud is not None:
+            dev_hud.close()
         journal=getattr(self.controller,'_pedal_journal',None)
         if journal is not None and journal.enabled:
             try:
@@ -917,13 +920,18 @@ class UltraPilotEngine:
                 raise ValueError('route calculation unavailable')
             result = selector.select(observed['actors'], truck, float(debug['tracking_progress_m']),
                                      receiver_time=observed['receiver_time'], source=observed.get('source'))
+            result['retained_target_continuity'] = selector.continuing_target()
             result['crossing'] = selector.crossing(observed['actors'], truck, float(debug['tracking_progress_m']))
+            dev_hud = getattr(self, '_dev_hud', None)
+            capture_dev = dev_hud is not None and dev_hud.wants_geometry(time.monotonic())
+            prediction_geometry = {} if capture_dev else None
             if observed.get('ego_bodies'):
                 from core.acc_body_prediction import predict
                 result['body_prediction'] = predict(selector, observed['ego_bodies'],
                     observed['actors'], observed['source']['ego_speed_mps'],
                     float(debug['tracking_progress_m']),observed['source']['ego_anchor'],
-                    source_age=time.monotonic()-observed['source']['observed_at'])
+                    source_age=time.monotonic()-observed['source']['observed_at'],
+                    debug_geometry=prediction_geometry)
                 result['body_prediction']['source_acquisition']={k:observed['source'][k]
                     for k in ('lifecycle','generation','frame_us','observed_at','ego_speed_observed_at')}
             # A no-lead crossing still needs native motion history. select()
@@ -958,6 +966,13 @@ class UltraPilotEngine:
                     expires_at=native['observed_at']+.5, deadline_basis=dict(source='traffic_capture',
                         kind='native_acquisition', observation_timestamp=native['observed_at'],
                         sdk_frame_us=native['frame_us'], expires_at=native['observed_at']+.5)))
+            if capture_dev:
+                try:
+                    from core.traffic_dev_hud import geometry
+                    dev_hud.capture(geometry(observed, selector, truck,
+                        float(debug['tracking_progress_m']), binding, result, prediction_geometry))
+                except Exception:
+                    pass  # Optional rendering cannot invalidate traffic control.
             return result
         except (KeyError, TypeError, ValueError, OverflowError):
             return dict(status='route_unavailable_or_ambiguous', confirmed=False)
@@ -1127,6 +1142,15 @@ class UltraPilotEngine:
         capture or override a no-conflict result on the actual curved route.
         """
         self._traffic_brake_basis=None
+        # Optional presentation is entirely outside the physical write gate.
+        # The UI flag is not a sensor/authority input. No SDK reread is added.
+        if self.shared_state.get('dev_hud_enabled', False):
+            if getattr(self, '_dev_hud', None) is None:
+                from core.traffic_dev_hud import DevHUDFeed
+                self._dev_hud = DevHUDFeed()
+            self._dev_hud.resume()
+        elif getattr(self, '_dev_hud', None) is not None:
+            self._dev_hud.pause()
         self.shared_state.set('lead_distance',None)
         following=self._route_lead_observation(capture,truck,binding)
         if following['status'] not in ('candidate','no_candidate_unproven_coverage'):
@@ -1148,7 +1172,14 @@ class UltraPilotEngine:
         scope=following.get('motion_constraint')
         crossing=following.get('crossing') or {}
         bodies=following.get('body_prediction') or {}
-        if (not following.get('emergency') and crossing.get('conflicts')
+        # A diagnostic potential intersection with zero selected urgency must
+        # not acquire a new actuator dependency. Conversion to a positive speed
+        # trajectory preserves an ACTUAL crossing demand, not every 8 s ray.
+        retained = (following.get('retained_target_continuity') or {}).get('target_id')
+        selector = getattr(self, '_acc_selector', None)
+        actionable = [c for c in crossing.get('conflicts', ()) if c.get('brake', 0.) > 0.
+            or (getattr(selector, '_target_is_crossing', False) and retained == str(c.get('id')))]
+        if (not following.get('emergency') and actionable
                 and bodies.get('status')=='protective_observed_body_prediction'
                 and bodies.get('brake')==0. and bodies.get('unsupported_actors')==0
                 and bodies.get('prediction_duration_s')==3.
@@ -1159,7 +1190,7 @@ class UltraPilotEngine:
             # Actual overlap/swept contact retains its independent safety path.
             targets={t['id']:dict(t) for t in (scope or {}).get('targets',())}
             complete=True
-            for conflict in crossing.get('conflicts',()):
+            for conflict in actionable:
                 actor=conflict.get('actor') or {}
                 dims=actor.get('dimensions_whl') or ()
                 v=actor.get('speed')
@@ -1180,7 +1211,7 @@ class UltraPilotEngine:
                     source_acquisition=dict(following['source_acquisition']),coverage_confirmed=False)
                 self._traffic_brake_basis=dict(self._traffic_brake_basis or dict(
                     kind='directed_crossing_speed_constraint',
-                    decisive=min(crossing['conflicts'],key=lambda c:c['distance_m']),
+                    decisive=min(actionable,key=lambda c:c['distance_m']),
                     source_acquisition=dict(following['source_acquisition']),
                     confirmed_route_conflict=False,coverage_confirmed=False),
                     stop_contract='observed_positive_motion_speed_constraint')
@@ -1225,7 +1256,7 @@ class UltraPilotEngine:
         traffic_truck = {**truck, '_control_observation': dict(schema_version=1,
             sdk_frame_us=truck.get('sdkFrameTimeUs'), observed_at=telemetry_timestamp,
             valid=bool(truck.get('pose_valid', False)))}
-        return publish(self.shared_state, traffic_truck, 'traffic', binding=binding,
+        published = publish(self.shared_state, traffic_truck, 'traffic', binding=binding,
             # Envelope validity belongs to the exact vehicle/identity snapshot.
             # Actor usability and signal qualification are separate contracts;
             # an optional ambiguous actor feed is neither vehicle failure nor
@@ -1247,6 +1278,13 @@ class UltraPilotEngine:
             motion_constraint=following.get('motion_constraint'),
             dependencies=following.get('deadline_dependencies', ()),
             expires_at=following.get('expires_at', float('inf')))
+        dev_hud = getattr(self, '_dev_hud', None)
+        if dev_hud is not None:
+            try:
+                dev_hud.offer(self.shared_state, time.monotonic())
+            except Exception:
+                pass
+        return published
 
     def _update_planner_presentation(self, perception_data, telemetry_data, delta_time, published_traffic):
         """One presentation owner; never synthesize actuator authority.
@@ -2675,6 +2713,13 @@ class UltraPilotEngine:
         try:
             return self._flush_controls_unlocked()
         finally:
+            dev_hud = getattr(self, '_dev_hud', None)
+            if dev_hud is not None:
+                try:
+                    dev_hud.written(getattr(self, '_longitudinal_trace', None), journal,
+                        getattr(self, '_automatic_longitudinal_fault', None), time.monotonic())
+                except Exception:
+                    pass  # Display-only; never replace an actuator result.
             try:
                 journal.finish_decision(time.monotonic())
             except Exception as error:

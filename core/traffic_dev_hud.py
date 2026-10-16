@@ -1,0 +1,372 @@
+"""Optional bounded presentation of consumed control geometry, never authority.
+
+No sensor reads, predictions or actuator calls. One display publication in
+flight, no queue; two 192 KiB accounted geometry frames, one 64 KiB output
+receipt. Byte accounting uses the existing diagnostic codec; Python allocator
+overhead is measured separately. Old geometry is never rebound to a new ID.
+"""
+from collections import deque
+from concurrent.futures import ThreadPoolExecutor
+import math
+import time
+import bisect
+
+from core.navigation.longitudinal_diagnostics import bounded_copy
+
+FRAME_BUDGET = 192 * 1024
+RECEIPT_BUDGET = 64 * 1024
+PERIOD_S = .1
+COLORS = dict(passive='#929ba9', tracked='#50aaff', protective='#facc15',
+              service='#ff982d', emergency='#ff4b57', invalid='#536071')
+
+
+def acquisition(value):
+    source = value or {}
+    return tuple(source.get(k) for k in ('lifecycle', 'generation', 'frame_us', 'observed_at'))
+
+
+def body_corners(body):
+    """The SAME width/forward axes as swept SAT, in ETS2 world X/Z."""
+    w,_,length=body['dimensions_whl']; yaw=body['yaw']; c,s=math.cos(yaw),math.sin(yaw)
+    return [[body['x']+c*x-s*z,body['y'],body['z']-s*x-c*z]
+        for x,z in ((-w/2,-length/2),(w/2,-length/2),(w/2,length/2),(-w/2,length/2),(-w/2,-length/2))]
+
+
+def geometry(observed, selector, truck, progress, binding, result, prediction):
+    """Copy only existing decoded bodies/reference and actual prediction work."""
+    actors = []
+    previous = selector._native_previous
+    for actor in observed.get('actors', ())[:80]:
+        row = {k:actor.get(k) for k in ('id','slot','source','record_fingerprint','speed','speed_source')}
+        row['bodies'] = [{k:b.get(k) for k in ('x','y','z','yaw','dimensions_whl')}
+                         for b in actor.get('bodies', ())[:4]]
+        old = previous[1].get(actor['id']) if previous else None
+        row['observed_history'] = None
+        if (old and old.get('source') == actor['source'] and old.get('slot') == actor['slot']
+                and 0 < observed['source']['observed_at']-previous[0][3] <= .5
+                and math.hypot(old['x']-actor['x'],old['z']-actor['z'])
+                   <= max(old['speed'],actor['speed'])*(observed['source']['observed_at']-previous[0][3])+1.):
+            row['observed_history'] = [[previous[0][3],old['x'],old['y'],old['z']],
+                [observed['source']['observed_at'],actor['x'],actor['y'],actor['z']]]
+        actors.append(row)
+    # Retain a local, ordered portion of the actual projection reference.
+    first=bisect.bisect_left(selector.arcs,progress-20)
+    last=bisect.bisect_right(selector.arcs,progress+150)
+    selected=range(first,min(first+256,last))
+    raw_source=observed.get('source') or {}
+    crossing=result.get('crossing') or {}
+    conflicts=crossing.get('conflicts') or ()
+    crossing=dict(status=crossing.get('status'),brake=crossing.get('brake'),
+        conflicts=[{k:c.get(k) for k in ('id','point_xyz','distance_m','actor_arrival_s',
+            'ego_arrival_earliest_s','brake')} for c in conflicts[:64]],
+        omitted_conflicts=max(0,len(conflicts)-64))
+    frame = dict(schema=1, context=binding, source={k:raw_source.get(k) for k in
+        ('valid','reason','lifecycle','generation','frame_us','observed_at')},
+        receiver_time=observed.get('receiver_time'), status=observed.get('status'),
+        ego={k:truck.get(k) for k in ('x','y','z','rotation','speed','gear','sdkFrameTimeUs','_control_observation')},
+        actors=actors, omitted_actors=max(0,len(observed.get('actors',()))-80),
+        reference=[selector.points[i] for i in selected],
+        reference_truncated=last-first>256, corridor_status='REFERENCE_ONLY; physical edges unverified',
+        prediction=prediction, crossing=crossing,
+        body_prediction={k:(result.get('body_prediction') or {}).get(k) for k in
+            ('status','brake','model','prediction_duration_s','unsupported_actors')},
+        following={k:result.get(k) for k in ('status','target_id','gap_m','speed_cap_mps','emergency')})
+    owned=bounded_copy(frame, limit=FRAME_BUDGET)[0]
+    if owned.get('snapshot_status'):
+        # Keep actual actor identities/poses before optional sampled paths.
+        # Fixed budget is unchanged; any omitted prediction is explicit.
+        reduced=dict(frame,prediction=dict(status='UNAVAILABLE_FRAME_BUDGET',
+            omitted_actor_paths=len((prediction or {}).get('actor_paths') or ())),
+            prediction_incomplete=True)
+        owned=bounded_copy(reduced,limit=FRAME_BUDGET)[0]
+        if owned.get('snapshot_status'):
+            owned.update(source=frame['source'],context=list(binding),
+                omitted_actors=len(actors),omitted_prediction=True)
+    return owned
+
+
+class DevHUDFeed:
+    """Display adapter for the existing Engine and PedalJournal, not a collector."""
+    def __init__(self):
+        self.frames = deque(maxlen=2)
+        self.latest = None
+        self.next_at = 0.
+        self.write_next_at = 0.
+        self.future = None
+        self.worker = None
+        self.skipped = 0
+        self.active = True
+        self.geometry_next_at = 0.
+
+    def wants_geometry(self, now):
+        if not self.active or now < self.geometry_next_at:
+            return False
+        self.geometry_next_at = now+PERIOD_S
+        return True
+
+    def pause(self):
+        self.active = False
+        self.frames.clear(); self.latest = None
+
+    def resume(self):
+        self.active = True
+
+    def capture(self, frame):
+        # Engine traffic thread owns frames. Repeated source reads cannot
+        # renew frame freshness and do not add history entries.
+        if self.active and (not self.frames or acquisition(self.frames[-1].get('source')) != acquisition(frame.get('source'))):
+            self.frames.append(frame)
+
+    def written(self, trace, journal, fault, now):
+        if not self.active or now < self.write_next_at:
+            return
+        self.write_next_at = now+PERIOD_S
+        if not isinstance(trace, dict):
+            return
+        inputs = trace.get('inputs') or {}
+        traffic = inputs.get('traffic') or {}
+        following = traffic.get('following') or {}
+        acc = inputs.get('acc') or {}
+        fields=('source','decision_source','reason','throttle','brake','emergency','sequence',
+            'computed_at','observation_timestamp','sdk_frame_us','expires_at')
+        selected=trace.get('selected') or {}
+        basis=traffic.get('brake_basis') or {}
+        decisive=basis.get('decisive') or {}
+        original_acc=(((trace.get('requested') or {}).get('producer_trace') or {}).get('inputs') or {}).get('acc') or {}
+        written_summary=getattr(journal._local,'written_summary',None)
+        row=written_summary[0] if written_summary else {}
+        value = dict(context=trace.get('context'), activation=trace.get('activation'),
+            source={k:selected.get(k) for k in fields},
+            requested={k:(trace.get('requested') or {}).get(k) for k in fields},
+            output_intent={k:row.get('requested_'+k) for k in ('throttle','brake')},
+            written_phase=row.get('phase'), sequence=trace.get('decision_sequence'),
+            sdk_frame_us=trace.get('sdk_frame_us'), observation_timestamp=trace.get('observation_timestamp'),
+            traffic_source=((original_acc.get('braking_acquisition') or acc.get('braking_acquisition'))
+                if selected.get('source') == 'acc' and selected.get('brake',0.) > 0.
+                else following.get('source_acquisition')),
+            target_id=acc.get('following_target_id') or following.get('target_id'),
+            observed_reference_gap_m=following.get('gap_m'),
+            targets=(traffic.get('motion_constraint') or {}).get('targets'),
+            braking_actor_ids=(original_acc.get('braking_actor_ids')
+                if original_acc else acc.get('braking_actor_ids')),
+            brake_basis=dict(kind=basis.get('kind'), decisive={k:decisive.get(k)
+                for k in ('id','distance_m','predicted_contact_s','contact_basis')}),
+            first_fault={k:(fault or {}).get(k) for k in ('reason','producer','observed_at','sdk_frame_us')},
+            requested_speed_kmh=acc.get('requested_speed_kmh'),
+            constrained_speed_kmh=acc.get('constrained_speed_kmh'),
+            control_target_kmh=acc.get('control_target_kmh'),
+            regulator_mode=acc.get('speed_control_reason'), refresh=(trace.get('selected') or {}).get('refresh_protocol'),
+            write_stats=dict(getattr(journal._local,'writes',{})),
+            backend_pair=dict(journal._held), last_successful_pair=dict(journal._last_successful),
+            game_consumption_verified=False, recorded_at=now)
+        self.latest = bounded_copy(value, limit=RECEIPT_BUDGET)[0]
+
+    def snapshot(self):
+        latest = self.latest
+        frames = tuple(self.frames)
+        matched = None
+        if latest:
+            for frame in frames:
+                if (frame.get('context') == latest.get('context')
+                        and acquisition(frame.get('source')) == acquisition(latest.get('traffic_source'))):
+                    matched = frame
+        return dict(schema=1, detection=frames[-1] if frames else None,
+            consumed_geometry=matched, applied=latest, skipped_publications=self.skipped,
+            attribution='EXACT_NATIVE_ACQUISITION_AND_ROUTE' if matched else 'CONSUMED_GEOMETRY_UNAVAILABLE',
+            limits=dict(frames=2, frame_accounted_bytes=FRAME_BUDGET, receipt_accounted_bytes=RECEIPT_BUDGET,
+                actors=80, bodies_per_actor=4, actor_paths=64, reference_points=256, publication_hz=10))
+
+    def offer(self, state, now):
+        if not self.active or now < self.next_at:
+            return
+        self.next_at = now+PERIOD_S
+        if self.future is not None and not self.future.done():
+            self.skipped += 1
+            return
+        if self.worker is None:
+            self.worker = ThreadPoolExecutor(max_workers=1, thread_name_prefix='dev-hud-presentation')
+        snapshot = self.snapshot()  # References already owned, never mutated.
+        def publish():
+            try:
+                if self.active and state.get('dev_hud_enabled', False):
+                    state.set('dev_hud_snapshot', snapshot)
+            except Exception:
+                pass  # Presentation failure cannot revoke or restore controls.
+        self.future = self.worker.submit(publish)
+
+    def close(self):
+        self.pause()
+        if self.worker:
+            self.worker.shutdown(wait=False, cancel_futures=True)
+
+
+def actor_style(actor, snapshot, now, *, stale=False):
+    """Colour requires the SAME consumed owner, not mere presence in a buffer."""
+    applied = snapshot.get('applied') or {}
+    consumed = snapshot.get('consumed_geometry') or {}
+    source = consumed.get('source') or (snapshot.get('detection') or {}).get('source') or {}
+    if (stale or snapshot.get('control_current') is False
+            or not 0 <= now-source.get('observed_at', float('-inf')) <= .5):
+        return 'invalid', 'stale / unverified'
+    own = next((a for a in consumed.get('actors', ()) if
+        all(a.get(k) == actor.get(k) for k in ('id','source','slot','record_fingerprint'))), None)
+    if own is None:
+        return 'passive', 'detection only; no consumed attribution'
+    selected = applied.get('source') or {}
+    stats = applied.get('write_stats') or {}
+    pair = applied.get('backend_pair') or {}
+    basis = applied.get('brake_basis') or {}
+    cause = str((basis.get('decisive') or {}).get('id')) == str(actor['id'])
+    target = str(applied.get('target_id')) == str(actor['id'])
+    actual = (stats.get('write_success_count',0)>0 and pair.get('brake') is not None
+              and pair['brake']>0 and stats.get('write_error_count',0)==0
+              and stats.get('backend_brake_max') is not None and stats['backend_brake_max']>0.)
+    acc_cause = str(actor['id']) in {str(v) for v in applied.get('braking_actor_ids') or ()}
+    if selected.get('emergency') and actual and (cause or selected.get('source')=='acc' and acc_cause):
+        return 'emergency', selected.get('reason') or 'selected emergency'
+    if actual and ((selected.get('source')=='acc' and acc_cause) or
+                   (selected.get('source') in ('traffic','traffic_emergency') and cause)):
+        return 'service', selected.get('reason') or 'selected service brake'
+    if any(str(t.get('id'))==str(actor['id']) for t in applied.get('targets') or ()):
+        return 'protective', 'positive protective speed constraint'
+    if target:
+        return 'tracked', 'ACC target; no attributed brake'
+    return 'passive', 'observed; no selected intervention'
+
+
+def for_display(snapshot, expected, active):
+    """Presentation check only; never relabel a source with the current route."""
+    def freeze(value):
+        return tuple(freeze(v) for v in value) if isinstance(value,(list,tuple)) else value
+    value=dict(snapshot)
+    frame=value.get('detection') or {}
+    applied=value.get('applied') or {}
+    value['control_current']=bool(active and freeze(frame.get('context'))==freeze(expected)
+        and freeze(applied.get('context'))==freeze(expected))
+    return value
+
+
+def draw_overlay(qp, rect, snapshot, project, now=None, *, test_data=False):
+    """Decorate the CLASSIC 3-D HUD using its exact world/camera projection.
+
+    Roads, lane ribbons, ego and camera remain the ordinary HUD. All developer
+    bodies/paths are actual consumed intermediates, never an independent model.
+    """
+    from PyQt6.QtCore import Qt, QPointF, QRectF
+    from PyQt6.QtGui import QColor, QFont, QPen, QPolygonF
+    now = time.monotonic() if now is None else now
+    qp.save(); qp.setClipRect(rect)
+    frame=snapshot.get('detection') or {}
+    source=frame.get('source') or {}
+    age=None if source.get('observed_at') is None else now-source['observed_at']
+    source_stale=bool(age is None or not 0<=age<=.5 or frame.get('snapshot_status'))
+    stale=source_stale or snapshot.get('control_current') is False
+    qp.setFont(QFont('Consolas',9))
+    def poly(points, colour, dashed=False, width=1.4):
+        qp.setPen(QPen(QColor(colour),width,Qt.PenStyle.DashLine if dashed else Qt.PenStyle.SolidLine))
+        qp.setBrush(Qt.BrushStyle.NoBrush)
+        run=[]
+        for x,y,z in points:
+            p=project(x,y,z)
+            if p is None:
+                if len(run)>1:qp.drawPolyline(QPolygonF(run))
+                run=[]
+            else:run.append(p)
+        if len(run)>1:qp.drawPolyline(QPolygonF(run))
+    prediction=frame.get('prediction') or {}
+    # Faint actual ego-body samples: a modelled swept strip, not road edges.
+    for sample in prediction.get('ego_samples') or ():
+        for body in sample:
+            if len(body.get('dimensions_whl') or ())==3:
+                poly(body_corners(body),'#456b83',stale,.65)
+    actors=frame.get('actors') or ()
+    # Painter order follows existing perspective depth, including camera orbit.
+    ordered=sorted(actors,key=lambda a:
+        min((p.y() for b in a.get('bodies') or ()
+             if (p:=project(b['x'],b['y'],b['z'])) is not None),default=-1))
+    labels=[];omitted=0
+    for actor in ordered:
+        style,why=actor_style(actor,snapshot,now,stale=stale)
+        colour=COLORS[style]
+        for body in actor.get('bodies') or ():
+            if len(body.get('dimensions_whl') or ())!=3:continue
+            corners=body_corners(body);half_height=body['dimensions_whl'][1]/2
+            bottom=[[x,y-half_height,z] for x,y,z in corners]
+            top=[[x,y+half_height,z] for x,y,z in corners]
+            roof=[project(x,y,z) for x,y,z in top[:-1]]
+            if all(p is not None for p in roof):
+                fill=QColor(colour);fill.setAlpha(55 if stale else 95)
+                qp.setPen(Qt.PenStyle.NoPen);qp.setBrush(fill);qp.drawPolygon(QPolygonF(roof))
+            poly(bottom,colour,stale,1.5);poly(top,colour,stale,1.5)
+            for a,b in zip(bottom[:4],top[:4]):poly([a,b],colour,stale,1.)
+        history=actor.get('observed_history') or ()
+        poly([p[1:] for p in history],colour,True,.9)
+        for path in prediction.get('actor_paths') or ():
+            if all(path.get(k)==actor.get(k) for k in ('id','slot','source','record_fingerprint')):
+                poly([p[1:] for p in path['points']],colour,stale)
+                for t,x,y,z in path['points'][::4]:
+                    at=project(x,y,z)
+                    if at is not None:
+                        qp.setPen(QColor(colour));qp.drawEllipse(at,2.,2.)
+                        qp.drawText(at+QPointF(3,-3),f'{t:g}s')
+        body=(actor.get('bodies') or [{}])[0]
+        if 'x' not in body:continue
+        at=project(body['x'],body['y']+body['dimensions_whl'][1]/2,body['z'])
+        if at is None:continue
+        label=f"{actor['id']} [{actor.get('source','?')}:{actor.get('slot','?')}]"
+        if actor.get('speed_source')=='parked_classification':label+=' static model'
+        elif isinstance(actor.get('speed'),(int,float)):label+=f" {actor['speed']:.1f}m/s"
+        cap=next((t.get('cap_mps') for t in (snapshot.get('applied') or {}).get('targets') or ()
+            if str(t.get('id'))==str(actor['id'])),None)
+        if isinstance(cap,(int,float)):label+=f' cap {cap:.1f}'
+        for offset in (0,-16,16,-32,32,-48,48):
+            box=QRectF(at.x()+5,at.y()+offset-14,235,16)
+            if rect.contains(box) and not any(box.intersects(b) for b in labels):
+                labels.append(box)
+                qp.fillRect(box,QColor(13,20,29,205));qp.setPen(QColor(colour));qp.drawText(box,label)
+                break
+        else:omitted+=1
+    for conflict in (frame.get('crossing') or {}).get('conflicts') or ():
+        p=conflict.get('point_xyz')
+        if p:
+            actor=next((a for a in actors if a['id']==conflict['id']),{})
+            style,_=actor_style(actor,snapshot,now,stale=stale) if actor else ('invalid','unavailable')
+            at=project(*p)
+            if at is not None:
+                qp.setPen(QPen(QColor(COLORS[style]),1,Qt.PenStyle.DashLine));qp.setBrush(Qt.BrushStyle.NoBrush)
+                qp.drawEllipse(at,4.,4.)
+                body=(actor.get('bodies') or [{}])[0]
+                if 'x' in body:poly([[body['x'],body['y'],body['z']],p],COLORS[style],True,.8)
+    applied=snapshot.get('applied') or {};selected=applied.get('source') or {}
+    pair=applied.get('backend_pair') or {};stats=applied.get('write_stats') or {}
+    ctx=applied.get('context') or frame.get('context') or ()
+    def fmt(v):return '?' if v is None else f'{v:.3f}' if isinstance(v,float) else str(v)
+    read_age=None if frame.get('receiver_time') is None else now-frame['receiver_time']
+    title='DEV / TEST DATA' if test_data else 'DEV / CONTROL EVIDENCE'
+    lines=[title+(' / STALE' if source_stale else
+        ' / CONTROL UNVERIFIED' if snapshot.get('control_current') is False else ''),
+        f"native frame {fmt(source.get('frame_us'))} gen {fmt(source.get('generation'))}",
+        f"source at {fmt(source.get('observed_at'))} / age {fmt(None if age is None else age*1000)}ms",
+        f"read age {fmt(None if read_age is None else read_age*1000)}ms (not producer time)",
+        f"session {fmt(ctx[1] if len(ctx)>1 else None)} / rev {fmt(ctx[5] if len(ctx)>5 else None)}",
+        f"intent {str(ctx[4])[:9] if len(ctx)>4 else '?'} build {str(ctx[6])[:9] if len(ctx)>6 else '?'}",
+        f"SDK {fmt(applied.get('sdk_frame_us'))} decision {fmt(applied.get('sequence'))}",
+        f"request T/B {fmt((applied.get('output_intent') or {}).get('throttle'))}/{fmt((applied.get('output_intent') or {}).get('brake'))}",
+        f"written T/B {fmt(pair.get('throttle'))}/{fmt(pair.get('brake'))} #{fmt(stats.get('write_last_sequence'))}",
+        f"owner {fmt(selected.get('source'))} / ACC {fmt(applied.get('target_id'))}",
+        f"target req/cap {fmt(applied.get('requested_speed_kmh'))}/{fmt(applied.get('constrained_speed_kmh'))}km/h",
+        f"ref gap {fmt(applied.get('observed_reference_gap_m'))}m / contact {fmt(((applied.get('brake_basis') or {}).get('decisive') or {}).get('predicted_contact_s'))}s",
+        str(selected.get('reason') or 'reason unavailable')[:54],
+        f"refresh {fmt((applied.get('refresh') or {}).get('state'))} / AEB {bool(selected.get('emergency'))}",
+        str((applied.get('first_fault') or {}).get('reason') or 'first fault not captured')[:54],
+        'constant native motion: bodies 3s / crossing rays 8s',
+        ('EXACT consumed acquisition' if snapshot.get('consumed_geometry') else 'consumed geometry unavailable'),
+        f"omitted labels/actors {omitted}/{frame.get('omitted_actors',0)}; backend != game"]
+    card=QRectF(rect.right()-345,rect.top()+6,337,258)
+    qp.setPen(QPen(QColor('#435365'),1));qp.setBrush(QColor(13,20,29,220));qp.drawRoundedRect(card,8,8)
+    qp.setPen(QColor('#dce8f5'));qp.setFont(QFont('Consolas',8))
+    qp.drawText(card.adjusted(9,6,-8,-4),Qt.AlignmentFlag.AlignTop,'\n'.join(lines))
+    qp.setFont(QFont('Consolas',8));qp.setPen(QColor('#cbd9e8'))
+    legend='gray observed | blue ACC | yellow cap | orange selected brake | red AEB | dashed stale/history'
+    qp.drawText(rect.adjusted(12,rect.height()-25,-12,-3),Qt.TextFlag.TextWordWrap,legend)
+    qp.restore()

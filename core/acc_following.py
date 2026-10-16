@@ -400,6 +400,28 @@ class RouteLeadSelector:
         self._departure_observation = proof
         return proof
 
+    def continuing_target(self):
+        """Same observed native owner across acquisitions, never clearance.
+
+        A stronger brake can replace its speed cap without losing this actor.
+        Missing, reassigned and discontinuously moved records do not qualify.
+        """
+        if not self.target_id or not self._native_previous or not self._native_current:
+            return None
+        previous, current = self._native_previous, self._native_current
+        old = previous[1].get(int(self.target_id)); new = current[1].get(int(self.target_id))
+        dt = current[0][3]-previous[0][3]
+        if (not old or not new or previous[0][0] != current[0][0] or not 0 < dt <= .5
+                or old.get('source') != new.get('source') or old.get('slot') != new.get('slot')
+                or len(old.get('bodies', ())) != len(new.get('bodies', ()))
+                or math.hypot(new['x']-old['x'],new['z']-old['z'])
+                   > max(new['speed'],old['speed'])*dt+1.):
+            return None
+        return dict(target_id=str(self.target_id), source=new['source'], slot=new['slot'],
+            lifecycle=current[0][0], generation=current[0][1], observed_at=current[0][3],
+            record_fingerprint=new.get('record_fingerprint'),
+            basis='same_native_id_slot_continuous_observed_motion_not_clearance')
+
     def retain_crossing_target(self, targets, receiver_time):
         """Bind a positive crossing cap to the current native original owner."""
         if not self._native_current or not targets:
@@ -480,6 +502,7 @@ class RouteLeadSelector:
                 actor=next(a for a in actors if str(a['id'])==selected[1])
                 self._last_target_observation=(dict(actor),receiver_time)
             return dict(status='no_candidate_unproven_coverage', confirmed=False,
+                emergency_actor_ids=sorted(c[1] for c,d in zip(protective,caution) if d['emergency']),
                 protective_brake=caution_brake, emergency=any(c['emergency'] for c in caution),**caution_fields)
         candidates.sort()
         nearest = candidates[0]
@@ -507,7 +530,11 @@ class RouteLeadSelector:
                     gap_kind='route_reference_points',
                     leader_prediction=predictions.get(selected[1]),
                     speed_cap_mps=min(c['speed_cap_mps'] for c in constraints),
+                    speed_cap_owners=[c[1] for c,d in zip(candidates,constraints)
+                        if d['speed_cap_mps']==min(v['speed_cap_mps'] for v in constraints)],
                     emergency=any(c['emergency'] for c in constraints+caution),
+                    emergency_actor_ids=sorted(c[1] for c,d in zip(candidates+protective,constraints+caution)
+                        if d['emergency']),
                     protective_brake=max([c['protective_brake'] for c in constraints]+[caution_brake]),
                     **caution_fields,
                     reason='projected receiver observation; publisher freshness and lane membership unproven')
@@ -590,6 +617,7 @@ class RouteLeadSelector:
                         urgency = min(t,earliest)
                         brake = 0. if outside_window else (1. if urgency <= 1. else ((5.-min(5.,urgency))/4.)**2)
                         candidates.append(dict(id=actor['id'], route_progress_m=start+u*length,
+                            point_xyz=[ax+u*dx, ay+u*dy, az+u*dz],
                             distance_m=distance, actor_arrival_s=t, ego_arrival_earliest_s=earliest,
                             ego_arrival_latest_s=latest if math.isfinite(latest) else None,
                             reserve_s=HEADWAY_S, assumed_ego_acceleration_mps2=0. if timed else 2.,
@@ -610,6 +638,20 @@ class RouteLeadSelector:
         except (KeyError, TypeError, ValueError, OverflowError):
             result.update(status='crossing_projection_unavailable',conflicts=[],brake=0.)
         return result
+
+
+def observed_braking_continuation(traffic, target_id, now):
+    """A current stronger brake supersedes regulation, never releases a target."""
+    try:
+        following = traffic['following']
+        proof = following['retained_target_continuity']
+        source = following['source_acquisition']
+        return bool(traffic['traffic_brake'] > 0. and target_id and proof['target_id'] == target_id
+            and proof['basis'] == 'same_native_id_slot_continuous_observed_motion_not_clearance'
+            and all(proof[k] == source[k] for k in ('lifecycle', 'generation', 'observed_at'))
+            and 0 <= now-proof['observed_at'] <= .5)
+    except (KeyError, TypeError, ValueError):
+        return False
 
 
 def observed_departure(following, target_id, now):

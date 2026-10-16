@@ -171,9 +171,14 @@ def test_summary_keeps_consumed_actor_before_detail_budget_exhaustion(joint):
 def test_two_observed_crossing_caps_keep_every_current_owner(joint):
     state,engine,ap,acc,policy,tick,_,_,physical,writes,clock=joint
     actors=[dict(id=42,x=-20.,y=10.,z=75.,yaw=-math.pi/2,speed=5.),
-            dict(id=43,x=-25.,y=10.,z=85.,yaw=-math.pi/2,speed=5.)]
+            # Both must have an ACTUAL crossing demand for this ownership test.
+            # The previous x=-25 placed 43 at 5.45 s, hence zero urgency: that
+            # passive possibility must no longer acquire a speed cap. Keep the
+            # same two-owner and lost-original-owner safety assertions below.
+            dict(id=43,x=-21.5,y=10.,z=85.,yaw=-math.pi/2,speed=5.)]
     ego=[(2.25,10.,15.,0.,0.,1.,0.,2.5,4.,6.)]
     following=timed_step(joint,actors,generation=1,speed=10.,ego=ego)
+    assert all(c['brake']>0. for c in following['crossing']['conflicts'])
     scope=following['motion_constraint']
     assert {t['id'] for t in scope['targets']}=={'42','43'}
     assert following['body_prediction']['brake']==0.

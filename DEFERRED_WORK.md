@@ -1,5 +1,28 @@
 # Odložená a nedokončená práca
 
+## Crossing ownership and classic 3-D developer HUD — 16 October 2026
+
+See [PHASE7_CROSSING_AND_DEV_HUD_20261016.md](PHASE7_CROSSING_AND_DEV_HUD_20261016.md).
+New passive zero-urgency crossings no longer acquire an active cap. ACC and the
+final arbiter share native-owner continuity when stronger current braking
+supersedes a positive speed constraint. Missing/reassigned/old sources still
+reject; continuous braking, emergency, signal release and the original 500 ms
+limits remain. ACC 1.3.3 is the only changed plugin implementation/version.
+
+Default-off DEV traffic decorates the existing classic 3-D HUD/roads with actual
+consumed geometry, original clocks and physical brake-owner attribution. No new
+collector or predictor. The Oct 15 historical ACC reset branch/full actor scene
+remain unrecorded; reproduced code defects are not asserted as the uniquely
+proven historical branch. New behavior remains GAME NOT VERIFIED; no deployment
+or new drive is requested. Original data and the existing significant-event quota
+are preserved.
+
+Final offline result: 2,765 tests and 1,592 subtests pass; exact source-bound
+19-file candidate is prepared, not deployed. Steering/ordinary longitudinal
+benchmark results remain numerically unchanged. Historical exact ACC reset
+cause and complete ID 83 scene remain unverified, independently of the corrected
+production counterexamples and measured optional display overhead.
+
 ## Refresh response lifecycle — 15 October 2026 afternoon
 
 See [PHASE7_REFRESH_RESPONSE_PROTOCOL_20261015.md](PHASE7_REFRESH_RESPONSE_PROTOCOL_20261015.md).

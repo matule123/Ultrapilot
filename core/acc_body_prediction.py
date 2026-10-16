@@ -41,7 +41,7 @@ def contact_interval(a, b, va, vb, duration):
     return lo
 
 
-def predict(route, ego_bodies, actors, speed, progress, anchor, *, source_age=0.):
+def predict(route, ego_bodies, actors, speed, progress, anchor, *, source_age=0., debug_geometry=None):
     result = dict(status='unavailable_ego_body_or_prediction', brake=0., conflicts=[],
         complete_envelope_verified=False, coverage_confirmed=False,
         model='native_boxes_directed_reference_fixed_articulation_constant_actor_motion')
@@ -77,6 +77,9 @@ def predict(route, ego_bodies, actors, speed, progress, anchor, *, source_age=0.
                 y=body['y']+target[1]-initial[1],
                 z=anchor[2]+target[2]-initial[2]-s*ox+c*oz, yaw=body['yaw']+angle))
         samples.append(bodies)
+    if debug_geometry is not None:
+        debug_geometry.update(ego_samples=samples, actor_paths=[], omitted_actor_paths=0, horizon_s=HORIZON_S,
+            step_s=STEP_S, model=result['model'])
     missing = 0
     for actor in actors:
         parked = (actor.get('source') == 'parked'
@@ -92,7 +95,7 @@ def predict(route, ego_bodies, actors, speed, progress, anchor, *, source_age=0.
             missing += 1; continue
         contact = None
         contact_basis = 'swept_constant_motion_model'
-        for body in actor['bodies']:
+        for body_index, body in enumerate(actor['bodies']):
             dims = body.get('dimensions_whl') or ()
             if len(dims) != 3 or not all(math.isfinite(n) and n > 0 for n in dims):
                 missing += 1; continue
@@ -111,9 +114,18 @@ def predict(route, ego_bodies, actors, speed, progress, anchor, *, source_age=0.
             if math.hypot(body['x']-root['x'], body['z']-root['z']) > (speed+v)*HORIZON_S+extent+own_extent:
                 continue
             bv = -math.sin(body['yaw'])*v, -math.cos(body['yaw'])*v
+            path = None
+            if debug_geometry is not None and len(debug_geometry['actor_paths']) < 64:
+                path = dict(id=actor['id'], source=actor['source'], slot=actor['slot'],
+                    record_fingerprint=actor.get('record_fingerprint'), body_index=body_index, points=[])
+                debug_geometry['actor_paths'].append(path)
+            elif debug_geometry is not None:
+                debug_geometry['omitted_actor_paths'] += 1
             for i, (before, after) in enumerate(zip(samples, samples[1:])):
                 at = i*STEP_S
                 other = dict(body, x=body['x']+bv[0]*at, z=body['z']+bv[1]*at)
+                if path is not None:
+                    path['points'].append([at, other['x'], other['y'], other['z']])
                 for a, b in zip(before, after):
                     av = (b['x']-a['x'])/STEP_S, (b['z']-a['z'])/STEP_S
                     # Rotation envelope around the segment-start orientation;

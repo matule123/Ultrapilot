@@ -1,6 +1,6 @@
 import time
 import math
-from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QFrame
+from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QFrame, QCheckBox
 from PyQt6.QtGui import QPainter, QColor, QFont, QPen, QPolygonF
 from PyQt6.QtCore import Qt, QTimer, QRectF, QPointF
 
@@ -428,6 +428,11 @@ class VisualizationPage(QWidget):
         self.title.setStyleSheet("font-size:20px;font-weight:700;color:" + self._pal['text'] + ";")
         title_row.addWidget(self.title)
         title_row.addStretch()
+        self.dev_hud_toggle = QCheckBox('DEV traffic')
+        self.dev_hud_toggle.setChecked(bool(state.get('dev_hud_enabled', False)))
+        self.dev_hud_toggle.setToolTip('Diagnostika skutočne spotrebovaných objektov a zásahov; nemení riadenie.')
+        self.dev_hud_toggle.toggled.connect(lambda enabled: state.set('dev_hud_enabled', enabled))
+        title_row.addWidget(self.dev_hud_toggle)
         self.sub = QLabel("●  LIVE TELEMETRY")
         self.sub.setStyleSheet("color:#16A34A;font-size:11px;font-weight:700;")
         title_row.addWidget(self.sub)

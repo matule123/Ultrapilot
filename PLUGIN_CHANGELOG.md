@@ -2,6 +2,22 @@
 
 Release history for individual plugins. See [PLUGIN_VERSIONS.md](PLUGIN_VERSIONS.md) for versioning rules.
 
+## ACC
+
+### 1.3.3 — unreleased, 2026-10-16
+
+- Preserve a still-observed native target when a current stronger traffic/body brake supersedes its ordinary positive speed constraint. Use one shared original-acquisition continuity check in ACC and the final Engine arbiter; never interpret disappearance, reassigned slots, lifecycle changes or discontinuous motion as clearance. Keep missing/invalid input rejection and emergency priority.
+- Publish the exact producing invalidity reason and compact brake-owner/acquisition attribution for the existing immutable diagnostics and optional developer HUD. Distinguish malformed observations, reverse, invalid control intervals, target loss and publication identity races. No PID, pedal mapping, comfort gain or timeout change.
+
+## Core crossing qualification and classic 3-D developer HUD — unreleased, 2026-10-16
+
+- Do not turn a new zero-urgency, distant straight-motion crossing possibility into an active ACC speed cap. Preserve existing actually acquired crossing ownership and all observed overlap/swept-box safety demands; absence and a null contact field are not clearance evidence.
+- Retain compact native acquisition/owner and the first producer rejection cause ahead of optional prediction detail within the existing journal budgets and unchanged codec key tables.
+- Preserve full compared identities and deadline provenance when producer-cause fields are present: omit absent extensions and use the existing lossless bounded codec before dropping optional detail. Keep the original 8 KiB fault limit.
+- Add a default-off `DEV traffic` toggle on Visualization. Decorate the existing classic 3-D HUD, roads and camera with the actual native boxes/trailers, observed history, computed prediction samples, conflict points, current control ownership, original source clocks and existing backend receipts. Never substitute a fresh object sharing only an ID for older consumed geometry. Colour an actual brake only with exact consumed acquisition, actor provenance and a successful physical write; backend return is not game consumption.
+- Bound capture/publication to 10 Hz, geometry/receipt allocations, primitive counts, two owned frames and one in-flight display publication without a queue. Disabling stops geometry work; one display worker is reused across toggles. No new SDK acquisition, collector, per-tick INFO logging or synchronous disk write.
+- Core/UI implementation only for the HUD feature: the unchanged HUD plugin remains 1.0.2, DrivePolicy 1.1.4 and other plugin/DLL versions remain unchanged. Historical ACC reset branch and complete actor geometry are not retroactively invented; new behavior is GAME NOT VERIFIED. See PHASE7_CROSSING_AND_DEV_HUD_20261016.md.
+
 ## Core bounded refresh response protocol — unreleased, 2026-10-15
 
 - Bind each zero-drive renewal to its original deadline cause and deterministic activation/route token. Preserve the fixed 100 ms renewal bound and original 500 ms observation leases; repeated stale producer ticks cannot rearm a wait.

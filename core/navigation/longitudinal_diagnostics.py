@@ -391,6 +391,20 @@ def bounded_fault_details(value, *, packed=False):
         selected['comparison_fields'] = sum(1 << i for i, k in enumerate(_COMPARISON_FIELDS) if k in selected)
         selected['comparison_values'] = [selected.pop(k) for k in _COMPARISON_FIELDS if k in selected]
     result = bounded_copy(selected, limit=8192)[0]
+    if result.get('snapshot_status') and value.get('invalid_reason'):
+        # Preserve the complete comparison first, including its deadline and
+        # vehicle binding. Reuse the exact codec within the SAME byte budget.
+        compact = bounded_copy(pack_source(selected), limit=8192)[0]
+        if not compact.get('snapshot_status'):
+            result = unpack_source(compact)
+    if result.get('snapshot_status') and value.get('invalid_reason'):
+        # A compact producer cause survives optional-tree budget exhaustion.
+        priority = {k:value[k] for k in (*_COMPARISON_FIELDS, 'invalid_reason',
+            'speed_control_reason', 'actual_context', 'different_fields') if k in value}
+        result = bounded_copy(priority, limit=8192)[0]
+        result['optional_details_omitted'] = True
+        if same and 'actual_context' in result:
+            result['expected_context'] = result['actual_context']
     if result.get('snapshot_status') and isinstance(value.get('refresh_protocol'), dict):
         # Refresh attribution is priority evidence, not a verbose optional
         # subtree. Existing exact codec and SAME 8 KiB allocation; dictionary
@@ -526,9 +540,10 @@ def bounded_input(value):
     result['unavailable_field_schema'] = 1
     result['unavailable_field_mask'] = sum(1 << i for i,k in enumerate(keys) if value.get(k) is None)
     # Additive fields do not change schema-1 bitmap positions or byte limits.
-    for key in ('deadline_basis', 'refresh_protocol', 'traffic_availability', 'destination_brake_selected',
+    for key in ('deadline_basis', 'refresh_protocol', 'invalid_reason', 'traffic_availability', 'destination_brake_selected',
                 'leader_prediction', 'stop_clearance', 'requested_acceleration_ms2',
-                'selected_acceleration_ms2', 'acceleration_basis', 'motion_constraint'):
+                'selected_acceleration_ms2', 'acceleration_basis', 'motion_constraint', 'braking_actor_ids',
+                'braking_acquisition'):
         if key in value:
             result[key] = value[key]
     following_keys = (
@@ -536,7 +551,7 @@ def bounded_input(value):
         'reason', 'receiver_time', 'source_timestamp', 'source_sequence',
         'complete', 'atomic', 'confirmed', 'expires_at','protective_target_id',
         'protective_brake','unassigned_protective_brake','actor_identity',
-        'leader_prediction','source_acquisition','body_prediction')
+        'leader_prediction','source_acquisition','body_prediction','retained_target_continuity')
     result['following'] = {k: value['following'].get(k) for k in following_keys} if isinstance(value.get('following'), dict) else None
     if result['following'] is not None and isinstance(value['following'].get('departure'), dict):
         proof = value['following']['departure']
@@ -589,6 +604,17 @@ def bounded_input(value):
                         packed,_=bounded_copy(zlib.compress(wire),limit=2048)
                         if isinstance(packed,bytes):
                             result[key]=json.loads(zlib.decompress(packed))
+            if key == 'following' and result[key].get('snapshot_status'):
+                # Priority receipt only after the full exact codec attempt.
+                # Preserve departure witnesses when present, never replace a
+                # successfully exported historical contract with a summary.
+                compact = {k:original.get(k) for k in ('status','target_id','gap_m',
+                    'speed_mps','speed_cap_mps','emergency','source_acquisition',
+                    'departure_schema','departure_values') if original.get(k) is not None}
+                compact['optional_prediction_details_omitted'] = True
+                kept = bounded_copy(pack_source(compact), limit=2048)[0]
+                if not kept.get('snapshot_status'):
+                    result[key] = unpack_source(kept)
             if result[key].get('snapshot_status'):
                 result['capture_incomplete'] = True
     saved = bounded_copy(result)[0]
