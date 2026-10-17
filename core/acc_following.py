@@ -557,7 +557,7 @@ class RouteLeadSelector:
                     'no_conflict_unproven_coverage')
             and body_prediction.get('status')=='protective_observed_body_prediction'
             and body_prediction.get('prediction_duration_s')==3.
-            and body_prediction.get('unsupported_actors')==0 and body_prediction.get('brake')==0.)
+            and body_prediction.get('unsupported_actors')==0)
         for target_id in ids if usable else ():
             cached=old.get(target_id)
             same=bool(cached and all(cached[k]==v for k,v in zip(
@@ -565,6 +565,7 @@ class RouteLeadSelector:
             proof=self.continuing_target(target_id)
             if (not proof or (target_id in self._retained_owners and target_id not in continuing)
                     or any(str(c.get('id'))==target_id for c in crossing.get('conflicts',()))
+                    or any(str(c.get('id'))==target_id for c in body_prediction.get('conflicts',()))
                     or (target_id!=primary and target_id not in continuing and not same and (not self._native_previous
                         or tuple(cached[k] for k in ('lifecycle','generation','frame_us','observed_at'))
                            != self._native_previous[0]

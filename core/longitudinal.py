@@ -150,7 +150,9 @@ def stopping_brake_continuity_required(distance_m, speed_ms):
     # speed through zero; don't wait for the raw 1.5 m boundary while releasing
     # the last forward-started brake. This does not move the stop target.
     speed=abs(float(speed_ms))
-    return speed < .5 and float(distance_m) <= 1.5+speed*(CURVE_BRAKE_RESPONSE_S+LEASE_S)
+    distance=float(distance_m)
+    return (distance <= 1.5 or
+            speed < .5 and distance <= 1.5+speed*(CURVE_BRAKE_RESPONSE_S+LEASE_S))
 
 
 def stopping_brake_request(distance_m, speed_ms, *, continuing=False):

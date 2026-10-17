@@ -2,6 +2,14 @@
 
 Release history for individual plugins. See [PLUGIN_VERSIONS.md](PLUGIN_VERSIONS.md) for versioning rules.
 
+## Core following, service-hold and indicator reactivation — unreleased, 2026-10-17
+
+- Complete a continuously observed original crossing constraint by its own identity and conflict witnesses, independently of another actor's still-active body hazard. The latter retains braking priority; disappearance, duplicate IDs, incomplete prediction and stale/foreign data do not prove completion.
+- Keep a narrowly qualified parallel, fully-behind catch-up prediction as a rear warning rather than a forward-brake stop owner. Require observed native boxes, the full existing three-second reference prediction and aligned tractor/trailer headings. Current overlap and forward, crossing, turning or uncertain geometry retain the existing AEB path. This is a model classification, not verified sensor coverage or a collision-free-road certificate.
+- Preserve an admitted positive service-brake chain throughout the existing final 1.5 m response band even when the underspeed PID asks to coast. Do not create a new stationary brake edge. Keep an already admitted ending-green stop committed through that same producer countdown; a genuinely new, qualified green phase can release it through the existing clearance proof.
+- Clear the preceding system-owned hazard latch on a newly accepted pending N/UI activation, allowing the existing indicator writer to turn it off and deliver the requested route indicator. Preserve manual/still-observed hazard priority, single pulses, stable SDK feedback and all activation rejection paths.
+- Core-only implementation: plugin declarations remain ACC 1.3.8, Autopilot 1.3.4, Map 1.1.2, DrivePolicy 1.1.4 and Turn Signals 1.0.2. DLL 1.59.5-up-parked-records is unchanged. No controller gains, 5 m signal offset, steering cadence, 500 ms limit or parking actuation changes. See [PHASE7_FOLLOWING_HOLD_AND_SIGNAL_EXECUTION_20261017.md](PHASE7_FOLLOWING_HOLD_AND_SIGNAL_EXECUTION_20261017.md) for receipt-bound reproductions, historical limits and final verification.
+
 ## Core signal-approach completion — unreleased, 2026-10-17
 
 - Replace the measured-speed-dependent signal target with the spatial solution of `d = v_ref*T + v_ref^2/(2*a)`, preserving the existing 5 m derived target, 1 m/s² planning assumption and response/freshness reserve. Policy, ACC and the final guard consume the same function; braking no longer raises its own target.

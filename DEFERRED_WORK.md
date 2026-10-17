@@ -1,5 +1,38 @@
 # Odložená a nedokončená práca
 
+## 17 October afternoon following/hold/indicator incidents
+
+See [PHASE7_FOLLOWING_HOLD_AND_SIGNAL_EXECUTION_20261017.md](PHASE7_FOLLOWING_HOLD_AND_SIGNAL_EXECUTION_20261017.md).
+The receipt-matching ACC1.3.8/DLL1.59.5 journey exposes additional core edge
+cases beyond the morning verification: original crossing completion was gated
+by another actor's global brake; a parallel rear catch-up could own a forward
+stop; a terminal approach could release its admitted brake; the same ending-green
+countdown could alternate stop/go as own speed changed; accepted reactivation
+left the preceding owned hazard latch blocking route indicators. The new
+production-path counterexamples and conservative corrections are recorded in
+that report. No plugin declaration or native DLL change is required.
+
+Historical complete actor lists and exact game consumption remain unavailable;
+do not retrospectively certify actor73 as a physical collision or the software
+brake edge as the proven cause of native R. The true R guard stays intact.
+Eight existing significant-event files still occupy the installation quota.
+A hash-verified copy and an explicit reversible archive script are PREPARED,
+not applied; original evidence remains untouched. Future collection readiness
+requires that separate archival step and a fresh read-only quota check.
+The new candidate supersedes the morning candidate only as a proposed build;
+GAME VERIFIED remains open. Do not repeat a general drive to replace the
+available offline reproductions or deploy without separate approval.
+
+Final afternoon candidate: **3008 tests and1592 subtests pass in13:11**;
+244 frozen integration tests also pass, with all420 frozen hashes unchanged.
+The26-entry ZIP is read-back/hash verified; exact path/hash are in the report.
+No deployment occurred. Finite model terminal-brake preservation increases peak
+jerk at20/50km/h and stops0.13–0.15m earlier; this explicit tradeoff and the
+benchmark's GC/tail variation are recorded, not hidden by the ordinary unchanged
+steering/comfort cases. GAME NOT VERIFIED and the historical evidence limits
+above remain. Future significant-event collection still requires the prepared
+archive operation and read-only readiness check; preparation did not free quota.
+
 ## 17 October resumed signal completion — offline implementation, game unverified
 
 The completion section of [PHASE7_JOINT_SIGNAL_AND_NATIVE_TRAFFIC_20261017.md](PHASE7_JOINT_SIGNAL_AND_NATIVE_TRAFFIC_20261017.md)

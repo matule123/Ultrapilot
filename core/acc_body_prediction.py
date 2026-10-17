@@ -12,6 +12,28 @@ HORIZON_S = 3.
 STEP_S = .25
 
 
+def rear_contact_not_brake_mitigable(body, ego_bodies, samples):
+    """Narrow straight, parallel, fully-behind catch-up case, not clearance.
+
+    Braking our vehicle cannot avert a faster follower's rear contact. Keep
+    this model warning separate from forward/crossing AEB. Every box and the
+    entire available reference prediction must remain aligned within 10 degrees;
+    current overlap, turning, a crossing side or uncertain shape never qualify.
+    """
+    if not samples or len(samples)!=13:return False
+    root=ego_bodies[0];fw=(-math.sin(root['yaw']),-math.cos(root['yaw']))
+    aligned=math.cos(math.radians(10.))
+    def extent(b):
+        delta=b['yaw']-root['yaw'];w,_,length=b['dimensions_whl']
+        return .5*(abs(math.sin(delta))*w+abs(math.cos(delta))*length)
+    def along(b):return (b['x']-root['x'])*fw[0]+(b['z']-root['z'])*fw[1]
+    if (math.cos(body['yaw']-root['yaw'])<aligned
+            or any(math.cos(b['yaw']-root['yaw'])<aligned for row in samples for b in row)
+            or along(body)+extent(body)>=min(along(b)-extent(b) for b in ego_bodies)):
+        return False
+    return True
+
+
 def contact_interval(a, b, va, vb, duration):
     """Exact 2-D swept SAT for fixed oriented boxes, including vertical gate."""
     aw, ah, al = a['dimensions_whl']; bw, bh, bl = b['dimensions_whl']
@@ -81,6 +103,7 @@ def predict(route, ego_bodies, actors, speed, progress, anchor, *, source_age=0.
         debug_geometry.update(ego_samples=samples, actor_paths=[], omitted_actor_paths=0, horizon_s=HORIZON_S,
             step_s=STEP_S, model=result['model'])
     missing = 0
+    rear_contacts=[]
     for actor in actors:
         parked = (actor.get('source') == 'parked'
                   and actor.get('speed_source') == 'parked_classification')
@@ -94,10 +117,12 @@ def predict(route, ego_bodies, actors, speed, progress, anchor, *, source_age=0.
         if not math.isfinite(v) or not 0 <= v <= 70.:
             missing += 1; continue
         contact = None
+        rear_only = True
         contact_basis = 'swept_constant_motion_model'
         for body_index, body in enumerate(actor['bodies']):
             dims = body.get('dimensions_whl') or ()
             if len(dims) != 3 or not all(math.isfinite(n) and n > 0 for n in dims):
+                rear_only = False  # incomplete actor shape cannot qualify
                 missing += 1; continue
             # Observed overlap must survive a truncated future route horizon.
             # This is the original source frame, never an inferred current pose
@@ -114,6 +139,7 @@ def predict(route, ego_bodies, actors, speed, progress, anchor, *, source_age=0.
             if math.hypot(body['x']-root['x'], body['z']-root['z']) > (speed+v)*HORIZON_S+extent+own_extent:
                 continue
             bv = -math.sin(body['yaw'])*v, -math.cos(body['yaw'])*v
+            rear_only = rear_only and rear_contact_not_brake_mitigable(body,ego_bodies,samples)
             path = None
             if debug_geometry is not None and len(debug_geometry['actor_paths']) < 64:
                 path = dict(id=actor['id'], source=actor['source'], slot=actor['slot'],
@@ -140,6 +166,12 @@ def predict(route, ego_bodies, actors, speed, progress, anchor, *, source_age=0.
                 if contact is not None:
                     break
         if contact is not None:
+            if contact>0. and rear_only:
+                if len(rear_contacts)<16:
+                    rear_contacts.append(dict(id=actor['id'],record=actor.get('record_fingerprint'),
+                        reason='parallel_fully_behind_contact_not_mitigated_by_ego_braking',
+                        contact_from_source_observation_s=contact))
+                continue
             current_contact=max(0.,contact-source_age)
             brake = 1. if current_contact <= 1. else ((5.-current_contact)/4.)**2
             result['conflicts'].append(dict(id=actor['id'], predicted_contact_s=current_contact,
@@ -153,6 +185,7 @@ def predict(route, ego_bodies, actors, speed, progress, anchor, *, source_age=0.
                 actor_motion_basis=('native_parked_classification_static_model' if parked
                                     else 'native_observed_speed_constant_heading_model')))
     result.update(status='protective_observed_body_prediction', unsupported_actors=missing,
+        non_braking_rear_contacts=rear_contacts,
         prediction_duration_s=max(0.,(len(samples)-1)*STEP_S),
         brake=max((c['brake'] for c in result['conflicts']), default=0.))
     return result

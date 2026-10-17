@@ -1,0 +1,71 @@
+{
+  "original_file": "steering-replay-20261017T152107.223195Z-automatic_disable.json",
+  "original_sha256": "0a1e495affd8b7806b3159b4f526466a6b094956283cdc0dab4e3f37eb376be3",
+  "backend_event_sequence": 2022,
+  "backend_call_started": 33086.7605502,
+  "sdk_frame_us": 542661626,
+  "observation_timestamp": 33086.6799322,
+  "native_source_acquisition": {
+    "frame_us": 1737999587,
+    "generation": 17665,
+    "lifecycle": 120916062019987,
+    "observed_at": 33086.6778407
+  },
+  "decisive": {
+    "actor": {
+      "dimensions_whl": [
+        1.8554203510284424,
+        1.1613001823425293,
+        4.4106597900390625
+      ],
+      "id": 52,
+      "record_fingerprint": "60f7af10ec0d33297ce63c6cd57f46734a7a7592cd666b6e7fec2c2520489e3d",
+      "slot": 0,
+      "source": "moving",
+      "speed": 1.2697561979293823,
+      "x": 34749.140625,
+      "y": 7.672343730926514,
+      "yaw": -0.1761620756846423,
+      "z": 45688.79296875
+    },
+    "actor_motion_basis": "native_observed_speed_constant_heading_model",
+    "brake": 0.35346085955325374,
+    "contact_basis": "swept_constant_motion_model",
+    "contact_from_source_observation_s": 2.636635426441679,
+    "ego_anchor_xyz": [
+      34752.4375,
+      6.899882793426514,
+      45669.8671875
+    ],
+    "ego_bodies": [
+      {
+        "dimensions_whl": [
+          2.992431163787842,
+          3.5576326847076416,
+          6.00460147857666
+        ],
+        "x": 34752.41015625,
+        "y": 8.941287994384766,
+        "yaw": -0.17358448833386222,
+        "z": 45669.87890625
+      },
+      {
+        "dimensions_whl": [
+          2.6500000953674316,
+          3.6326396465301514,
+          13.728907585144043
+        ],
+        "x": 34751.25,
+        "y": 9.121912956237793,
+        "yaw": -0.17523784636863876,
+        "z": 45676.56640625
+      }
+    ],
+    "ego_observed_speed_mps": 0.004344788379967213,
+    "id": 52,
+    "predicted_contact_s": 2.6218970264406,
+    "route_progress_m": 299.60079324772397,
+    "source_age_s": 0.014738400001078844
+  },
+  "limitation": "Immutable exact recorded fields. Whole route/all actor list and native input consumption are not retained here."
+}

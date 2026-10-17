@@ -397,6 +397,9 @@ def profile_approach_allowed(record, decision, truck):
             and not decision.get('refresh_pending') and not decision.get('emergency')
             and tuple(decision.get('context', ())) == tuple(record['command_context']))
     return bool(record.get('phase') == 'approaching' and control and not control['terminal']
+        # A preceding positive write must cross the terminal response zone
+        # without a zero edge, even if this tick's underspeed PID asks to coast.
+        and not (control.get('brake_chain_required') and record.get('brake',0.)>0.)
         and float(truck['speed']) > .05 and not record.get('other_stop_unverified')
         and not decision.get('refresh_pending') and not decision.get('emergency')
         and tuple(decision.get('context', ())) == tuple(record['command_context'])

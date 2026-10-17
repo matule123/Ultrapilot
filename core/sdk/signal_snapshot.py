@@ -207,6 +207,24 @@ class RouteSignalSelector:
                 from core.longitudinal import signal_phase_plan
                 assigned = dict(assigned, phase_plan=signal_phase_plan(
                     assigned, truck, snapshot['observed_at'], time.monotonic()))
+                original=(self.lock or {}).get('candidate') or {}
+                # Once a producer-observed ending green has actually admitted
+                # braking, our reduced speed must not turn that SAME countdown
+                # into a new dilemma/go decision. A later new phase can clear
+                # the lock through the existing two-acquisition green proof.
+                if (self.lock and tuple(self.lock.get('authority',()))==tuple(authority)
+                        and self.lock.get('lifecycle')==snapshot.get('lifecycle')
+                        and original.get('id')==assigned.get('id')
+                        and original.get('passage_key')==assigned.get('passage_key')
+                        and original.get('color')==assigned.get('color')=='green'
+                        and original.get('stop_required') is True
+                        and (original.get('phase_plan') or {}).get('status') in
+                            ('ending_green_stop','ending_green_stop_committed')
+                        and isinstance(assigned.get('time_left'),(float,int))
+                        and isinstance(original.get('time_left'),(float,int))
+                        and 0.<=assigned['time_left']<=original['time_left']):
+                    assigned['phase_plan']=dict(assigned['phase_plan'],stop_required=True,
+                        status='ending_green_stop_committed')
                 assigned['stop_required'] = assigned['phase_plan']['stop_required']
                 result.update(candidate=assigned, relevance='directed_prefab_curve_id_and_placement')
                 return self._coverage(result, snapshot, ego[1], assigned)

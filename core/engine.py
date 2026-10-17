@@ -1628,7 +1628,7 @@ class UltraPilotEngine:
                 "autopilot_stop_epoch": None,
                 "longitudinal_initialization": initialization,
                 "tts_message": msg,
-                **({"safety_hazard_active": False} if new_state else {}),
+                **({"safety_hazard_active": False} if new_state or pending_started else {}),
                 **({"maneuver_reference_packet": {},
                     "maneuver_approach_packet": {}}
                    if not new_state else {}),
@@ -2606,7 +2606,7 @@ class UltraPilotEngine:
             "autopilot_control_state": "normal" if desired else "inactive",
             "autopilot_stop_epoch": None,
             "longitudinal_initialization": initialization,
-            **({"safety_hazard_active": False} if desired else {}),
+            **({"safety_hazard_active": False} if desired or pending_started else {}),
             **({"maneuver_reference_packet": {},
                 "maneuver_approach_packet": {}}
                if not desired else {}),
