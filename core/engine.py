@@ -157,6 +157,7 @@ class UltraPilotEngine:
         except Exception:
             logging.basicConfig(level=logging.INFO)
         logging.info("Starting ETS2-UltraPilot Engine...")
+        self._start_significant_export_preflight()
 
         self.settings = SettingsManager()
         # Wrap the shared dict handed down by the bootloader (or create one).
@@ -889,6 +890,13 @@ class UltraPilotEngine:
         observed = observation(capture, time.monotonic())
         self._dev_hud_observed = observed if getattr(self, '_dev_hud', None) is not None else None
         if observed['status'] not in ('observed', 'empty_unproven_coverage'):
+            selector=getattr(self,'_acc_selector',None)
+            # This is a complete producer acquisition with unusable identity,
+            # not a seqlock read that happened during publication. Preserve its
+            # causal failure even if ACC's slower tick sees the next good list.
+            if selector is not None and (observed.get('source') or {}).get('valid') is True:
+                selector.invalidate_owners('identity_ambiguous' if observed['status']=='ambiguous_actor_id'
+                                           else 'invalid_motion')
             return dict(status=observed['status'], confirmed=False,
                 receiver_time=observed['receiver_time'], source_timestamp=None,
                 source_sequence=None, complete=False, atomic=False,
@@ -921,6 +929,10 @@ class UltraPilotEngine:
                 raise ValueError('route calculation unavailable')
             prior_target_id=selector.target_id
             prior_crossing_id=prior_target_id if selector._target_is_crossing else None
+            held=getattr(self,'_service_brake_hold',None) or {}
+            if tuple(held.get('command_context',()))==tuple(binding):
+                for target in (held.get('traffic_lock') or {}).get('targets',())[:16]:
+                    selector.remember_target(str(target['id']),'body_conflict')
             result = selector.select(observed['actors'], truck, float(debug['tracking_progress_m']),
                                      receiver_time=observed['receiver_time'], source=observed.get('source'))
             # select() may acquire a new geometric candidate while ACC still
@@ -1271,6 +1283,12 @@ class UltraPilotEngine:
             if pinned and pinned[0]==tuple(binding[:5]):selector.remember_target(pinned[1])
             for target in (following.get('motion_constraint') or {}).get('targets',()):
                 selector.remember_target(target['id'],target.get('constraint_kind','lead'))
+            basis=self._traffic_brake_basis or {}
+            if brake>0. and basis.get('stop_contract')=='observed_conflict_stop':
+                for target in basis.get('targets',())[:16]:
+                    selector.remember_target(str(target['id']),'body_conflict')
+                    owner=selector._retained_owners.get(str(target['id']))
+                    if owner is not None:target['owner_generation']=owner['acquired_generation']
             following.update(owner_witnesses_schema=1,owner_witnesses=selector.owner_witnesses())
         self._capture_dev_traffic(truck,binding,following)
         return following,brake
@@ -2131,6 +2149,30 @@ class UltraPilotEngine:
                 'autopilot_control_state': 'initializing',
                 'navigation_status': 'Čakám na pozdĺžny povel novej aktivácie – pohon vypnutý'})
             return True
+        if pending.get('phase')=='brake_handoff':
+            self._bind_longitudinal_output('launch_brake_handoff',0.,0.,
+                'awaiting current Plugin brake decision after interrupted own probe')
+            self.controller.set_throttle(0.)
+            self.shared_state.set(CTL_THROTTLE,0.)
+            if (not self.shared_state.get('autopilot_active')
+                    or time.monotonic()>pending['handoff_deadline_at']):
+                self._cancel_auto_drive_engagement_unlocked(
+                    'vypršalo odovzdanie prerušeného rozjazdu aktuálnemu brzdovému povelu')
+                return True
+            if self.shared_state.get('autopilot_engagement_confirmed')!=pending['request_id']:
+                return True  # no positive write until the existing Plugin acknowledges
+            from core.longitudinal import engine_decision
+            selected,failure=engine_decision(self.shared_state,truck)
+            if failure:
+                self._cancel_auto_drive_engagement_unlocked(failure)
+                return True
+            if gear<=0 or speed<=.05 or selected.get('brake',0.)<=0:
+                # No forward-started brake receipt exists yet. Do not create
+                # a new stationary brake edge or interpret a vanished original
+                # demand as confirmed clearance. No drive from this handoff.
+                return True
+            self._drive_engagement=None
+            return False  # normal final gates validate this exact active output
         if pending.get('phase') == 'activation_wait' and longitudinal_reason and not longitudinal_reason.endswith('braking forbids launch'):
             self._cancel_auto_drive_engagement_unlocked(longitudinal_reason)
             return True
@@ -2143,6 +2185,33 @@ class UltraPilotEngine:
             signal = self._signal_observation(truck, context(self.shared_state))
         red = bool(signal and signal.get('valid')
                    and (signal.get('candidate') or {}).get('color') == 'red')
+        late_probe_braking = bool(pending['mode']==0 and pending.get('probe_recorded')
+            and pending.get('phase') in (None,'launch')
+            and (pending.get('probe_interrupted_by_braking') or red
+                 or longitudinal_reason.endswith('braking forbids launch')))
+        if late_probe_braking:
+            pending.setdefault('probe_interrupted_by_braking',longitudinal_reason or 'new red signal')
+            # The original request already wrote drive on an earlier, clear
+            # acquisition. A slower brake publication cannot turn its ensuing
+            # motion into a new driver-held stationary activation. Stop drive,
+            # retain the ORIGINAL launch bound, and admit only confirmed
+            # forward motion into the normal current planned-brake boundary.
+            self._bind_longitudinal_output('launch_brake_handoff',0.,0.,
+                'current braking interrupted own probe; no new stationary brake edge')
+            self.controller.set_throttle(0.)
+            self.shared_state.set(CTL_THROTTLE,0.)
+            now=time.monotonic()
+            if now>pending['deadline_at']:
+                self._cancel_auto_drive_engagement_unlocked(
+                    'brzdenie prerušilo rozjazd pred potvrdením dopredného pohybu; prevezmite ovládanie')
+                return True
+            if gear<=0 or speed<=.05:
+                if frame>pending['last_frame']:
+                    pending.update(last_frame=frame,last_new_frame_at=now)
+                self.shared_state.set('navigation_status',
+                    'Rozjazd prerušený aktuálnou brzdou – pohon vypnutý, čakám na potvrdenie pohybu')
+                return True
+            longitudinal_reason=''
         if (pending.get('phase') == 'activation_wait'
                 or (pending.get('phase') != 'handoff' and abs(speed) < .05
                     and (red or longitudinal_reason.endswith('braking forbids launch')))):
@@ -2345,7 +2414,7 @@ class UltraPilotEngine:
                 self._cancel_auto_drive_engagement_unlocked("zápis plynu do SCS backendu zlyhal")
             return True
         self.controller.set_steering(0.0)
-        probe = (0.12 if pending["mode"] == 0
+        probe = (0.12 if pending["mode"] == 0 and not late_probe_braking
                  and truck.get("parkBrake") is False
                  and frame > pending["start_frame"] else 0.0)
         self._bind_longitudinal_output('launch', probe, 0., 'mode-specific bounded launch')
@@ -2429,6 +2498,12 @@ class UltraPilotEngine:
             })
             if pending.get('signal_resume') and pending['mode'] == 3:
                 self.shared_state.set('autopilot_control_state', 'active')
+            if late_probe_braking:
+                pending.update(phase='brake_handoff',confirmed_at=now,confirmed_frame=frame,
+                    handoff_deadline_at=min(pending['deadline_at'],now+.5))
+                self._drive_engagement=pending
+                self.shared_state.set('navigation_status',
+                    'Dopredný pohyb potvrdený – čakám na aktuálny brzdový povel Autopilota')
             return True
         if pending["mode"] == 0:
             # In ETS2 simple automatic, throttle initiates a forward ratio;
@@ -2830,9 +2905,18 @@ class UltraPilotEngine:
         first,_ = bounded_copy(_pack_intervention(fault),limit=16384)
         preceding=journal.ready_significant(time.monotonic(),shutdown=True)
         if preceding is not None:
+            # Reuse the sole already-sealed snapshot. Expanding it happens in
+            # the existing background writer, not in this control tick. A
+            # quota failure must not silently discard its pre-event history.
+            snapshot['preceding_significant_event']=preceding
             snapshot['preceding_significant_event_receipt']={k:preceding[k] for k in
                 ('sequence','kind','observed_at','receipt','coalesced','suppressed_events')}
             snapshot['preceding_significant_event_receipt']['sealed_history_superseded_by_fault']=True
+            snapshot['preceding_significant_event_receipt']['sealed_history_included']=True
+            snapshot['event_export_status']=dict(
+                reason=getattr(self,'_significant_export_blocked',None),
+                standalone_event_exported=False,retained_event_included=True,
+                coalesced_events_have_individual_snapshots=False)
             journal.significant_submitted(preceding['sequence'])
         snapshot.update(first_intervention=first,
             post_fault_window_s=.1, tail_status='shutdown_release_calls' if shutdown else
@@ -2846,6 +2930,27 @@ class UltraPilotEngine:
             sample_kind='longitudinal_boundary_incident', longitudinal=snapshot)):
             self._automatic_longitudinal_export_epoch = fault['epoch']
 
+    def _start_significant_export_preflight(self):
+        """One metadata-only check on the existing exporter, never the I/O tick."""
+        if getattr(self,'_significant_export_preflight_started',False):return False
+        directory=getattr(self,'_automatic_replay_directory',None)
+        if not directory:return False
+        from core.steering_replay import AsyncReplayExporter, significant_event_export_budget
+        writer=getattr(self,'_automatic_replay_writer',None)
+        if writer is not None and writer.status.get('busy'):return False
+        if writer is None:writer=self._automatic_replay_writer=AsyncReplayExporter()
+        def check():
+            budget=significant_event_export_budget(directory)
+            self._significant_export_preflight=budget
+            if not budget['ready']:
+                logging.warning('Diagnostic event export NOT READY: %s; %s/%s files, %s/%s bytes. '
+                    'Archive previous significant_event evidence before collecting a new drive; '
+                    'control authority is unchanged.', ','.join(budget['blockers']),
+                    budget['file_count'],budget['maximum_files'],budget['used_bytes'],budget['maximum_bytes'])
+        submitted=writer.submit(check)
+        self._significant_export_preflight_started=submitted
+        return submitted
+
     def _harvest_significant_export(self, journal):
         sequence = getattr(self, '_significant_export_sequence', None)
         writer = getattr(self, '_automatic_replay_writer', None)
@@ -2854,10 +2959,13 @@ class UltraPilotEngine:
         self._significant_export_sequence = None
         if writer.status.get('path'):
             journal.significant_submitted(sequence)
+            self._significant_export_blocked = None
         else:
             # Keep the sole immutable pending receipt for the eventual fault.
             # Never delete older evidence or spin a failing exporter each tick.
             self._significant_export_blocked = writer.status.get('error_detail') or 'EVENT_EXPORT_FAILED'
+            journal.significant_export_failed(self._significant_export_blocked,time.monotonic())
+            self._significant_export_retry_at = time.monotonic()+30.
 
     def _finish_significant_longitudinal_event(self,journal,*,shutdown=False):
         directory=getattr(self,'_automatic_replay_directory',None)
@@ -2867,26 +2975,25 @@ class UltraPilotEngine:
         writer=getattr(self,'_automatic_replay_writer',None)
         if writer is not None and writer.status.get('busy'):return
         self._harvest_significant_export(journal)
-        if getattr(self, '_significant_export_blocked', None):
-            return  # Original quota unchanged; fault export still owns priority.
+        if (getattr(self, '_significant_export_blocked', None)
+                and time.monotonic()<getattr(self,'_significant_export_retry_at',float('inf'))):
+            return  # Bounded background recheck; never spin or touch disk here.
         pending=journal.ready_significant(time.monotonic(),shutdown=shutdown)
         if pending is None:return
         if fault and pending.get('context') and fault['epoch']==pending['context'][0]:return
         from core.steering_replay import AsyncReplayExporter,SteeringReplayBuffer
         if writer is None:writer=self._automatic_replay_writer=AsyncReplayExporter()
         def write():
-            from pathlib import Path
-            root=Path(directory)
+            from core.steering_replay import significant_event_export_budget
             # Background-only quota. Never delete/overwrite prior evidence.
-            existing=list(root.glob('steering-replay-*-significant_event.json'))
-            remaining=16*1024*1024-sum(p.stat().st_size for p in existing)
-            if len(existing)>=8 or remaining<=0:
+            budget=significant_event_export_budget(directory)
+            if not budget['ready']:
                 raise ValueError('SIGNIFICANT_EVENT_EXPORT_DISK_QUOTA')
             snapshot=journal.expand_significant(pending)
             return SteeringReplayBuffer(2).export(directory,reason='significant_event',
                 identity={'event_sequence':pending['sequence'],'context':pending['context']},
                 sample_kind='longitudinal_significant_event',longitudinal=snapshot,
-                maximum_output_bytes=remaining)
+                maximum_output_bytes=budget['remaining_bytes'])
         if writer.submit(write):self._significant_export_sequence=pending['sequence']
 
     def _record_drive_boundary(self, action, truck, *, selector=None,
@@ -3595,7 +3702,16 @@ class UltraPilotEngine:
                     diagnostic=getattr(self, '_longitudinal_trace', None),
                     rejection_info=self._longitudinal_rejection_detail)
                 throttle = longitudinal['throttle']
+                brake = longitudinal['brake']
                 if longitudinal is not previous_decision:
+                    if longitudinal.get('emergency') and not previous_decision.get('emergency'):
+                        intervention=record_control_intervention(self.shared_state,'engine',
+                            'EMERGENCY_BRAKE','Núdzové brzdenie: '+longitudinal['source'],'emergency',
+                            details=dict(winner=longitudinal['source'],decision=longitudinal['reason'],
+                                sdk_frame_us=longitudinal['sdk_frame_us'],
+                                observation_timestamp=longitudinal['observation_timestamp'],
+                                evidence=longitudinal.get('emergency_evidence')))
+                        self._request_automatic_longitudinal_incident(intervention)
                     self._bind_longitudinal_output(output_phase,
                         throttle, brake, longitudinal['reason'])
                 # Read/validation may span an authority change. The final gate
@@ -3754,13 +3870,14 @@ class UltraPilotEngine:
             self._was_active = False
             return
         if getattr(self, '_active_transmission_mode', None) in (0, 3):
-            from core.service_brake_hold import after_write, receipt
+            from core.service_brake_hold import after_write, receipt, approach_green_wait_allowed
             from core.transmission_mode import simple_auto_context
             previous_hold = getattr(self, '_service_brake_hold', None)
             next_hold = after_write(previous_hold, self.controller,
                                     simple_auto_context(self.shared_state),
                                     truck_telemetry, longitudinal, time.monotonic(),
-                                    forward_history=getattr(self, '_simple_auto_forward_history', None))
+                                    forward_history=getattr(self, '_simple_auto_forward_history', None),
+                                    green_wait=approach_green_wait_allowed(previous_hold,self.shared_state,truck_telemetry))
             if (brake > 0
                     and (previous_hold or hasattr(getattr(self.controller, 'scs', None),
                                                   '_brake_write_receipt'))

@@ -30,6 +30,52 @@ def receipt(controller):
     return dict(getattr(controller.scs, '_brake_write_receipt', {}))
 
 
+def approach_green_wait_allowed(record,state,truck,now=None):
+    """Bounded ZERO-OUTPUT pairing, never standstill braking/launch authority.
+
+    A forward-admitted approach may reach zero before Engine consumes its
+    second green acquisition. Preserve only its original same-head commitment
+    for the existing 500 ms transfer bound; Engine still validates the actual
+    backend receipt and clearance before handing off to bounded launch.
+    """
+    from core.longitudinal import context,rejection as packet_rejection
+    if not record or record.get('phase')!='approaching':return False
+    # after_write also runs during the full moving approach. Reject from its
+    # already consumed vehicle snapshot before making any new IPC reads.
+    try:
+        speed=float(truck['speed'])
+        if (not math.isfinite(speed) or abs(speed)>=.05
+                or int(truck['gear'])<0 or truck.get('parkBrake') is not False):
+            return False
+    except (KeyError,TypeError,ValueError,OverflowError):
+        return False
+    binding=context(state);packet=state.get('longitudinal_traffic') or {}
+    signal=packet.get('signal') or {};light=signal.get('candidate') or {}
+    lock=record.get('signal_lock') or {};original=lock.get('candidate') or {}
+    forward_binding=simple_auto_context(state)
+    final_binding=context(state)
+    # IPC may advance both time and authority. Only the values actually read
+    # are witnesses; caller time never predates these required reads.
+    checked=max(time.monotonic(),now) if now is not None else time.monotonic()
+    deadline=record.get('standstill_deadline_at',record.get('returned_at',float('-inf'))+.5)
+    return bool(binding==final_binding and record.get('context')==forward_binding
+        and tuple(record.get('command_context',()))==binding
+        and tuple(lock.get('authority',()))==binding
+        and checked<=deadline and 0<=checked-record.get('returned_at',float('-inf'))<=.5
+        and truck.get('gear',-1)>=0 and abs(float(truck['speed']))<.05
+        and truck.get('parkBrake') is False
+        and not packet_rejection(packet,binding,checked)
+        and signal.get('valid') and tuple(signal.get('authority',()))==binding
+        and signal.get('lifecycle')==lock.get('lifecycle')
+        and light.get('id')==original.get('id') and light.get('passage_key')==original.get('passage_key')
+        and light.get('color')=='green' and light.get('stop_required') is not True
+        and (light.get('phase_plan') or {}).get('status')!='green_dilemma'
+        and signal.get('generation',0)>lock.get('generation',0)
+        and signal.get('frame_us',0)>lock.get('frame_us',0)
+        and signal.get('observed_at',0)>lock.get('observed_at',0)
+        and 0<=checked-signal.get('observed_at',float('-inf'))<=.5)
+
+
 def rejection(record, controller, state, truck):
     from core.longitudinal import context
     if (record['context'] != simple_auto_context(state)
@@ -128,13 +174,13 @@ def moving_speed_constraint(decision):
 
 
 def after_write(previous, controller, forward_context, truck, decision, now,
-                *, forward_history=None):
+                *, forward_history=None, green_wait=False):
     if not decision or decision.get('emergency'):
         return None
     current = receipt(controller)
     keep_approach = bool(previous and previous.get('phase') == 'approaching'
         and tuple(decision.get('context', ())) == tuple(previous['command_context'])
-        and float(truck['speed']) > .05)
+        and (float(truck['speed']) > .05 or green_wait))
     if not current or (not current.get('positive') and not keep_approach):
         return None
     # Engine has already validated this exact observation with the common
@@ -260,7 +306,11 @@ def after_write(previous, controller, forward_context, truck, decision, now,
     else:
         result.update(automatic_restart_supported=False,
             restart_blocker='STOP_CLEARANCE_PRODUCER_TIME_AND_GENERATION_UNAVAILABLE')
-    if abs(float(truck['speed'])) < .05:
+    if green_wait and not current.get('positive'):
+        result.setdefault('standstill_deadline_at',previous['returned_at']+.5)
+        result['phase']='approaching'
+        result['restart_blocker']='awaiting locked green clearance; bounded zero-output pairing'
+    elif abs(float(truck['speed'])) < .05:
         result['phase'] = 'holding'
     elif result.get('signal_lock'):
         from core.longitudinal import signal_speed_control
@@ -518,7 +568,7 @@ def real_auto_wait_allowed(state, truck):
     hold = state.get('simple_auto_service_hold') or {}
     resume = state.get('service_brake_resume') or {}
     now = time.monotonic()
-    return bool((hold.get('context') == simple_auto_context(state)
+    return bool(approach_green_wait_allowed(hold,state,truck,now) or (hold.get('context') == simple_auto_context(state)
         and tuple(hold.get('command_context', ())) == binding
         and hold.get('phase') in ('braking','holding') and hold.get('brake', 0) > 0
         and 0 <= now-hold.get('returned_at', float('-inf')) <= .5)

@@ -85,7 +85,7 @@ def test_passive_second_crossing_does_not_inherit_another_actors_demand(joint):
     assert not (physical('aforward')>0. and physical('abackward')>0.)
 
 
-@pytest.mark.parametrize('fault', ['missing','slot','teleport','lifecycle','stale'])
+@pytest.mark.parametrize('fault', ['missing','ambiguous','teleport','lifecycle','stale'])
 def test_missing_or_reassigned_old_owner_is_not_continuing_braking(joint, fault):
     from core.acc_following import observed_braking_continuation
     import copy
@@ -93,7 +93,7 @@ def test_missing_or_reassigned_old_owner_is_not_continuing_braking(joint, fault)
     lead=crossing(at=32.,arrival=4.1)
     step(joint,[lead],1)
     hazard=dict(id=48,x=-9.2,y=10.,z=38.,yaw=-math.pi/2,speed=4.)
-    actors=([hazard] if fault=='missing' else [hazard,lead] if fault=='slot'
+    actors=([hazard] if fault=='missing' else [lead,dict(lead,x=lead['x']+.1),hazard] if fault=='ambiguous'
         else [dict(lead,x=lead['x']+30.),hazard] if fault=='teleport' else [lead,hazard])
     following,packet=step(joint,actors,2,pedals=False)
     if fault in ('lifecycle','stale'):
@@ -101,7 +101,7 @@ def test_missing_or_reassigned_old_owner_is_not_continuing_braking(joint, fault)
         proof=packet['following'].get('retained_target_continuity') or {}
         proof['lifecycle' if fault=='lifecycle' else 'observed_at']=-1
     assert not observed_braking_continuation(packet,'83',clock[0])
-    if fault in ('missing','slot','teleport'):
+    if fault in ('missing','ambiguous','teleport'):
         policy.on_tick(.033);acc.on_tick(.033);ap.on_tick(.033);engine._flush_controls()
         assert physical('aforward')==0.
         assert state.get('autopilot_control_state')=='controlled_stop' or not state.get('autopilot_active')

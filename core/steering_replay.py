@@ -27,6 +27,29 @@ DEFAULT_CAPACITY = 3600
 EXECUTION_CAPACITY_MULTIPLIER = 3
 MAX_EXECUTION_CAPACITY = 20000
 
+SIGNIFICANT_EVENT_MAX_FILES = 8
+SIGNIFICANT_EVENT_MAX_BYTES = 16 * 1024 * 1024
+
+
+def significant_event_export_budget(directory):
+    """Read-only metadata check; call from export worker or offline tooling only."""
+    from pathlib import Path
+    root = Path(directory)
+    files = sorted(root.glob('steering-replay-*-significant_event.json'))
+    sizes = [p.stat().st_size for p in files]
+    remaining = max(0, SIGNIFICANT_EVENT_MAX_BYTES - sum(sizes))
+    blockers = []
+    if len(files) >= SIGNIFICANT_EVENT_MAX_FILES:
+        blockers.append('FILE_COUNT_LIMIT')
+    if remaining == 0:
+        blockers.append('BYTE_LIMIT')
+    return dict(ready=not blockers, blockers=blockers, file_count=len(files),
+                used_bytes=sum(sizes), remaining_bytes=remaining,
+                maximum_files=SIGNIFICANT_EVENT_MAX_FILES,
+                maximum_bytes=SIGNIFICANT_EVENT_MAX_BYTES,
+                files=[dict(name=p.name, bytes=size) for p, size in zip(files, sizes)],
+                fit_of_next_payload_verified=False)
+
 PUBLISH_IDENTITY_FIELDS = (
     "navigation_intent_id", "route_build_id", "authority_revision",
     "source_game_session_id", "source_map_key",
@@ -349,6 +372,31 @@ def _expand_values(storage):
         expand=None
 
 
+def _validate_journal_order(block):
+    events = block['events']
+    seq = [e['sequence'] for e in events]
+    if seq != sorted(set(seq)):
+        raise ValueError('PEDAL_SEQUENCE_ORDER_INVALID')
+    history = block.get('decision_history')
+    if history is not None:
+        if history.get('schema_version') != 1:
+            raise ValueError('DECISION_HISTORY_SCHEMA_INVALID')
+        seen = set()
+        for stream in ('regular_samples', 'changes'):
+            rows = history[stream]
+            sequences = [r['sequence'] for r in rows]
+            times = [r['monotonic_s'] for r in rows]
+            if (sequences != sorted(set(sequences)) or times != sorted(times)
+                    or any(not isinstance(t, (int, float)) or not math.isfinite(t) for t in times)):
+                raise ValueError('DECISION_HISTORY_ORDER_INVALID')
+            for row in rows:
+                if row['sequence'] in seen or row['identity_reference'] not in history['identities']:
+                    raise ValueError('DECISION_HISTORY_REFERENCE_INVALID')
+                seen.add(row['sequence'])
+    return bool(block.get('dropped_events') or block.get('snapshot_incomplete')
+                or history and history['incomplete'])
+
+
 def inspect_replay(path):
     """Integrity of stored evidence, never runtime authority/game consumption."""
     result = dict(integrity_valid=False, confirmed=False, runtime_authorized=False)
@@ -364,28 +412,15 @@ def inspect_replay(path):
         if 'longitudinal_storage' in value:
             value['longitudinal'] = _expand_values(value.pop('longitudinal_storage'))
             events = value['longitudinal']['events']
-            seq = [e['sequence'] for e in events]
-            if seq != sorted(set(seq)):
-                raise ValueError('PEDAL_SEQUENCE_ORDER_INVALID')
+            incomplete = _validate_journal_order(value['longitudinal'])
             history=value['longitudinal'].get('decision_history')
             if history is not None:
-                if history.get('schema_version')!=1:raise ValueError('DECISION_HISTORY_SCHEMA_INVALID')
-                seen=set()
-                for stream in ('regular_samples','changes'):
-                    rows=history[stream];sequences=[r['sequence'] for r in rows]
-                    times=[r['monotonic_s'] for r in rows]
-                    if (sequences!=sorted(set(sequences)) or times!=sorted(times)
-                            or any(not isinstance(t,(int,float)) or not math.isfinite(t) for t in times)):
-                        raise ValueError('DECISION_HISTORY_ORDER_INVALID')
-                    for row in rows:
-                        if row['sequence'] in seen or row['identity_reference'] not in history['identities']:
-                            raise ValueError('DECISION_HISTORY_REFERENCE_INVALID')
-                        seen.add(row['sequence'])
                 result['history_incomplete']=history['incomplete']
                 result['history_duration_s']=history['observed_range_s']['duration']
-            incomplete = bool(value['longitudinal'].get('dropped_events')
-                              or value['longitudinal'].get('snapshot_incomplete')
-                              or history and history['incomplete'])
+            preceding=value['longitudinal'].get('preceding_significant_event')
+            if preceding is not None:
+                incomplete = _validate_journal_order(preceding) or incomplete
+                result['preceding_event_included']=True
             result.update(longitudinal_event_count=len(events), incomplete=incomplete,
                           evidence_status='INCOMPLETE_BOUNDED_INCIDENT' if incomplete else 'OFFLINE_REVIEW_ONLY')
         result.update(integrity_valid=True, replay=value)

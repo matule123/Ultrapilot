@@ -93,7 +93,9 @@ def test_observed_crossing_clearance_releases_original_stop_without_absence(join
     assert hold and physical('abackward') > 0
     # The SAME observed body has crossed and now travels away. Missing/zero
     # demand is not the witness. Two new native acquisitions confirm release.
-    for generation, x in enumerate((8.+.165*i for i in range(24)), start=2):
+    # Advance the original body at its declared speed through consecutive
+    # native acquisitions. The old fixture teleported 23 m in one 33 ms frame.
+    for generation, x in enumerate((-15.+5./30.*i for i in range(1,170)), start=2):
         timed_step(joint, [dict(actor, x=x)], generation=generation)
     assert state.get('autopilot_active'), state.get('autopilot_intervention')
     assert state.get('simple_auto_service_hold') is None
@@ -202,14 +204,16 @@ def test_native_crossing_stop_wait_restart_and_second_cycle_without_n(joint):
         assert not any(ch=='abackward' and value==0. for _,ch,value in writes[holding_start:])
         # The original body is still present, now left of the reference and
         # moving farther away. No actor disappearance is substituted.
-        for i in range(24):
+        for i in range(1,280):
             generation+=1
             # Gear/movement follow a physical launch write, never a scripted
             # success while the output still owns brake hold.
             launched=physical('aforward')>0. and physical('abackward')==0.
             gear=4 if mode==3 or launched else 0
             speed=.2 if launched else 0.
-            timed_step(joint,[dict(actor,x=-8.-i*.066)],generation=generation,gear=gear,speed=speed)
+            # Native motion must remain continuous all the way across. A
+            # new pair after the former 16 m teleport is not original clearance.
+            timed_step(joint,[dict(actor,x=8.-i*2./30.)],generation=generation,gear=gear,speed=speed)
             assert state.get('autopilot_active'),state.get('autopilot_intervention')
         assert state.get('autopilot_failure_epoch')==activation
         import json

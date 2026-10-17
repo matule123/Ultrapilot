@@ -177,12 +177,20 @@ class RouteLeadSelector:
         # this authority; seeing the same short ID later cannot revive it.
         for aid, owner in self._retained_owners.items():
             proof = self.continuing_target(aid)
+            reason=('lifecycle_changed' if stamp[0]!=owner['lifecycle'] else self.native_pair_rejection(aid))
             if (owner['last'] != (self._native_previous[0] if self._native_previous else None)
-                    or not proof or any(proof[k] != owner[k] for k in ('source','slot'))):
+                    or not proof or proof['source'] != owner['source']):
                 owner['last'] = None
+                owner.setdefault('invalid_reason',reason or 'original_acquisition_chain_broken')
             else:
                 owner['last'] = stamp
         return self._native_predictions()
+
+    def invalidate_owners(self, reason):
+        """A consumed complete but ambiguous acquisition cannot be skipped."""
+        for owner in self._retained_owners.values():
+            owner['last']=None
+            owner.setdefault('invalid_reason',reason)
 
     def remember_target(self, target_id=None, kind=None):
         """At most 16 original observed owners; no permission or clearance."""
@@ -205,7 +213,41 @@ class RouteLeadSelector:
     def owner_witnesses(self):
         stamp=self._native_current[0] if self._native_current else None
         return [dict(target_id=aid,**{k:o[k] for k in ('source','slot','lifecycle','acquired_generation')},
-            chain_valid=o['last']==stamp) for aid,o in self._retained_owners.items()]
+            current_slot=(self._native_current[1].get(int(aid)) or {}).get('slot') if stamp else None,
+            kind=o['kind'],chain_valid=o['last']==stamp,
+            continuity_reason=o.get('invalid_reason') or 'qualified') for aid,o in self._retained_owners.items()]
+
+    def native_pair_rejection(self, target_id):
+        """Match unique pointer-map short ID + shape + bounded source motion.
+
+        traffic.cpp re-sorts/truncates every acquisition. Slot is descriptive,
+        not identity. Missing/reused/ambiguous observations grant no clearance.
+        The ABI lacks a native incarnation token; this is a bounded witness.
+        """
+        if not self._native_previous or not self._native_current:return 'missing_acquisition_pair'
+        previous,current=self._native_previous,self._native_current
+        if previous[0][0]!=current[0][0]:return 'lifecycle_changed'
+        dt=current[0][3]-previous[0][3]
+        if (not 0<dt<=.5 or current[0][1]<=previous[0][1] or current[0][2]<=previous[0][2]):return 'stale_or_regressing'
+        old,new=previous[1].get(int(target_id)),current[1].get(int(target_id))
+        if not old or not new:return 'missing'
+        if old['source']!=new['source']:return 'source_class_changed'
+        if old.get('temporary') or new.get('temporary'):return 'unqualified_temporary_motion'
+        if any(not isinstance(a.get('speed'),(int,float)) or not math.isfinite(a['speed'])
+            or not 0<=a['speed']<=70. for a in (old,new)):return 'invalid_motion'
+        for actor in (old,new):
+            if not actor.get('bodies'):return 'identity_shape_unavailable'
+            for body in actor['bodies']:
+                dims=body.get('dimensions_whl') or ()
+                if (len(dims)!=3 or any(not isinstance(v,(int,float)) or not math.isfinite(v)
+                        or v<=0. for v in dims)):return 'identity_shape_unavailable'
+        if (len(old.get('bodies',()))!=len(new.get('bodies',())) or any(
+            tuple(a.get('dimensions_whl') or ())!=tuple(b.get('dimensions_whl') or ())
+            for a,b in zip(old.get('bodies',()),new.get('bodies',())))):return 'identity_shape_changed'
+        if (abs(new['y']-old['y'])>HEIGHT_GATE_M or
+                math.hypot(new['x']-old['x'],new['z']-old['z'])>max(new['speed'],old['speed'])*dt+1.):
+            return 'motion_discontinuity'
+        return ''
 
     def continuing_owners(self):
         stamp=self._native_current[0] if self._native_current else None
@@ -223,8 +265,7 @@ class RouteLeadSelector:
         for aid, actor in current[1].items():
             old = previous[1].get(aid)
             if (old is None or actor.get('temporary') or old.get('temporary')
-                    or actor['source'] != old['source'] or actor['source'] != 'moving'
-                    or actor['slot'] != old['slot']):
+                    or actor['source'] != 'moving' or self.native_pair_rejection(aid)):
                 continue  # TMP speed/acceleration fields are explicitly placeholders.
             acceleration = (actor['speed']-old['speed'])/dt
             displacement=math.hypot(actor['x']-old['x'],actor['z']-old['z'])
@@ -256,8 +297,12 @@ class RouteLeadSelector:
         witnesses = []
         for target in lock['targets']:
             aid = target['id']; old, actor = previous[1].get(aid), current[1].get(aid)
-            if (not old or not actor or old['source'] != actor['source']
-                    or old['slot'] != actor['slot'] or actor.get('temporary')
+            owner=self._retained_owners.get(str(aid))
+            if (not owner or owner['last']!=current[0] or owner['lifecycle']!=lock['lifecycle']
+                    or (owner['acquired_generation']!=target['owner_generation'] if 'owner_generation' in target
+                        else owner['acquired_generation']>lock['generation'])):return None
+            if (not old or not actor or self.native_pair_rejection(aid)
+                    or actor.get('temporary')
                     or old['record_fingerprint'] == actor['record_fingerprint']
                     or len(old['bodies']) != len(actor['bodies'])):
                 return None
@@ -395,11 +440,12 @@ class RouteLeadSelector:
             return None  # retained receiver history must still relate to this route
         actor = next((a for a in actors if a['id'] == old['id']), None)
         if (actor is None or actor.get('source') != old.get('source')
-                or actor.get('slot') != old.get('slot')
+                or (actor.get('slot') != old.get('slot') and not self._native_current)
                 or not actor.get('record_fingerprint')
                 or actor['record_fingerprint'] == old.get('record_fingerprint')):
             return None  # absent/unchanged/reassigned records are not departure
         if self._native_previous is not None and self._native_current is not None:
+            if self.native_pair_rejection(old['id']):return None
             before, current = self._native_previous, self._native_current
             native_old = before[1].get(old['id'])
             dt = current[0][3]-before[0][3]
@@ -460,22 +506,12 @@ class RouteLeadSelector:
         previous, current = self._native_previous, self._native_current
         old = previous[1].get(int(target_id)); new = current[1].get(int(target_id))
         dt = current[0][3]-previous[0][3]
-        if (not old or not new or previous[0][0] != current[0][0] or not 0 < dt <= .5
-                or current[0][1]<=previous[0][1] or current[0][2]<=previous[0][2]
-                or old.get('source') != new.get('source') or old.get('slot') != new.get('slot')
-                or old.get('temporary') or new.get('temporary')
-                or any(not isinstance(a.get('speed'),(int,float)) or not math.isfinite(a['speed'])
-                    or not 0<=a['speed']<=70. for a in (old,new))
-                or len(old.get('bodies', ())) != len(new.get('bodies', ()))
-                or any(tuple(a.get('dimensions_whl') or ()) != tuple(b.get('dimensions_whl') or ())
-                    for a,b in zip(old.get('bodies',()),new.get('bodies',())))
-                or math.hypot(new['x']-old['x'],new['z']-old['z'])
-                   > max(new['speed'],old['speed'])*dt+1.):
+        if self.native_pair_rejection(target_id):
             return None
         return dict(target_id=str(target_id), source=new['source'], slot=new['slot'],
             lifecycle=current[0][0], generation=current[0][1], frame_us=current[0][2], observed_at=current[0][3],
             record_fingerprint=new.get('record_fingerprint'),
-            basis='same_native_id_slot_continuous_observed_motion_not_clearance')
+            basis='unique_native_id_shape_bounded_motion_not_clearance')
 
     def retain_crossing_target(self, targets, receiver_time):
         """Bind a positive crossing cap to the current native original owner."""
@@ -532,7 +568,7 @@ class RouteLeadSelector:
                     or (target_id!=primary and target_id not in continuing and not same and (not self._native_previous
                         or tuple(cached[k] for k in ('lifecycle','generation','frame_us','observed_at'))
                            != self._native_previous[0]
-                        or any(proof[k]!=cached[k] for k in ('source','slot','lifecycle'))))):
+                        or any(proof[k]!=cached[k] for k in ('source','lifecycle'))))):
                 continue
             completed[target_id]=cached if same else dict(proof,frame_us=source[2],
                 status='observed_original_crossing_model_ended',kind='crossing',
@@ -560,6 +596,7 @@ class RouteLeadSelector:
         protective = []
         identity = actor_identity(actors)
         if identity['missing_count'] or identity['duplicate_count']:
+            self.invalidate_owners('identity_ambiguous')
             return dict(status='ambiguous_actor_id', confirmed=False, actor_identity=identity)
         # Departure must compare this very acquisition, not the prior pair.
         predictions = self.source_motion(actors, source)
@@ -759,16 +796,25 @@ class RouteLeadSelector:
         return result
 
 
+def owner_chain_rejection(following, owner):
+    """Exact bounded reason shared by Plugin and physical guard."""
+    if not isinstance(following,dict):return 'missing_traffic'
+    if owner is None:return '' if following.get('owner_witnesses_schema')!=1 else 'missing_acquired_owner'
+    if not isinstance(owner,dict) or not owner.get('target_id'):return 'invalid_acquired_owner'
+    witnesses=following.get('owner_witnesses')
+    if not isinstance(witnesses,(list,tuple)) or len(witnesses)>16:
+        return 'identity_ambiguous' if following.get('status')=='ambiguous_actor_id' else 'missing_owner_witness'
+    for w in witnesses:
+        if isinstance(w,dict) and w.get('target_id')==owner['target_id']:
+            if w.get('lifecycle')!=owner.get('lifecycle'):return 'lifecycle_changed'
+            if any(w.get(k)!=owner.get(k) for k in ('source','acquired_generation')):return 'identity_ambiguous'
+            return '' if w.get('chain_valid') is True else w.get('continuity_reason') or 'original_acquisition_chain_broken'
+    return 'missing_owner_witness'
+
+
 def observed_owner_chain(following, owner):
     """A candidate cannot replace an acquired native owner with a reused ID."""
-    if not isinstance(following,dict):return False
-    if owner is None:return following.get('owner_witnesses_schema') != 1
-    if not isinstance(owner,dict) or not owner.get('target_id'):return False
-    witnesses=following.get('owner_witnesses')
-    if not isinstance(witnesses,(list,tuple)) or len(witnesses)>16:return False
-    return any(w.get('chain_valid') is True and all(w.get(k)==owner.get(k) for k in
-        ('target_id','source','slot','lifecycle','acquired_generation'))
-        for w in witnesses if isinstance(w,dict))
+    return not owner_chain_rejection(following,owner)
 
 
 def observed_braking_continuation(traffic, target_id, now):
@@ -779,7 +825,8 @@ def observed_braking_continuation(traffic, target_id, now):
         proofs=following.get('retained_target_continuities') or [following.get('retained_target_continuity')]
         if not isinstance(proofs,(tuple,list)) or len(proofs)>16:return False
         return any(bool(isinstance(proof,dict) and traffic['traffic_brake'] > 0. and target_id and proof['target_id'] == target_id
-            and proof['basis'] == 'same_native_id_slot_continuous_observed_motion_not_clearance'
+            and proof['basis'] in ('unique_native_id_shape_bounded_motion_not_clearance',
+                                  'same_native_id_slot_continuous_observed_motion_not_clearance')
             and all(proof[k] == source[k] for k in ('lifecycle', 'generation', 'frame_us', 'observed_at'))
             and 0 <= now-proof['observed_at'] <= .5) for proof in proofs)
     except (KeyError, TypeError, ValueError):
@@ -794,7 +841,8 @@ def observed_crossing_completion(following, target_id, now):
         if not isinstance(proofs,(tuple,list)) or len(proofs)>16:return False
         return any(bool(target_id and isinstance(proof,dict) and proof['target_id']==target_id and proof['kind']=='crossing'
             and proof['status']=='observed_original_crossing_model_ended'
-            and proof['basis']=='same_native_id_slot_continuous_observed_motion_not_clearance'
+            and proof['basis'] in ('unique_native_id_shape_bounded_motion_not_clearance',
+                                  'same_native_id_slot_continuous_observed_motion_not_clearance')
             and all(proof[k]==source[k] for k in ('lifecycle','generation','frame_us','observed_at'))
             and 0<=now-proof['observed_at']<=.5) for proof in proofs)
     except (KeyError,TypeError,ValueError):

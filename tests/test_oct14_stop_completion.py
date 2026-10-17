@@ -131,12 +131,11 @@ def test_motion_constraint_source_survives_existing_integrity_export(joint,tmp_p
     original=state.get('longitudinal_traffic')['motion_constraint']
     for generation in range(2,12):
         # This helper serializes list positions as actual native array slots.
-        # Reversing it reassigns both acquired IDs, rather than merely changing
-        # selector iteration order. Preserve their slots and coherent motion;
-        # the owner-handoff suite separately requires slot reassignment to fail.
-        following=timed_step(joint,[dict(a,z=a['z']+(generation-1)*10./30.) for a in actors],
+        # Reversing tests transport order independence, not an ID reassignment:
+        # native slots are sorted positions. Motion still uses speed*dt.
+        following=timed_step(joint,[dict(a,z=a['z']+(generation-1)*10./30.) for a in reversed(actors)],
                    generation=generation,speed=8.)
-        assert all(w['chain_valid'] and w['slot']==int(w['target_id'])-31
+        assert all(w['chain_valid'] and w['current_slot']==32-int(w['target_id'])
                    for w in following['owner_witnesses'])
     assert state.get('simple_auto_service_hold') is None
     assert state.get('autopilot_active')
@@ -176,7 +175,15 @@ def test_publication_at_positive_write_cannot_execute_old_moving_drive(joint,fau
         engine._flush_controls()
     assert physical('aforward')==0.
     assert not any(channel=='aforward' and value>0. for _,channel,value in writes[start:])
-    assert state.get('autopilot_intervention')
+    if fault in ('absent','missing_packet','changed_id'):
+        # No ACC owner was acquired in this scene. Still discard the positive
+        # write, but a vanished ineffective auxiliary model is not a technical
+        # navigation failure. Stale/foreign data below must remain rejected.
+        assert not acc._followed_target
+        assert not state.get('autopilot_intervention')
+        assert state.get('autopilot_active')
+    else:
+        assert state.get('autopilot_intervention')
 
 
 @pytest.mark.parametrize('mode',[0,3])

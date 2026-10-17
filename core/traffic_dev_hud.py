@@ -261,6 +261,8 @@ class DevHUDFeed:
         summary={k:value[k] for k in ('context','activation','source','sequence',
             'sdk_frame_us','observation_timestamp','traffic_source','target_id','braking_actor_ids',
             'brake_basis','write_stats','backend_pair','recorded_at','game_consumption_verified')}
+        summary.update({k:value.get(k) for k in ('candidate_id','constraint_owner_id',
+            'constraint_kind','brake_actor_id','continuity_reason')})
         summary['source']={k:value['source'].get(k) for k in ('source','reason','emergency')}
         summary['write_stats']={k:value['write_stats'].get(k) for k in ('write_success_count','write_error_count',
             'backend_brake_max','write_last_sequence','write_last_returned_at_s')}
@@ -300,6 +302,10 @@ class DevHUDFeed:
                 if selected.get('source') == 'acc' and selected.get('brake',0.) > 0.
                 else following.get('source_acquisition')),
             target_id=acc.get('following_target_id') or following.get('target_id'),
+            candidate_id=following.get('target_id'),constraint_owner_id=acc.get('following_target_id'),
+            constraint_kind=acc.get('following_kind'),brake_actor_id=decisive.get('id'),
+            continuity_reason=next((w.get('continuity_reason') for w in following.get('owner_witnesses',())
+                if w.get('target_id')==acc.get('following_target_id')),'unavailable'),
             observed_reference_gap_m=following.get('gap_m'),
             targets=(traffic.get('motion_constraint') or {}).get('targets'),
             braking_actor_ids=(original_acc.get('braking_actor_ids')
@@ -538,6 +544,9 @@ def draw_overlay(qp, rect, snapshot, project, now=None, *, test_data=False):
         f"request T/B {fmt((applied.get('output_intent') or {}).get('throttle'))}/{fmt((applied.get('output_intent') or {}).get('brake'))}",
         f"written T/B {fmt(pair.get('throttle'))}/{fmt(pair.get('brake'))} #{fmt(stats.get('write_last_sequence'))}",
         f"owner {fmt(selected.get('source'))} / ACC {fmt(applied.get('target_id'))}",
+        f"candidate {fmt(applied.get('candidate_id'))} / constraint {fmt(applied.get('constraint_owner_id'))} {fmt(applied.get('constraint_kind'))}",
+        f"brake object {fmt(applied.get('brake_actor_id'))}",
+        f"continuity {fmt(applied.get('continuity_reason'))}",
         f"target req/cap {fmt(applied.get('requested_speed_kmh'))}/{fmt(applied.get('constrained_speed_kmh'))}km/h",
         f"ref gap {fmt(applied.get('observed_reference_gap_m'))}m / contact {fmt(((applied.get('brake_basis') or {}).get('decisive') or {}).get('predicted_contact_s'))}s",
         str(selected.get('reason') or 'reason unavailable')[:54],
@@ -559,7 +568,7 @@ def draw_overlay(qp, rect, snapshot, project, now=None, *, test_data=False):
         qp.setPen(QPen(QColor('#facc15'),1));qp.setBrush(QColor(13,20,29,235));qp.drawRoundedRect(alert,7,7)
         qp.setFont(QFont('Segoe UI',9));qp.setPen(QColor('#f7e3ab'))
         qp.drawText(alert.adjusted(9,6,-9,-6),Qt.TextFlag.TextWordWrap,explanation)
-    card=QRectF(rect.right()-345,rect.top()+6,337,274)
+    card=QRectF(rect.right()-345,rect.top()+6,337,312)
     qp.setPen(QPen(QColor('#435365'),1));qp.setBrush(QColor(13,20,29,220));qp.drawRoundedRect(card,8,8)
     qp.setPen(QColor('#dce8f5'));qp.setFont(QFont('Consolas',8))
     qp.drawText(card.adjusted(9,6,-8,-4),Qt.AlignmentFlag.AlignTop,'\n'.join(lines))

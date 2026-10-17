@@ -71,14 +71,14 @@ def test_stronger_other_body_brake_keeps_acquired_owner(joint,original_kind,dev)
     if dev:engine._dev_hud.close()
 
 
-@pytest.mark.parametrize('fault',['missing','slot','teleport','reuse','stale_witness'])
+@pytest.mark.parametrize('fault',['missing','ambiguous','teleport','reuse','stale_witness'])
 def test_another_brake_cannot_repair_broken_original_owner(joint,fault):
     import copy
     state,engine,ap,acc,policy,tick,_,_,physical,writes,clock=joint
     original=crossing(at=32.,arrival=4.1,aid=28)
     step(joint,[original],1)
     hazard=dict(id=26,x=-9.2,y=10.,z=38.,yaw=-math.pi/2,speed=4.)
-    actors=([hazard] if fault in ('missing','reuse') else [hazard,original] if fault=='slot'
+    actors=([hazard] if fault in ('missing','reuse') else [original,dict(original,x=original['x']+.1),hazard] if fault=='ambiguous'
         else [dict(original,x=original['x']+30.),hazard] if fault=='teleport' else [original,hazard])
     following,packet=step(joint,actors,2,pedals=False)
     if fault=='reuse':
@@ -180,6 +180,9 @@ def test_hud_retains_exact_intervention_after_release(joint,monkeypatch):
     shown=for_display(feed.snapshot(),before['applied']['context'],False)
     assert shown['last_intervention']['geometry']==before['consumed_geometry']
     assert shown['last_intervention']['applied']['backend_pair']['brake']>0.
+    for key in ('candidate_id','constraint_owner_id','constraint_kind','brake_actor_id','continuity_reason'):
+        assert key in shown['last_intervention']['applied']
+        assert shown['last_intervention']['applied'][key]==before['applied'][key]
     assert shown['history_only']
     assert shown['last_fault']['kind']=='technical'
     feed.close()

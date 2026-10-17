@@ -19,7 +19,7 @@ class Plugin(BasePlugin):
     """
 
     NAME = "acc"
-    VERSION = "1.3.5"
+    VERSION = "1.3.7"
 
     def on_start(self):
         logging.info("ACC Plugin started with bounded speed PID control.")
@@ -200,10 +200,12 @@ class Plugin(BasePlugin):
         braking_replaces_cap = observed_braking_continuation(traffic,
             self._following_target_id, time.monotonic())
         if strict and self._followed_target and not observed_owner_chain(following or {},self._following_owner):
-            self._following_fault='ACC original native owner continuity unavailable; driver takeover required'
-        if strict and self._followed_target and following_cap is None and not braking_replaces_cap:
+            from core.acc_following import owner_chain_rejection
+            self._following_fault=('ACC original native owner continuity unavailable: '
+                +owner_chain_rejection(following or {},self._following_owner)+'; driver takeover required')
+        if strict and self._followed_target and not self._following_fault and following_cap is None and not braking_replaces_cap:
             self._following_fault = 'ACC target unavailable or unconfirmed departure; driver takeover required'
-        if (strict and self._followed_target and motion_scope is not None
+        if (strict and self._followed_target and not self._following_fault and motion_scope is not None
                 and self._following_target_id not in {t['id'] for t in motion_scope['targets']}
                 and not braking_replaces_cap):
             self._following_fault='ACC original moving target unavailable; driver takeover required'
@@ -390,7 +392,7 @@ class Plugin(BasePlugin):
             # Remove only a ceiling that actually constrained this activation.
             # Engine still requires two locked acquisitions before release.
             self._reset_control()
-        self._signal_control_active = signal_owns_plan
+        self._signal_control_active = signal_control is not None
         externally_braking = (self.sdk.get("system_state") in ("EMERGENCY", "CONTROLLED_STOP", "PAY_TOLL")
             or truck.get("parkBrake") is True
             or (traffic is not None and max(traffic["traffic_brake"], traffic["light_brake"]) > 0)
@@ -477,6 +479,7 @@ class Plugin(BasePlugin):
             # overspeed safety floor above 2 km/h and its ordinary 0.35 maximum.
             brake_power = np.clip(max(-throttle_output * .35,
                                       over / 40.0 if over > 2. else 0.), 0.0, 0.35)
+        signal_brake_selected = False
         if signal_owns_plan or destination_owns_plan:
             # Same distance/deceleration mapping previously executed by Traffic,
             # now inside the single speed-control output. The ordinary cruise
@@ -494,6 +497,7 @@ class Plugin(BasePlugin):
             else:
                 brake_power = signal_stop_brake_request(candidate, speed, continuing=continuing)
             self._speed_braking = brake_power > 0.
+            signal_brake_selected = bool(signal_owns_plan and self._speed_braking)
             if self._speed_braking:
                 self._signal_stop_started = True
                 throttle_val = 0.
@@ -508,12 +512,26 @@ class Plugin(BasePlugin):
                 coast_allowance = CURVE_APPROACH_DECEL_MS2*(CURVE_BRAKE_RESPONSE_S+LEASE_S)
                 if selected_cap-speed <= coast_allowance:
                     throttle_val = 0.
-        if signal_owns_plan and throttle_val == 0. and throttle_output > 0.:
+        elif signal_control is not None:
+            # A slower Policy tick can retain a LOWER sample of this same
+            # speed-dependent stop envelope. Losing the equality comparison
+            # above must not drop the signal's required terminal brake or
+            # report ordinary cruise. Other lower limits/brakes still win.
+            from core.longitudinal import signal_stop_brake_request
+            signal_brake=signal_stop_brake_request(candidate,speed,
+                continuing=was_speed_braking and over>=-2.)
+            if signal_brake>0.:
+                brake_power=max(float(brake_power) if self._speed_braking else 0.,signal_brake)
+                throttle_val=0.
+                self._speed_braking=True
+                self._signal_stop_started=True
+                signal_brake_selected=True
+        if (signal_owns_plan or signal_brake_selected) and throttle_val == 0. and throttle_output > 0.:
             # Coast/feed-forward braking inhibits a computed positive drive.
             # Numeric output saturation alone cannot see this mapping. Preserve
             # negative integral/derivative state; discard only unexecuted drive.
             self.speed_pid.discard_unexecuted_positive_integral()
-        if signal_owns_plan or destination_owns_plan:
+        if signal_owns_plan or signal_brake_selected or destination_owns_plan:
             # A distance-based stop is already a planned deceleration demand;
             # do not lag that trajectory or retain an ordinary drive recovery.
             desired_acceleration = selected_acceleration = None
@@ -557,7 +575,7 @@ class Plugin(BasePlugin):
                 selected_acceleration_ms2=selected_acceleration,
                 acceleration_basis='nominal_actuator_mapping_not_measured_vehicle_acceleration',
                 signal_stop_control=signal_control is not None,
-                signal_brake_selected=bool(signal_owns_plan and self._speed_braking),
+                signal_brake_selected=signal_brake_selected,
                 destination_brake_selected=bool(destination_owns_plan and self._speed_braking),
                 following_required=self._followed_target,
                 dependencies=[v for v in (
@@ -602,6 +620,9 @@ class Plugin(BasePlugin):
                 decisive_brake_actor_id=decisive.get('id'),
                 source_acquisition=follow.get('source_acquisition'),
                 continuity_observed=observed_braking_continuation(traffic_evidence,self._following_target_id,time.monotonic())))
+            from core.acc_following import owner_chain_rejection
+            diagnostic['target_evidence']['continuity_reason']=owner_chain_rejection(follow,self._following_owner)
+            diagnostic['target_evidence']['owner']=self._following_owner
         publish(self.sdk.shared_state, truck, "acc", binding=binding, evidence_valid=valid,
                 throttle=throttle, brake=brake, emergency=False,
                 requested_speed_kmh=target, constrained_speed_kmh=target,

@@ -362,6 +362,11 @@ def simple_auto_forward_transition(state, truck, history, now=None):
         result.update(confirmed_frame=frame, confirmed_at=observed_at,
                       zero_deadline_at=None, phase="forward_confirmed", brake_only=False, coast_only=False)
         return result, ""
+    from core.service_brake_hold import approach_green_wait_allowed
+    if history and approach_green_wait_allowed(hold,state,truck,now):
+        result.update(phase='signal_green_pairing',brake_only=True,coast_only=True,
+                      zero_deadline_at=hold.get('standstill_deadline_at',hold['returned_at']+.5))
+        return result,''
     if (history and not history.get('launch_deadline_at')
             and frame > history.get('confirmed_frame', frame)
             and speed > .05 and truck.get('parkBrake') is False):

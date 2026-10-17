@@ -189,6 +189,9 @@ def hold_snapshot(original):
     if not isinstance(original,dict):
         return None
     hold = {k:original.get(k) for k in _NESTED_FIELDS['service_hold'] if k != 'signal_lock'}
+    if 'standstill_deadline_at' in original:
+        # Additive string key: do NOT change the fixed schema-1 tree-key index.
+        hold['standstill_deadline_at']=original['standstill_deadline_at']
     lock = original.get('signal_lock')
     if lock:
         hold['signal_lock'] = {k:lock[k] for k in ('lifecycle','generation','frame_us','observed_at')}
@@ -543,6 +546,7 @@ def bounded_input(value):
     result['unavailable_field_mask'] = sum(1 << i for i,k in enumerate(keys) if value.get(k) is None)
     # Additive fields do not change schema-1 bitmap positions or byte limits.
     for key in ('deadline_basis', 'refresh_protocol', 'invalid_reason', 'traffic_availability', 'destination_brake_selected',
+                'signal_stop_control','signal_brake_selected',
                 'leader_prediction', 'stop_clearance', 'requested_acceleration_ms2',
                 'selected_acceleration_ms2', 'acceleration_basis', 'motion_constraint', 'braking_actor_ids',
                 'braking_acquisition','following_kind','following_owner','target_evidence'):
@@ -1172,6 +1176,7 @@ class PedalJournal:
         self._event_suppressed=0
         self._event_last_source=None
         self._event_last_fault_signature=None
+        self._event_export_failure=None
 
     def begin_decision(self):
         self._local.decision_open=True
@@ -1261,6 +1266,15 @@ class PedalJournal:
         with self._event_lock:
             if self._pending_event and self._pending_event['sequence']==sequence:
                 self._pending_event=None;self._event_exports+=1
+                self._event_export_failure=None
+
+    def significant_export_failed(self,reason,now):
+        with self._event_lock:
+            previous=self._event_export_failure or {}
+            self._event_export_failure=dict(reason=str(reason)[:256],
+                first_failed_at_s=previous.get('first_failed_at_s',now),
+                last_failed_at_s=now,attempts=previous.get('attempts',0)+1,
+                complete=False,requires_archive=reason=='SIGNIFICANT_EVENT_EXPORT_DISK_QUOTA')
 
     @staticmethod
     def expand_significant(p):
@@ -1441,7 +1455,8 @@ class PedalJournal:
                 game_consumption_verified=False)
             result['event_capture_status']=dict(pending=bool(self._pending_event),
                 maximum_exports_per_minute=4,suppressed_events=self._event_suppressed,
-                pending_capacity=1,receipt_byte_budget=32768)
+                pending_capacity=1,receipt_byte_budget=32768,
+                export_failure=dict(self._event_export_failure) if self._event_export_failure else None)
             start=min((e['call_started_at_s'] for e in rows),default=None)
             end=max((e['call_returned_at_s'] for e in rows),default=None)
             result['detail_evidence']=dict(start_s=start,end_s=end,
@@ -1459,6 +1474,8 @@ def expand_journal(result):
     result['events'] = [dict(e) for e in result['events']]
     if 'first_intervention' in result:
         result['first_intervention'] = _expand_intervention(result['first_intervention'])
+    if 'preceding_significant_event' in result:
+        result['preceding_significant_event']=PedalJournal.expand_significant(result['preceding_significant_event'])
     if 'preceding_significant_event_receipt' in result:
         preceding=dict(result['preceding_significant_event_receipt'])
         preceding['receipt']=expand_decision(unpack_source(preceding['receipt']))

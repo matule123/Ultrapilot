@@ -138,7 +138,12 @@ def stopping_brake_continuity_required(distance_m, speed_ms):
     This is NOT permission to seed a brake at standstill. Only an actual
     acknowledged forward-started positive write can own the continuing chain.
     """
-    return abs(float(speed_ms)) < .5 and float(distance_m) <= 1.5
+    # The response/transfer reserve is already part of this distance profile.
+    # Enter its slow terminal zone BEFORE a delayed braking response takes
+    # speed through zero; don't wait for the raw 1.5 m boundary while releasing
+    # the last forward-started brake. This does not move the stop target.
+    speed=abs(float(speed_ms))
+    return speed < .5 and float(distance_m) <= 1.5+speed*(CURVE_BRAKE_RESPONSE_S+LEASE_S)
 
 
 def stopping_brake_request(distance_m, speed_ms, *, continuing=False):
@@ -561,9 +566,29 @@ def signal_drive_write_guard(state, truck, value, binding, *, diagnostic=None,
     """
     traffic, reason = read(state, 'traffic', binding=binding,
                            diagnostic=diagnostic, rejection_info=rejection_info)
+    def auxiliary_changed():
+        # No old positive drive is written. This discarded, ineffective model
+        # was not acquired following/stop authority; a new producer tick owns
+        # the next decision. Keep original lease/identity and any brake.
+        result=dict(value,throttle=0.,source='decision_refresh',
+            reason='auxiliary traffic model changed; awaiting current decision')
+        if traffic and traffic.get('traffic_brake',0.)>.7:
+            result.update(brake=1.,emergency=True,source='traffic_emergency',
+                reason='emergency brake demand')
+            from core.navigation.longitudinal_diagnostics import emergency_evidence
+            result['emergency_evidence']=emergency_evidence(traffic,'traffic',traffic['observation_timestamp'])
+            result['lease_dependencies']=[*value.get('lease_dependencies',()),dependency(traffic)]
+            if traffic['expires_at']<result['expires_at']:
+                result.update(expires_at=traffic['expires_at'],deadline_basis=dependency(traffic)['deadline_basis'])
+        if diagnostic is not None:
+            diagnostic['auxiliary_model_transition']='positive write discarded; no clearance asserted'
+            diagnostic['selected']={k:v for k,v in result.items()
+                if k not in ('emergency_evidence','stopping_evidence','lease_dependencies')}
+        return result,''
     if reason or traffic is None:
         if traffic is None and value.get('moving_target_ids'):
             return value,'ACC moving traffic unavailable before write'
+        if not reason and value.get('observed_motion_ids'):return auxiliary_changed()
         return value, reason
     control = signal_speed_control(traffic, float(truck['speed']))
     cap = signal_approach_speed_limit(traffic, float(truck['speed']))
@@ -582,11 +607,15 @@ def signal_drive_write_guard(state, truck, value, binding, *, diagnostic=None,
             return value,'invalid positive moving traffic constraint before write'
         if not set(original_ids)<={t['id'] for t in qualified['targets']}:
             return value,'ACC original moving target unavailable before write'
+        if not set(value.get('observed_motion_ids') or ())<={t['id'] for t in qualified['targets']}:
+            return auxiliary_changed()
         moving_cap=min(t['cap_mps'] for t in qualified['targets'])
         cap=min(cap,moving_cap) if cap is not None else moving_cap
     elif original_ids:
         # Do not accept disappearance between arbitration and positive write.
         return value,'ACC moving constraint unavailable before write'
+    elif value.get('observed_motion_ids'):
+        return auxiliary_changed()
     if cap is None or float(truck['speed']) <= cap:
         return value, ''
     result = dict(value, throttle=0., source='speed_constraint',
@@ -1318,10 +1347,16 @@ def _engine_decision(state, truck, now=None, *, diagnostic=None, rejection_info=
         # The old candidate cannot outlive its source's original short lease.
         from core.acc_following import observed_departure, observed_braking_continuation, observed_crossing_completion, observed_owner_chain
         if not observed_owner_chain(following or {},current_acc.get('following_owner')):
-            result=reject('ACC original native owner continuity unavailable',traffic)
+            from core.acc_following import owner_chain_rejection
+            detail=owner_chain_rejection(following or {},current_acc.get('following_owner'))
+            result=reject('ACC original native owner continuity unavailable: '+detail,traffic)
             if rejection_info is not None:
                 rejection_info['following_target_id']=current_acc.get('following_target_id')
                 rejection_info['decisive_brake_actor_id']=((traffic or {}).get('brake_basis') or {}).get('decisive',{}).get('id')
+                rejection_info['invalid_reason']='ACC owner continuity: '+detail
+                rejection_info['target_evidence']=dict(original_target_id=current_acc.get('following_target_id'),
+                    candidate_id=(following or {}).get('target_id'),continuity_reason=detail,
+                    owner=current_acc.get('following_owner'),source_acquisition=(following or {}).get('source_acquisition'))
             return result
         candidate_present = (isinstance(following, dict) and following.get('status') == 'candidate'
             and (following.get('target_id')==current_acc.get('following_target_id')
@@ -1422,8 +1457,13 @@ def _engine_decision(state, truck, now=None, *, diagnostic=None, rejection_info=
         result['refresh_protocol'] = value['refresh_protocol']
     if response_receipt is not None:
         result['refresh_protocol'] = response_receipt
+    if moving_scope and current_acc and current_acc.get('following_required'):
+        # Presence in an auxiliary forecast is not acquired authority. Bind
+        # only the actually consumed owner, never every ineffective candidate.
+        result['moving_target_ids']=tuple(t['id'] for t in moving_scope['targets']
+            if t['id']==current_acc.get('following_target_id'))
     if moving_scope:
-        result['moving_target_ids']=tuple(t['id'] for t in moving_scope['targets'])
+        result['observed_motion_ids']=tuple(t['id'] for t in moving_scope['targets'])
     winner = min(dependencies, key=lambda p: (p['expires_at'], p.get('source', '')))
     result['deadline_basis'] = dependency(winner)['deadline_basis']
     result['lease_dependencies'] = [dependency(p) for p in dependencies]

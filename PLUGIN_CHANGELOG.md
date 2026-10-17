@@ -2,6 +2,13 @@
 
 Release history for individual plugins. See [PLUGIN_VERSIONS.md](PLUGIN_VERSIONS.md) for versioning rules.
 
+## Core existing event-export recovery — unreleased, 2026-10-17
+
+- Report exhausted significant-event file/byte quota once at startup using the existing background exporter; expose the same read-only readiness and hash inventory without arming diagnostics or changing control authority.
+- Permit a bounded background retry after explicit external archival instead of permanently latching the first export failure. Preserve original event timestamps, files, 8-file/16 MiB quota and the single-worker/no-queue contract.
+- Include the full already-sealed preceding event history/detail in the existing automatic fault incident after event-export failure, not just its receipt. Retain current safety writes, first intervention and explicit failure/coalescing limits; validate nested order and incompleteness through the existing codec and hash envelope.
+- Core-only change: no plugin version increase, regulator, arbitration, steering, signal offset, source timestamp, DLL or safety-timeout change. Historical missing roundabout inputs cannot be recreated. See PHASE7_EVENT_EXPORT_QUOTA_RECOVERY_20261017.md.
+
 ## ACC
 
 ### 1.3.3 — unreleased, 2026-10-16
@@ -723,6 +730,11 @@ and dependency compatibility checks remain planned, not implemented.
 - See [PHASE7_TRAFFIC_AVAILABILITY_20261010.md](PHASE7_TRAFFIC_AVAILABILITY_20261010.md): the retained earlier optional traffic packet is not the missing first rejected AP snapshot. The historical native actor cause and game outcome remain unverified. Plugin implementations/versions and DLL are unchanged.
 ## ACC
 
+### 1.3.6 — unreleased, 2026-10-16
+
+- Correct the consumed native traffic identity contract: the producer sorts and truncates moving/parked arrays by distance each acquisition, so array slot is not object identity. Preserve qualified unique-ID/shape/lifecycle/bounded-motion continuity across sorting, while missing, ambiguous, reused or discontinuous observations remain fail-closed. Unknown, zero or invalid body dimensions cannot qualify identity continuity. Use the same contract for acceleration prediction, departure and crossing/terminal-conflict completion. Bind terminal clearance to the original acquisition, not a fresh pair after disappearance.
+- Do not acquire every ineffective auxiliary speed forecast as a positive-write dependency. If such a model changes during the write boundary, discard the old positive drive and await the next fresh decision without a fabricated full navigation fault. Acquired following/stop owners, stale/foreign packets and emergency floors retain their protections. Preserve the first specific continuity failure; DEV evidence separates candidate, acquired owner and decisive brake object in live and retained history within existing budgets. No controller, AEB threshold, 5 m signal offset, timeout or DLL change. See PHASE7_NATIVE_OWNER_CONTRACT_20261016.md; offline models are not ETS2 confirmation.
+
 ### 1.3.5 — unreleased, 2026-10-16
 
 - Preserve the original acquired native dependency while a new crossing candidate or stronger body brake applies. Keep up to 16 independently validated owner chains across producer publications; a different body brake cannot erase the original dependency. Retain source/slot/lifecycle/acquisition identity in the ACC decision and final Engine guard. Missing, reassigned, reused or discontinuously moved original records cannot inherit an old owner's authority. Crossing release still requires its original completion witness. Ordinary closer-lead handoff requires both leads to be currently projected and binds the newly consumed owner independently; disappearance is never its substitute.
@@ -739,3 +751,13 @@ and dependency compatibility checks remain planned, not implemented.
 - Capture the existing decoded acquisition after control-owner selection; do not add SDK/IPC reads or affect physical decisions. Show fresh native detections without navigation authority as passive observations, never as confirmed clearance or attributed braking. Preserve classic perspective roads and the existing XYZ/XZ Visualization fix.
 - Use shared crossing-completion qualification in ACC and the final Engine gate, with exact acquisition and original timestamps. Retain the compact constraint kind/completion in the existing bounded immutable diagnostics without changing historical codec tables.
 - Only the ACC plugin implementation/version changes (1.3.3 -> 1.3.4). DrivePolicy, Autopilot, Map, HUD, turn signals and native DLL versions remain unchanged. See PHASE7_CROSSING_COMPLETION_DEV_BUDGET_AND_SIGNAL_20261016.md. Offline counterexamples do not establish the missing historical actor array or the exact historical red-reset branch; GAME NOT VERIFIED.
+## ACC
+
+### 1.3.7 — unreleased, 2026-10-16
+
+- Retain the current signal's calculated stop-brake contribution when an independently scheduled Policy still supplies a lower sample of that same distance envelope. Preserve stronger current requests and their actor ownership; do not substitute a new controller or move the 5 m reference target.
+- Commit the existing low-speed terminal brake chain using the profile's existing response/transfer reserve. A positive speed-dependent ceiling must not drop the last forward-started brake immediately before standstill.
+- In shared core transmission/hold validation, allow only bounded zero-output pairing of a previously admitted approach with a new, same-head, producer-timed green. Full clearance and the existing bounded gearbox launch still precede drive; no fresh stationary brake, parking-brake action, old timestamp renewal or weaker reverse/identity/backend check.
+- Keep an already written own launch probe distinct from a driver-held stationary activation when a slower brake producer subsequently arrives. Remove drive immediately, retain the original deadline and require current Plugin acknowledgement plus the normal final output gates before forward-motion braking handoff.
+- Retain the consumed signal-control/selected-brake flags and fixed pairing deadline in the existing immutable pedal export without changing its fixed schema-1 key dictionary or memory limits.
+- Only ACC implementation/version changes; Autopilot remains 1.3.4, DrivePolicy 1.1.4, Map 1.1.2 and the native DLL unchanged. The second-roundabout oscillation's exact longitudinal inputs/writes are missing from this session; it remains unresolved, not certified repaired. See PHASE7_SIGNAL_ZERO_HANDOFF_AND_APPROACH_OSCILLATION_20261016.md. No deployment or ETS2 confirmation.

@@ -1,5 +1,44 @@
 # Odložená a nedokončená práca
 
+## Existing event-export quota recovery — 17 October 2026
+
+See [PHASE7_EVENT_EXPORT_QUOTA_RECOVERY_20261017.md](PHASE7_EVENT_EXPORT_QUOTA_RECOVERY_20261017.md).
+Read-only inventory proves the installation has eight significant-event files
+(6,614,998 bytes), so file count blocks export despite spare byte quota.
+Core now reports startup readiness, permits bounded background retry after
+external archival and preserves the full sealed pending event in a later fault.
+No files are archived/deleted, limits raised, new collector added or controls
+changed. Archival requires user approval; the installed event path is NOT READY
+until space is freed. Missing historic second-roundabout inputs remain missing,
+and that braking cause is still open. Later core/test changes supersede the
+previous pending hash snapshot; full pytest remains the user's manual gate.
+
+## Signal near-stop handoff and unresolved second-roundabout oscillation — 16 October 2026
+
+See [PHASE7_SIGNAL_ZERO_HANDOFF_AND_APPROACH_OSCILLATION_20261016.md](PHASE7_SIGNAL_ZERO_HANDOFF_AND_APPROACH_OSCILLATION_20261016.md).
+ACC 1.3.7/core candidate fixes reproduced slow-Policy terminal-brake loss,
+bounded green/zero-ratio pairing and own-probe/late-brake activation confusion.
+The installed ACC 1.3.6 dirty build was verified by all 34 receipt hashes and
+LF/CRLF-normalized source equality at entry. Historical first-fault source,
+observations and actual pedal ordering are separated from modelled green timing.
+
+The second-roundabout speed oscillation at progress approximately 632–700 m
+is recorded, but its contemporaneous longitudinal producer inputs and physical
+pedal writes are not retained. The earlier significant-event record stops at
+31116.080 s and the next pedal history starts at 31147.020 s. Existing
+significant-event disk quota failures explain a missing evidence path, not the
+vehicle's braking cause. No original recordings are removed and no new drive
+is requested. Do not declare both incidents fixed, deploy or tune the traffic/
+curve model without the missing consumed constraints and writer provenance.
+GPS-destination removal at 21:36:59 is explicitly outside this correction.
+
+Final whole-suite verification did not complete because the runs were interrupted;
+none is recorded as PASS. The user chose to run the full suite manually. Current
+runtime/source hashes are retained in `verification-pending.json`; final ZIP
+preparation awaits that result and unchanged hashes. No further full run is
+started automatically, and the second-roundabout cause remains unresolved.
+
+
 ## Crossing completion, dense DEV budget and red-stop phase — 16 October 2026
 
 See [PHASE7_CROSSING_COMPLETION_DEV_BUDGET_AND_SIGNAL_20261016.md](PHASE7_CROSSING_COMPLETION_DEV_BUDGET_AND_SIGNAL_20261016.md).
@@ -792,3 +831,21 @@ future directed path/full actor body array and rejected ID 28 acquisition are
 also absent; model contact is not a confirmed impact or lane assignment. These
 are specific remaining evidence boundaries, not reasons to repeat a whole drive
 or reopen the cancelled GPS-arrival work. Originals must be retained.
+
+## Native sorted-slot contract — 16 October evening
+
+[PHASE7_NATIVE_OWNER_CONTRACT_20261016.md](PHASE7_NATIVE_OWNER_CONTRACT_20261016.md)
+corrects the previous stable-slot assumption using the installed native source:
+moving/parked records are distance-sorted and truncated each acquisition. ACC
+1.3.6 qualifies unique ID/shape/source/lifecycle/bounded motion without treating
+slot as identity, while original missing/ambiguous chains remain fail-closed.
+It separates acquired authority from ineffective auxiliary forecasts and binds
+terminal completion to the original native acquisition. No deployment or new
+game result is implied. The report records final verification and package hashes.
+
+The source still has no actor-incarnation or complete-coverage certificate.
+Capacity omission of a required target cannot authorize drive. Historical full
+actor arrays/owner witnesses and exact future reference are incomplete; do not
+claim every body prediction was false or that all technical stops are solved.
+The separate red-signal reverse-consumption boundary remains open. No DLL,
+5 m offset, controller, freshness limit or original evidence is changed here.
