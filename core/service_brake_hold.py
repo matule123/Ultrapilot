@@ -23,6 +23,45 @@ def holding_floor(hold,truck,now):
 from core.transmission_mode import simple_auto_context
 
 
+def continuous_stop_phase(record, truck):
+    """An approach label cannot erase a still-positive forward-started chain.
+
+    At the first stopped observation Engine has not yet run after_write() to
+    change 'approaching' into 'holding'. Admit only its already acknowledged
+    positive receipt; the physical boundary still validates sequence/backend.
+    A released approach, mere low speed or a new stationary brake never qualifies.
+    """
+    if record.get('phase') in ('braking', 'holding'):
+        return True
+    if record.get('phase') != 'approaching':
+        return False
+    try:
+        return bool(record.get('brake', 0.) > 0. and record.get('chain', 0) > 0
+            and record.get('write_sequence', 0) > 0
+            and abs(float(truck['speed'])) < .05 and int(truck['gear']) >= 0)
+    except (KeyError, TypeError, ValueError, OverflowError):
+        return False
+
+
+def restart_powertrain_rejection(truck):
+    """Reject known engine-off evidence, never infer health from legacy defaults.
+
+    These optional raw-presence fields belong to the already validated truck
+    observation. Unknown is still unknown; gear/lease/backend/receipt checks
+    remain independently mandatory. No SDK read or engine-start command here.
+    """
+    observed = truck.get('powertrainObservation') or {}
+    if not isinstance(observed,dict):
+        return 'planned restart rejected: invalid engine observation; driver takeover required'
+    if observed.get('schema') != 1:
+        return ''
+    rpm = observed.get('engine_rpm')
+    if (observed.get('engine_enabled') is False or
+            (type(rpm) in (int,float) and math.isfinite(rpm) and 0. <= rpm <= 150.)):
+        return 'planned restart rejected: engine is not running; driver takeover required'
+    return ''
+
+
 def receipt(controller):
     if (getattr(controller, 'mode', None) != 'SCS_SDK'
             or not getattr(getattr(controller, 'scs', None), 'connected', False)):
@@ -570,7 +609,7 @@ def real_auto_wait_allowed(state, truck):
     now = time.monotonic()
     return bool(approach_green_wait_allowed(hold,state,truck,now) or (hold.get('context') == simple_auto_context(state)
         and tuple(hold.get('command_context', ())) == binding
-        and hold.get('phase') in ('braking','holding') and hold.get('brake', 0) > 0
+        and continuous_stop_phase(hold,truck) and hold.get('brake', 0) > 0
         and 0 <= now-hold.get('returned_at', float('-inf')) <= .5)
         or (resume.get('mode') == 3 and tuple(resume.get('context', ())) == binding
             and now <= resume.get('deadline_at', 0.)))

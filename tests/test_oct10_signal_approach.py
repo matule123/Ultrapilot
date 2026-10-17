@@ -126,8 +126,12 @@ def test_actual_progress_and_speed_decide_uncertainty_reserve(tmp_path):
         assert result['coverage']['requires_takeover']==takeover
         assert result['coverage']['stopping_reserve_m']==pytest.approx(27.)
         assert result['coverage']['approach_target']['distance']==pytest.approx(115.-progress)
-        assert signal_approach_speed_limit({'signal':result},speed)==pytest.approx(
-            math.sqrt(2*max(0.,115.-progress-9.)))
+        cap=signal_approach_speed_limit({'signal':result},speed)
+        # The spatial reference solves its own response/braking distance.
+        # The independent ACTUAL-speed takeover reserve remains 27 m above;
+        # the old measured-speed reference would rebound after deceleration.
+        assert 1.5*cap+cap*cap/2.==pytest.approx(115.-progress)
+        assert signal_approach_speed_limit({'signal':result},0.)==pytest.approx(cap)
         assert not result['coverage']['clearance_confirmed']
 
 

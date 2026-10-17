@@ -2,6 +2,19 @@
 
 Release history for individual plugins. See [PLUGIN_VERSIONS.md](PLUGIN_VERSIONS.md) for versioning rules.
 
+## Core signal-approach completion — unreleased, 2026-10-17
+
+- Replace the measured-speed-dependent signal target with the spatial solution of `d = v_ref*T + v_ref^2/(2*a)`, preserving the existing 5 m derived target, 1 m/s² planning assumption and response/freshness reserve. Policy, ACC and the final guard consume the same function; braking no longer raises its own target.
+- Track that moving reference with the existing signed speed PID and its analytic deceleration feed-forward. Reset old cruise memory on target ownership changes, avoid integral windup against the moving stop plan, and bound ordinary tracking deceleration without weakening the independent current-distance required-stop demand or emergency priority. No new regulator, throttle ban, steering filter or calibration change.
+- Let an already acknowledged positive, forward-started approach brake cross the first zero-ratio observation before Engine relabels it as holding. Share the rule across both transmission paths; released/interrupted receipts still cannot authorize stationary braking. Reject a planned restart on explicit engine-off evidence from the same consumed SDK snapshot, including the final reread, without inferring health from absent fields.
+- Preserve candidate DLL 1.59.5-up-parked-records, Python duplicate-ID rejection, prior packet-refresh repairs, signal clearance, green handoff and original 500 ms limits. Autopilot, Map and DrivePolicy implementation versions are unchanged. See PHASE7_JOINT_SIGNAL_AND_NATIVE_TRAFFIC_20261017.md for frozen verification, model limits and historical uncertainties. Nothing deployed.
+
+## Native parked-record correction and consumed powertrain evidence — unreleased, 2026-10-17
+
+- Correct the pinned native producer's parked-trailer traversal: serialize the actual child pointer instead of repeating the parent. Remove only repeated identical parked native pointers before the 40-record truncation using a fixed 320-byte x64 stack table. Retain distinct same-ID/pose objects and all Python ambiguity/reuse checks. Candidate DLL 1.59.5-up-parked-records keeps Signal schema 3 / Traffic schema 1 and existing ABI sizes.
+- Preserve optional engine-enabled/RPM values from the already consumed raw vehicle read in the existing immutable pedal journal and 30-second history. Keep absent/invalid values unknown and explicitly mark unavailable clutch/damage/input ownership. No new SDK/IPC read, collector, authority or safety decision.
+- The earlier partial proposal rejected two signal profile experiments and kept their failing reproduction and metrics. Its ACC 1.3.7 verification is superseded by the completion entry above, not retroactively called a completed signal repair. Original artifacts remain; no game verification or deployment occurred.
+
 ## Core existing event-export recovery — unreleased, 2026-10-17
 
 - Report exhausted significant-event file/byte quota once at startup using the existing background exporter; expose the same read-only readiness and hash inventory without arming diagnostics or changing control authority.
@@ -761,3 +774,9 @@ and dependency compatibility checks remain planned, not implemented.
 - Keep an already written own launch probe distinct from a driver-held stationary activation when a slower brake producer subsequently arrives. Remove drive immediately, retain the original deadline and require current Plugin acknowledgement plus the normal final output gates before forward-motion braking handoff.
 - Retain the consumed signal-control/selected-brake flags and fixed pairing deadline in the existing immutable pedal export without changing its fixed schema-1 key dictionary or memory limits.
 - Only ACC implementation/version changes; Autopilot remains 1.3.4, DrivePolicy 1.1.4, Map 1.1.2 and the native DLL unchanged. The second-roundabout oscillation's exact longitudinal inputs/writes are missing from this session; it remains unresolved, not certified repaired. See PHASE7_SIGNAL_ZERO_HANDOFF_AND_APPROACH_OSCILLATION_20261016.md. No deployment or ETS2 confirmation.
+
+### 1.3.8 — unreleased, 2026-10-17
+
+- Follow a monotonically decreasing spatial signal-stop reference through the existing signed speed PID, with its analytic deceleration feed-forward, bounded ordinary demand and signal-owned anti-windup. Preserve the 5 m target, actual-speed terminal safety reserve, immediate emergency priority and ordinary cruise/ACC calibration.
+- Preserve the existing response-sized coast phase after the same red stop has braked, including an intervening independent brake request. The signed output mapping must not overwrite that phase with premature positive recovery; a substantially larger underspeed can still recover drive. Existing pedal-continuity and anti-windup regressions remain unchanged.
+- Share the acknowledged positive approach-receipt transition at the first stopped/zero-ratio observation through core. Reject known engine-off restart evidence at the initial and final consumed snapshots. Preserve the separately prepared native parked-trailer record correction. See PHASE7_JOINT_SIGNAL_AND_NATIVE_TRAFFIC_20261017.md for source hashes, paired model results, full verification and historical/game limitations; nothing deployed.

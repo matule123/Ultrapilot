@@ -21,8 +21,11 @@ def test_same_real_directed_entry_has_authorized_five_metre_offset(tmp_path, cas
     assert candidate['stop_line_verified'] is False
     assert 'unmeasured' in candidate['front_geometry_status']
     assert selected['observed_at'] == 1000. and selected['frame_us'] == 100
-    # No second fixed subtraction: the existing response reserve is dynamic.
-    assert signal_stop_speed_limit(candidate,4.) == pytest.approx(math.sqrt(2*(candidate['distance']-6.)))
+    # No second fixed subtraction. Reserve response travel at the reference
+    # speed (Oct17 rebound repair), not at an unrelated measured 4 m/s.
+    cap = signal_stop_speed_limit(candidate,4.)
+    assert cap*1.5+cap*cap/2. == pytest.approx(candidate['distance'])
+    assert signal_stop_speed_limit(candidate,0.) == pytest.approx(cap)
 
 
 @pytest.mark.parametrize('speed', [20.,35.,50.])

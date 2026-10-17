@@ -44,7 +44,14 @@ def signal_tick(values, generation, color=2, gear=0, speed=0., dt=.1, **fault):
         light_brake=engine._light_brake(signal.get('candidate')), light=signal.get('candidate'),
         signal=signal, following=None)
     publish(state, state.get('telemetry')['truck'], 'acc', throttle=.4 if color == 8 else 0.,
-        brake=0. if color == 8 else .4, emergency=False, control_target_kmh=50. if color == 8 else 0.)
+        brake=0. if color == 8 else .4, emergency=False, control_target_kmh=50. if color == 8 else 0.,
+        # This fixture scripts an ACC-owned signal stop. Production ACC always
+        # publishes these ownership fields; without them it is an unrelated
+        # brake beside a red, which must NOT seed a signal stop receipt. The
+        # former measured-speed zero ceiling accidentally hid that omission
+        # through a separate Traffic brake. Keep all physical assertions.
+        signal_stop_control=bool(signal.get('valid') and color != 8),
+        signal_brake_selected=bool(signal.get('valid') and color != 8))
     ap.on_tick(dt)
     engine._flush_controls()
     return signal
@@ -322,7 +329,8 @@ def test_actual_map_prefix_rebase_preserves_locked_signal_and_activation(rolling
                 'source_game_session_id','source_map_key','source_dataset_fingerprint','authority_valid',
                 'authority_lane_id','observation_timestamp')},match=state.get('lane_match'),now=clock[0]))
         publish(state,truck,'traffic',traffic_brake=0.,light_brake=engine._light_brake(signal['candidate']),signal=signal)
-        publish(state,truck,'acc',throttle=0.,brake=.4,control_target_kmh=0.)
+        publish(state,truck,'acc',throttle=0.,brake=.4,control_target_kmh=0.,
+            signal_stop_control=True,signal_brake_selected=True)
         ap.on_tick(.033333);engine._flush_controls()
         assert state.get('autopilot_active'),state.get('autopilot_disable_reason')
     for step in range(1,81):

@@ -108,7 +108,14 @@ def signal_stop_speed_limit(light, speed_ms):
             or not (light.get('stop_required') is True
                     or light.get('color') in ('red', 'yellow', 'unknown', 'off', 'sleep'))):
         return None
-    return stopping_speed_ceiling(light['distance'], speed_ms)
+    distance = max(0., number(light['distance'], -1e6, 1e7))
+    # Solve d = v_ref*T + v_ref²/(2*a) for the REFERENCE speed.
+    # Subtracting measured v*T instead made the target rise after braking.
+    # The current vehicle speed still sets the independent required-stop
+    # brake below; neither a lower reference nor this profile proves grip.
+    a = CURVE_APPROACH_DECEL_MS2
+    response = CURVE_BRAKE_RESPONSE_S + LEASE_S
+    return math.sqrt((a*response)**2 + 2.*a*distance)-a*response
 
 
 def stopping_speed_ceiling(distance_m, speed_ms):
@@ -193,7 +200,10 @@ def signal_speed_control(traffic, speed_ms):
     # A nonzero envelope is still an approach, even inside the old +1.5 m
     # band. That band used to reset ACC via an independent Traffic pedal and
     # permanently latch a tiny brake before the actual stopping reserve.
-    return dict(cap_ms=cap, terminal=cap == 0.,
+    # A spatial reference can be positive even when the ACTUAL speed has
+    # exhausted its response reserve. Preserve the independent terminal-stop
+    # contract; using cap==0 here would silently relax the old safety branch.
+    return dict(cap_ms=cap, terminal=stopping_speed_ceiling(light['distance'],speed_ms) == 0.,
         brake_chain_required=stopping_brake_continuity_required(light['distance'],speed_ms),
         passage_key=light['passage_key'])
 

@@ -32,7 +32,8 @@ def run(directory,*,speed_kmh=50.,mode=0,turn=False,reverse=False,jitter=False,
         head_missing_during_approach=False,allow_rejection=False,
         path_factory=None,snapshot_factory=None,observer_y=10.,phase_program=None,
         duration_limit_s=None, low_speed_disturbance=False, idle_speed_mps=None,
-        brake_response_s=.35, input_delay_s=.12, mass_ratio=1.4):
+        brake_response_s=.35, input_delay_s=.12, mass_ratio=1.4,
+        coherent_processing_clock=False):
     # Optional offline fixtures preserve actual placed geometry/native bytes;
     # the existing plant and production control sequence are unchanged.
     if (not all(math.isfinite(v) for v in (brake_response_s,input_delay_s,mass_ratio))
@@ -76,6 +77,10 @@ def run(directory,*,speed_kmh=50.,mode=0,turn=False,reverse=False,jitter=False,
         truck.update(x=p[0],y=observer_y,z=p[1],rotation=heading)
     v=speed_kmh/3.6;s=initial_progress;t=0.;gear=8 if v else 0
     act_t=act_b=held_t=held_b=0.;queue=deque();rng=random.Random(7610)
+    # Legacy reports excluded the simulated 30 ms processing/IPC interval from
+    # vehicle time while including it in leases. New comparisons explicitly
+    # integrate that interval too, and date the physical write after it.
+    pipeline_s=0.
     entry=plan['passages'][0]['entry_progress_m'];first_stop=None;green_at=None;rows=[];red=speed_kmh>0
     reference_offset = (plan['passages'][0]['front_allowance_m']
                         + plan['passages'][0]['junction_standoff_m'])
@@ -97,8 +102,9 @@ def run(directory,*,speed_kmh=50.,mode=0,turn=False,reverse=False,jitter=False,
                 and rows and rows[-1]['brake']>.02)
             if disturbed:
                 v=.92;old_v=v;disturbance_done=True
-            for j in range(math.ceil(dt/.01)):
-                h=dt/math.ceil(dt/.01)
+            elapsed=dt+pipeline_s if coherent_processing_clock else dt
+            for j in range(math.ceil(elapsed/.01)):
+                h=elapsed/math.ceil(elapsed/.01)
                 while queue and queue[0][0]<=t+j*h:
                     _,held_t,held_b=queue.popleft()
                 alpha=1.-math.exp(-h/brake_response_s)
@@ -109,7 +115,7 @@ def run(directory,*,speed_kmh=50.,mode=0,turn=False,reverse=False,jitter=False,
                     # It is not an inferred ETS2 clutch/idle measurement.
                     a += .9*max(0.,idle_speed_mps-v)
                 v=max(0.,v+a*h);s+=v*h
-            t+=dt
+            t+=elapsed
             moved=moved or v>.5
             phase = phase_program(t, first_stop) if phase_program else None
             if phase is not None:
@@ -178,9 +184,11 @@ def run(directory,*,speed_kmh=50.,mode=0,turn=False,reverse=False,jitter=False,
                     raise AssertionError(state.get('autopilot_disable_reason') or state.get('auto_drive_phase'))
             throttle,brake=pedal('aforward'),pedal('abackward')
             assert not(throttle>0 and brake>0)
-            queue.append((t+input_delay_s,throttle,brake))
-            rows.append(dict(t=t,dt=dt,s=s,speed_mps=v,throttle=throttle,brake=brake,
-                acceleration_mps2=(v-old_v)/dt,disturbed=disturbed,
+            pipeline_s=.03
+            queue.append((t+(pipeline_s if coherent_processing_clock else 0.)+input_delay_s,throttle,brake))
+            rows.append(dict(t=t,dt=elapsed,s=s,speed_mps=v,throttle=throttle,brake=brake,
+                model_write_at_s=t+(pipeline_s if coherent_processing_clock else 0.),
+                acceleration_mps2=(v-old_v)/elapsed,disturbed=disturbed,
                 red=red,phase=state.get('autopilot_control_state'),
                 write_checked_at_s=clock[0],sdk_frame_us=truck['sdkFrameTimeUs'],
                 observation_timestamp=state.get('telemetry')['truck']['_control_observation']['observed_at'],
@@ -201,12 +209,19 @@ def run(directory,*,speed_kmh=50.,mode=0,turn=False,reverse=False,jitter=False,
         start=next((row for row in rows if row['brake']>.02),None)
         jerks=[(b['acceleration_mps2']-a['acceleration_mps2'])/b['dt'] for a,b in zip(rows,rows[1:])]
         nonzero=['brake' if row['brake']>0 else 'drive' for row in rows if row['brake']>0 or row['throttle']>0]
+        approaching=['brake' if row['brake']>0 else 'drive' for row in rows
+            if row['red'] and (row['brake']>0 or row['throttle']>0)]
+        if coherent_processing_clock:
+            for previous,current in zip(rows,rows[1:]):
+                assert abs((current['write_checked_at_s']-previous['write_checked_at_s'])
+                           -(current['t']-previous['t'])) < 1e-8
         physical_pair={'aforward':0.,'abackward':0.};physical_overlap=0
         for _,channel,value in writes:
             if channel in physical_pair:
                 physical_pair[channel]=value
                 physical_overlap += physical_pair['aforward']>0 and physical_pair['abackward']>0
         return dict(samples=len(rows),duration_s=t,stop=first_stop,
+            coherent_processing_clock=coherent_processing_clock,
             brake_start_progress_m=start['s'] if start else None,
             brake_start_distance_to_entry_m=entry-start['s'] if start else None,
             maximum_deceleration_mps2=max(-row['acceleration_mps2'] for row in rows),
@@ -217,6 +232,12 @@ def run(directory,*,speed_kmh=50.,mode=0,turn=False,reverse=False,jitter=False,
             active=state.get('autopilot_active'),
             termination_reason=state.get('autopilot_disable_reason'),
             drive_brake_transitions=sum(a!=b for a,b in zip(nonzero,nonzero[1:])),
+            red_drive_brake_transitions=sum(a!=b for a,b in zip(approaching,approaching[1:])),
+            far_low_speed_s=sum(row['dt'] for row in rows if row['red']
+                and row['light_distance'] is not None and row['light_distance']>10.
+                and row['speed_mps']<5./3.6),
+            red_target_overrun_samples=sum(row['red'] and row['light_distance'] is not None
+                and row['light_distance']<0. for row in rows),
             restart_blocker=(state.get('simple_auto_service_hold') or {}).get('restart_blocker'),
             simultaneous_positive_pedals=sum(row['throttle']>0 and row['brake']>0 for row in rows),
             simultaneous_positive_physical_writes=physical_overlap,

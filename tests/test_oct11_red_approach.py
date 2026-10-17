@@ -43,7 +43,10 @@ def test_far_signal_uses_one_speed_controller_not_external_pedal_reset(flow, tmp
 def test_zero_stopping_envelope_does_not_fade_against_idle_load():
     from core.longitudinal import signal_stop_brake_request, signal_stop_speed_limit
     light = dict(color='red', stop_target_kind='derived_directed_curve_entry', distance=1.)
-    assert signal_stop_speed_limit(light, .92) == 0.
+    # The spatial reference no longer collapses/rebounds with measured speed.
+    # Exhausted actual-speed stopping reserve MUST still demand full braking.
+    assert signal_stop_speed_limit(light, .92) == signal_stop_speed_limit(light, 0.)
+    assert signal_stop_speed_limit(dict(light,distance=0.), .92) == 0.
     assert signal_stop_brake_request(light, .92, continuing=True) == 1.
 
 

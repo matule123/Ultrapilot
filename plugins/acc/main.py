@@ -19,7 +19,7 @@ class Plugin(BasePlugin):
     """
 
     NAME = "acc"
-    VERSION = "1.3.7"
+    VERSION = "1.3.8"
 
     def on_start(self):
         logging.info("ACC Plugin started with bounded speed PID control.")
@@ -375,7 +375,7 @@ class Plugin(BasePlugin):
         continuing_signal_stop = bool(active and self._was_driving
             and stop_owner is not None and stop_owner==self._signal_approach_owner
             and getattr(self,'_signal_stop_started',False))
-        if self._signal_approach_owner is not None and stop_owner != self._signal_approach_owner:
+        if stop_owner != self._signal_approach_owner:
             self._reset_control()
         if binding != self._control_context or active != self._was_driving:
             self._reset_control()
@@ -455,7 +455,11 @@ class Plugin(BasePlugin):
         except (KeyError, TypeError, ValueError, OverflowError):
             limited = False  # Missing optional feedback cannot create authority.
         acceleration_output = self.speed_pid.update(speed_kmh, dt,
-            integrate=active and not duplicate and (not limited or speed_kmh > self._control_target))
+            # A moving spatial stop reference has explicit deceleration below.
+            # Retaining its old cruise/load integral or integrating negative
+            # error against that moving reference compounds feed-forward.
+            integrate=active and not duplicate and not signal_owns_plan
+                and (not limited or speed_kmh > self._control_target))
         throttle_output = acceleration_output/DRIVE_GAIN_MS2
 
         # 4. Control Output Mapping
@@ -526,6 +530,43 @@ class Plugin(BasePlugin):
                 self._speed_braking=True
                 self._signal_stop_started=True
                 signal_brake_selected=True
+        if signal_owns_plan and not destination_owns_plan:
+            # One signed output from the EXISTING PID follows the same spatial
+            # target as Policy and the last boundary. Its exact derivative is
+            # dv_ref/dd=a/(v_ref+a*T), with dd/dt=-observed_speed.
+            from core.longitudinal import (CURVE_APPROACH_DECEL_MS2,
+                CURVE_BRAKE_RESPONSE_S, LEASE_S, stopping_speed_ceiling,
+                stopping_brake_continuity_required)
+            from core.acc_acceleration import BRAKE_GAIN_MS2
+            a = CURVE_APPROACH_DECEL_MS2
+            feed_forward = -a*speed/(signal_control['cap_ms']
+                + a*(CURVE_BRAKE_RESPONSE_S+LEASE_S))
+            demand = max(-BRAKE_GAIN_MS2, min(DRIVE_GAIN_MS2,
+                acceleration_output+feed_forward))
+            # Preserve the existing response-sized coast phase after this
+            # same stop has braked, including across another producer's brake.
+            # The signed mapping must not overwrite that phase with positive
+            # PID recovery while the previous brake response can still act.
+            # A genuinely larger profile deficit can still recover drive.
+            coast_allowance = a*(CURVE_BRAKE_RESPONSE_S+LEASE_S)
+            if (self._signal_stop_started
+                    and 0. <= signal_control['cap_ms']-speed <= coast_allowance):
+                demand = min(0., demand)
+            needed = signal_stop_brake_request(candidate, speed, continuing=True)*BRAKE_GAIN_MS2
+            # Ordinary tracking must not ADD a full PID braking transient to
+            # the planned deceleration. A shorter stopping reserve may demand
+            # more immediately; emergency/other winning sources bypass this.
+            demand = max(-max(a, needed), demand)
+            brake_power = max(0., -demand/BRAKE_GAIN_MS2)
+            if (stopping_speed_ceiling(candidate['distance'],speed) == 0.
+                    or stopping_brake_continuity_required(candidate['distance'],speed)):
+                brake_power = max(brake_power,
+                    signal_stop_brake_request(candidate,speed,continuing=True))
+            throttle_val = max(0., demand/DRIVE_GAIN_MS2) if brake_power == 0. else 0.
+            if hard_limits and speed_kmh > min(hard_limits): throttle_val = 0.
+            self._speed_braking = brake_power > 0.
+            signal_brake_selected = self._speed_braking
+            if self._speed_braking: self._signal_stop_started = True
         if (signal_owns_plan or signal_brake_selected) and throttle_val == 0. and throttle_output > 0.:
             # Coast/feed-forward braking inhibits a computed positive drive.
             # Numeric output saturation alone cannot see this mapping. Preserve

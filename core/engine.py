@@ -1422,13 +1422,14 @@ class UltraPilotEngine:
             continuing = bool(original.get('passage_key')
                 and original['passage_key'] == light.get('passage_key')
                 and (light.get('color') != 'green' or light.get('stop_required') is True))
-            from core.longitudinal import signal_stop_speed_limit
+            from core.longitudinal import signal_stop_speed_limit, stopping_speed_ceiling
             # Qualified moving approach: one distance target, one existing PID.
             # Keep the protective open-loop request when ACC is absent or the
             # observed head is unavailable, and retain terminal brake continuity.
             if (self.shared_state.get('longitudinal_acc_active')
                     and light.get('head_observed') is True
-                    and (signal_stop_speed_limit(light, my_speed) or 0.) > 0.):
+                    and (signal_stop_speed_limit(light, my_speed) or 0.) > 0.
+                    and stopping_speed_ceiling(dist,my_speed) > 0.):
                 return 0.
             return signal_stop_brake_request(light, my_speed, continuing=continuing)
 
@@ -1952,8 +1953,24 @@ class UltraPilotEngine:
             returned=selector_released, steering=0.0, throttle=0.0,
             brake=0.0, reason=reason)
 
+    def _restart_powertrain_rejection(self, truck):
+        """Retain the exact optional engine evidence before cancellation writes."""
+        from core.service_brake_hold import restart_powertrain_rejection
+        reason = restart_powertrain_rejection(truck)
+        if reason:
+            observed = truck.get('_control_observation') or {}
+            record_control_fault(self.shared_state, 'engine', reason, details=dict(
+                source='planned_restart_powertrain', sdk_frame_us=truck.get('sdkFrameTimeUs'),
+                observation_timestamp=observed.get('observed_at'), checked_at=time.monotonic(),
+                powertrain_observation=truck.get('powertrainObservation')))
+        return reason
+
     def _resume_signal_wait(self, truck, witness):
         """Transfer the same activation to the existing bounded launch owner."""
+        reason = self._restart_powertrain_rejection(truck)
+        if reason:
+            self._revoke_simple_auto_launch(truck, reason)
+            return
         now = time.monotonic()
         frame = truck['sdkFrameTimeUs']
         mode = self._active_transmission_mode
@@ -1997,7 +2014,8 @@ class UltraPilotEngine:
         from core.service_brake_hold import resume_rejection
         reason = resume_rejection(witness, self.shared_state)
         latest_truck = ((self.shared_state.get('telemetry') or {}).get('truck') or {})
-        reason = reason or vehicle_control_observation_rejection(self.shared_state, latest_truck)
+        reason = (reason or vehicle_control_observation_rejection(self.shared_state, latest_truck)
+                  or self._restart_powertrain_rejection(latest_truck))
         if (latest_truck.get('gear', -1) < 0 or latest_truck.get('speed', -1.) < -.10
                 or latest_truck.get('parkBrake') is not False):
             reason = reason or 'signal restart gear, motion or parking brake changed'
@@ -2128,6 +2146,11 @@ class UltraPilotEngine:
             self._cancel_auto_drive_engagement_unlocked(
                 observation_reason)
             return True
+        if pending.get('signal_resume'):
+            reason = self._restart_powertrain_rejection(truck)
+            if reason:
+                self._cancel_auto_drive_engagement_unlocked(reason)
+                return True
         if (getattr(self.controller, 'mode', None) != 'SCS_SDK'
                 or not getattr(getattr(self.controller, 'scs', None), 'connected', False)):
             self._cancel_auto_drive_engagement_unlocked('SCS backend počas aktivácie nie je dostupný')

@@ -1,5 +1,57 @@
 # Odložená a nedokončená práca
 
+## 17 October resumed signal completion — offline implementation, game unverified
+
+The completion section of [PHASE7_JOINT_SIGNAL_AND_NATIVE_TRAFFIC_20261017.md](PHASE7_JOINT_SIGNAL_AND_NATIVE_TRAFFIC_20261017.md)
+supersedes the partial proposal below. Both original target-rebound assertions
+pass unchanged. ACC1.3.8 tracks the common spatial stop reference through the
+existing signed PID; the acknowledged positive approach receipt now survives
+the first stopped/zero-ratio observation in both automatic modes. Actual-speed
+terminal reserve, R, identity, freshness, backend and engine-off rejection remain.
+The native candidate1.59.5 fix is preserved unchanged. The same-clock twelve-case
+speed/delay/mode matrix stops/restarts without repeated red pedal reversals,
+target overrun, parking actuation or prolonged far crawl. Final frozen suite and
+candidate receipt belong to the completion section, not the earlier partial ZIP.
+
+Final corrected/frozen source: **2984 tests and1592 subtests pass** in13:51,
+with unchanged verification hashes. The six preceding whole-suite failures
+are preserved and resolved: original coast/physical-output expectations remain
+unchanged, the obsolete reference equation is replaced with its independent
+spatial-distance contract, and ACC1.3.8 uses the existing release-note schema.
+The30-entry completion ZIP is hash-verified and supersedes the partial proposal
+as a candidate only. The report records its exact payload and SHA-256; no
+deployment/commit/push/game operation occurred. The two required failing
+reproductions are now OFFLINE VERIFIED; GAME VERIFIED remains open.
+
+Remaining historical uncertainty: the original still-red slowing under positive
+game throttle lacks original engine/RPM/clutch/input-owner evidence; the actual
+contacting actor/body acquisition is also absent. Neither is retrospectively
+explained by the reproduced phase bug. Physical stop-line/bumper calibration,
+native sensor coverage and ETS2 SDK consumption remain separate unverified
+items. No general repeat journey, deployment, game control or new feature is
+requested by this implementation. GAME VERIFIED is still open.
+
+## 17 October joint signal/roundabout incident — PARTIAL, not complete
+
+See [PHASE7_JOINT_SIGNAL_AND_NATIVE_TRAFFIC_20261017.md](PHASE7_JOINT_SIGNAL_AND_NATIVE_TRAFFIC_20261017.md).
+Installed ACC1.3.7 matches all34 receipt hashes. The actual pinned native parked
+trailer loop repeats its parent pointer; compiled producer→reader→AEB→writer
+reproductions fail before and pass with candidate DLL1.59.5-up-parked-records,
+without changing ABI, Python identity checks or inventing new IDs. Whole contact
+coverage is not proved; the original actor/body array and exact contact are absent.
+User narrowed contact to before the right indicator at11:13:02; all53 retained
+rows at10988–10994 show actor ambiguity, not a clear-road certificate.
+
+The same-red speed-target rebound is reproduced, but two controller/profile
+experiments are REJECTED for jerk, stop-gap or new launch-expiry regressions.
+Accepted control laws remain entry-identical, with the prior green/hold repairs
+preserved. The explicit desired-profile reproducer remains failing, outside any
+claim of a completed signal fix. First incident fault is still on recorded red;
+engine enable/RPM/clutch and actual input ownership were missing. Only already
+available raw engine/RPM fields are added to the existing bounded journal.
+No unsafe zero-ratio/standstill exemption, launch on red, new collector, deployment
+or general new drive request. Full task and GAME VERIFIED remain open.
+
 ## Existing event-export quota recovery — 17 October 2026
 
 See [PHASE7_EVENT_EXPORT_QUOTA_RECOVERY_20261017.md](PHASE7_EVENT_EXPORT_QUOTA_RECOVERY_20261017.md).

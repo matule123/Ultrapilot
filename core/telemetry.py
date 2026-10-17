@@ -1,4 +1,5 @@
 import logging
+import math
 from typing import Dict, Any
 
 try:
@@ -7,6 +8,14 @@ except Exception:
     requests = None
 
 from core.sdk.scs_sdk import SCSTelemetry
+
+
+def powertrain_diagnostic_observation(bools,floats):
+    enabled=bools.get('engineEnabled');rpm=floats.get('engineRpm')
+    if type(enabled) is not bool:enabled=None
+    if isinstance(rpm,bool) or not isinstance(rpm,(int,float)) or not math.isfinite(rpm) or rpm<0:rpm=None
+    return dict(schema=1,engine_enabled=enabled,engine_rpm=rpm,
+        clutch_unavailable=True,damage_unavailable=True,external_input_owner_unverified=True)
 
 
 class Telemetry:
@@ -120,6 +129,10 @@ class Telemetry:
             "gameThrottle": tf.get("gameThrottle"), "gameBrake": tf.get("gameBrake"),
             "userThrottle": tf.get("userThrottle"), "userBrake": tf.get("userBrake"),
             "loadObservation": raw.get("loadObservation"),
+            # Diagnostic-only values from THIS already coherent read. Keep
+            # missing raw fields unknown; legacy convenience defaults below
+            # must not be evidence that an engine is off or RPM is zero.
+            "powertrainObservation": powertrain_diagnostic_observation(tb,tf),
             "gear": ti.get("gear", 0),
             "gearDashboard": ti.get("gearDashboard"),
             "fuel": tf.get("fuel", 0.0),

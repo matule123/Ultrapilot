@@ -877,6 +877,7 @@ HISTORY_FIELDS = (
     'load_observation', 'sdk_user_throttle', 'sdk_user_brake',
     'motion_constraint',
     'traffic_cause',
+    'powertrain_observation',
 )
 
 
@@ -963,6 +964,7 @@ def _decision_summary(source):
                            if isinstance(traffic.get('motion_constraint'),dict) else None),
         hold_reason=hold.get('stop_reason'),sdk_game_throttle=response.get('gameThrottle'),sdk_game_brake=response.get('gameBrake'),
         load_observation=source.get('load_observation'),
+        powertrain_observation=source.get('powertrain_observation'),
         sdk_user_throttle=response.get('userThrottle'), sdk_user_brake=response.get('userBrake'),
         first_reason=intervention.get('reason'),first_reason_observed_at=intervention.get('observed_at'))
     if any(isinstance(p, dict) and (p.get('capture_incomplete') or p.get('snapshot_status'))
@@ -1500,6 +1502,7 @@ def local_source_snapshot(truck, pending=None):
         # Additive extension keys: never change the indexed codec tables.
         gps_remainder_m=truck.get('routeDistance'), gps_route_time_s=truck.get('routeTime'),
         load_observation=truck.get('loadObservation'),
+        powertrain_observation=truck.get('powertrainObservation'),
         sdk_response={k: truck.get(k) for k in ('gameThrottle', 'gameBrake', 'userThrottle', 'userBrake')},
         decision_started_at_s=time.monotonic(), activation=pending.get('request_id'),
         route_identity=identity, context=None, control_state=None,
@@ -1532,6 +1535,7 @@ def source_snapshot(state, truck, pending):
         observation_valid=not reason and observed.get('valid') is True,
         actual_speed_mps=truck.get('speed'), observed_gear=truck.get('gear'),
         load_observation=truck.get('loadObservation'),
+        powertrain_observation=truck.get('powertrainObservation'),
         sdk_response={k: truck.get(k) for k in ('gameThrottle', 'gameBrake', 'userThrottle', 'userBrake')},
         decision_started_at_s=time.monotonic(),
         autopilot_active=bool(state.get('autopilot_active', False)),

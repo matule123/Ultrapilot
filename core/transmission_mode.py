@@ -331,7 +331,8 @@ def simple_auto_forward_transition(state, truck, history, now=None):
     # Only Engine publishes this witness after an actual uninterrupted positive
     # SCS brake write begun during forward motion. Engine revalidates its local
     # receipt before applying pedals. This is not a gear/selector inference.
-    if (hold.get('context') == context and hold.get('phase') in ('braking', 'holding')
+    from core.service_brake_hold import continuous_stop_phase
+    if (hold.get('context') == context and continuous_stop_phase(hold,truck)
             and tuple(hold.get('command_context', ())) == hold_binding
             and hold.get('brake', 0) > 0
             and 0. <= now-hold.get('returned_at', float('-inf')) <= .5
