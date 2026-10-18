@@ -1,5 +1,32 @@
 # Odložená a nedokončená práca
 
+## 18 October systemic longitudinal review — historical attribution incomplete
+
+See [PHASE7_SYSTEMIC_LONGITUDINAL_RELIABILITY_20261018.md](PHASE7_SYSTEMIC_LONGITUDINAL_RELIABILITY_20261018.md).
+The latest21:15:41 comparison is bound to the exact expired traffic packet and
+route-projection deadline; current SDK/Map were newer. Its precise main-loop
+CPU/IPC/GC/lock operation was not recorded and remains UNEXPLAINED. Do not turn
+the deliberate offline passive-loop stall into a claimed historical diagnosis.
+The core candidate isolates the one traffic producer, makes its publication
+coherent, prevents a regressing reread and corrects the existing bounded
+zero-drive handoff without extending observation leases or accepting old drive.
+Prior per-owner completion, rear-hazard classification, terminal brake and
+indicator repairs are preserved. No plugin implementation/version or DLL change.
+
+Specific new regressions and current negative controls pass offline. The final
+frozen full-suite/package evidence is appended to the report. Overall system
+completion and GAME VERIFIED remain open; no definitive deployment proposal or
+new general drive is requested. Existing source phase witnesses now travel in
+the existing export; missing historical actor/route/game-consumption evidence
+cannot be recreated. Event quota/archive approval remains a separate blocker.
+
+Final frozen verification:3032 tests/1592 subtests PASS in12:25,425 unchanged
+hashes. The26-entry candidate ZIP and separate original-runtime rollback ZIP
+are read-back/hash verified; exact identities are in the report. The installation
+still matches all36 original receipt hashes. This supersedes the Oct17 candidate
+as a prepared proposal, not as a definitive deployment recommendation. Exact
+historical delay attribution and GAME VERIFIED remain open.
+
 ## 17 October afternoon following/hold/indicator incidents
 
 See [PHASE7_FOLLOWING_HOLD_AND_SIGNAL_EXECUTION_20261017.md](PHASE7_FOLLOWING_HOLD_AND_SIGNAL_EXECUTION_20261017.md).

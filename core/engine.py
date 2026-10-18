@@ -254,6 +254,8 @@ class UltraPilotEngine:
         self._shutdown_lock = threading.Lock()
         self._telemetry_thread = None
         self._control_thread = None
+        self._traffic_thread = None
+        self._traffic_production_lock = threading.Lock()
         self._transmission_thread = None
         self._latest_telemetry_data = {}
         self._latest_telemetry_timestamp = 0.0
@@ -316,6 +318,7 @@ class UltraPilotEngine:
             if diagnostic is not None:
                 diagnostic.start()
             self._start_realtime_workers(telemetry=True, controls=False)
+            self._start_traffic_worker()
             self.plugin_manager.discover_and_load()
             self._start_realtime_workers(telemetry=False, controls=True)
             self.run_loop()
@@ -331,7 +334,7 @@ class UltraPilotEngine:
             self.plugin_manager.begin_shutdown()
             self._realtime_stop.set()
         for thread in (self._control_thread, self._telemetry_thread,
-                       self._transmission_thread):
+                       self._transmission_thread, getattr(self, '_traffic_thread', None)):
             if thread is not None and thread is not threading.current_thread():
                 thread.join(timeout=1.5)
         self._cancel_auto_drive_engagement("Engine sa vypína")
@@ -828,6 +831,112 @@ class UltraPilotEngine:
             logging.warning("Could not start ignition worker: %s", e)
 
     # --- Traffic following ----------------------------------------------------
+    def _start_traffic_worker(self):
+        """One producer, no task queue and no controller-I/O lock."""
+        thread = getattr(self, '_traffic_thread', None)
+        if self.running and not self._realtime_stop.is_set() and (thread is None or not thread.is_alive()):
+            self._traffic_thread = threading.Thread(target=self._traffic_loop,
+                name='UltraPilot-TrafficProducer', daemon=True)
+            self._traffic_thread.start()
+
+    def _traffic_loop(self):
+        while self.running and not self._realtime_stop.is_set():
+            started = time.monotonic()
+            try:
+                self._traffic_tick()
+            except Exception as error:
+                signature = (type(error).__name__, str(error))
+                if signature != getattr(self, '_traffic_failure_logged', None):
+                    logging.warning('Traffic producer unavailable: %s', error)
+                    self._traffic_failure_logged = signature
+            remaining = .05-(time.monotonic()-started)
+            if self._realtime_stop.wait(remaining if remaining>0. else .05):
+                break  # finite item, never catch-up or enqueue
+
+    def _traffic_tick(self):
+        """Acquire/project/publish independently of passive main work.
+
+        Original source clocks and wall/thread-CPU phases travel in the existing
+        packet/journal. One current and one completed timing item, no new ring.
+        """
+        lock = getattr(self, '_traffic_production_lock', None)
+        if lock is None:
+            lock = self._traffic_production_lock = threading.Lock()
+        if not lock.acquire(blocking=False):
+            return None
+        phases = dict(started_at=time.monotonic(), cpu_started=time.thread_time())
+        previous = getattr(self, '_traffic_finished_timing', None)
+        sequence = getattr(self, '_traffic_sequence', 0)+1
+        self._traffic_sequence = sequence
+        def mark(stage):
+            phases[stage] = time.monotonic()
+            self._traffic_runtime_timing = dict(sequence=sequence, active_stage=stage,
+                phases=dict(phases), previous=previous)
+        try:
+            success, data, timestamp, _ = self._telemetry_snapshot(time.monotonic())
+            mark('vehicle_read_finished_at')
+            if not success:
+                self.shared_state.update_batch(dict(longitudinal_traffic=None,
+                    traffic=[], traffic_light=None, traffic_light_detected=None,
+                    traffic_snapshot_valid=False, traffic_brake=0., light_brake=0.,
+                    maneuver_traffic_capture=None, traffic_snapshot_failure='vehicle telemetry unavailable'))
+                return None
+            truck = data.get('truck') or {}
+            from core.longitudinal import context
+            binding = context(self.shared_state)
+            signal = self._signal_observation(truck, binding)
+            mark('signal_finished_at')
+            from core.navigation.traffic_producer import capture_traffic
+            capture = capture_traffic(self.ets2la, str(binding[1]), time.monotonic())
+            mark('native_read_finished_at')
+            following, brake = self._traffic_control_observation(capture, truck, binding, [])
+            mark('projection_finished_at')
+            # Legacy lists are presentation only, not actuator evidence.
+            traffic = self.ets2la.read_traffic()
+            from core.sdk.ets2la_data import nearest_light_ahead
+            try:
+                detected = signal.get('unassigned_candidate') or nearest_light_ahead(
+                    self.ets2la.read_traffic_lights(), (truck.get('x',0.), truck.get('z',0.)), truck.get('rotation',0.))
+            except Exception:
+                detected = None
+            mark('display_read_finished_at')
+            mark('publish_started_at')
+            timing = dict(sequence=sequence, **phases)
+            if previous is not None:
+                timing['previous'] = previous
+            following = dict(following, producer_timing=timing)
+            if getattr(self, '_realtime_stop', None) is not None and self._realtime_stop.is_set():
+                return None  # a stopped worker cannot resurrect a publication
+            result = self._publish_traffic_control(truck, timestamp, binding, traffic,
+                capture, following, brake, signal, detected)
+            self._latest_published_traffic = result
+            self._traffic_failure_logged = None
+            return result
+        except Exception:
+            self.shared_state.update_batch(dict(longitudinal_traffic=None,
+                traffic_snapshot_valid=False, traffic_brake=0., light_brake=0.,
+                traffic_light=None, maneuver_traffic_capture=None,
+                traffic_snapshot_failure='traffic producer failed'))
+            raise
+        finally:
+            phases.update(finished_at=time.monotonic(), cpu_finished=time.thread_time())
+            self._traffic_finished_timing = dict(sequence=sequence, **phases)
+            self._traffic_runtime_timing = dict(sequence=sequence, active_stage='finished',
+                phases=dict(phases), previous=previous)
+            lock.release()
+
+    def _activation_signal_observation(self, truck, binding):
+        # The control worker must not mutate the producer's seqlock reader,
+        # projection cache or signal lock while that producer is using them.
+        thread = getattr(self, '_traffic_thread', None)
+        if thread is None or not thread.is_alive():
+            return self._signal_observation(truck, binding)
+        from core.longitudinal import read
+        value, reason = read(self.shared_state, 'traffic', binding=binding)
+        if reason or value is None:
+            return dict(valid=False, candidate=None, reason=reason or 'waiting for traffic producer')
+        return value.get('signal') or dict(valid=False, candidate=None, reason='signal unavailable')
+
     def _signal_observation(self, truck, binding):
         """One producer-timed capture and cached directed route projection."""
         from core.sdk.signal_snapshot import SignalReader, RouteSignalSelector
@@ -1298,7 +1407,8 @@ class UltraPilotEngine:
         """Publish the already consumed traffic/signal observation together."""
         light = signal.get('candidate') if signal.get('valid') else signal.get('stop_candidate')
         available = following['status'] in ('candidate', 'no_candidate_unproven_coverage')
-        self.shared_state.update_batch({
+        native = capture.source if isinstance(getattr(capture,'source',None),dict) else {}
+        presentation = {
             'traffic': traffic, 'maneuver_traffic_capture': capture,
             'traffic_light': light, 'traffic_light_detected': detected_light,
             'traffic_light_relevance': signal.get('relevance'),
@@ -1308,12 +1418,12 @@ class UltraPilotEngine:
             'traffic_snapshot_valid': available,
             'traffic_snapshot_timestamp': telemetry_timestamp,
             'traffic_snapshot_failure': '' if available else following['status'],
-        })
-        from core.longitudinal import publish
+        }
+        from core.longitudinal import packet, context
         traffic_truck = {**truck, '_control_observation': dict(schema_version=1,
             sdk_frame_us=truck.get('sdkFrameTimeUs'), observed_at=telemetry_timestamp,
             valid=bool(truck.get('pose_valid', False)))}
-        published = publish(self.shared_state, traffic_truck, 'traffic', binding=binding,
+        published = packet(self.shared_state, traffic_truck, 'traffic', binding=binding,
             # Envelope validity belongs to the exact vehicle/identity snapshot.
             # Actor usability and signal qualification are separate contracts;
             # an optional ambiguous actor feed is neither vehicle failure nor
@@ -1322,8 +1432,9 @@ class UltraPilotEngine:
             traffic_availability=dict(schema_version=1, actors_usable=available,
                 capture_status=following['status'], receiver_time=capture.observed_at,
                 buffers_present=capture.moving is not None and capture.parked is not None,
-                stable_read=capture.stable, atomic=False, coverage_confirmed=False,
-                source_timestamp=None, source_generation=None,
+                stable_read=capture.stable, atomic=native.get('valid') is True and capture.stable,
+                coverage_confirmed=False,
+                source_timestamp=native.get('observed_at'), source_generation=native.get('generation'),
                 actor_identity=following.get('actor_identity')),
             traffic_brake=traffic_brake, light_brake=self._light_brake(light), light=light,
             signal=signal, lead_distance=self.shared_state.get('lead_distance'),
@@ -1334,7 +1445,11 @@ class UltraPilotEngine:
             stop_clearance=following.get('stop_clearance'),
             motion_constraint=following.get('motion_constraint'),
             dependencies=following.get('deadline_dependencies', ()),
-            expires_at=following.get('expires_at', float('inf')))
+            expires_at=following.get('expires_at', float('inf')),
+            **({'producer_timing':following['producer_timing']} if 'producer_timing' in following else {}))
+        if binding != context(self.shared_state):
+            return None  # old work cannot overwrite a new route authority
+        self.shared_state.update_batch({**presentation,'longitudinal_traffic':published})
         dev_hud = getattr(self, '_dev_hud', None)
         if dev_hud is not None:
             try:
@@ -1825,7 +1940,7 @@ class UltraPilotEngine:
         if launch_rejection(self.shared_state).endswith('braking forbids launch'):
             return True
         if hasattr(self, '_signal_reader') or getattr(self, 'ets2la', None):
-            signal = self._signal_observation(truck, context(self.shared_state))
+            signal = self._activation_signal_observation(truck, context(self.shared_state))
             return bool(signal.get('valid') and (signal.get('candidate') or {}).get('color') == 'red')
         return False
 
@@ -2205,7 +2320,7 @@ class UltraPilotEngine:
         signal = None
         if hasattr(self, '_signal_reader') or getattr(self, 'ets2la', None):
             from core.longitudinal import context
-            signal = self._signal_observation(truck, context(self.shared_state))
+            signal = self._activation_signal_observation(truck, context(self.shared_state))
         red = bool(signal and signal.get('valid')
                    and (signal.get('candidate') or {}).get('color') == 'red')
         late_probe_braking = bool(pending['mode']==0 and pending.get('probe_recorded')
@@ -2885,6 +3000,8 @@ class UltraPilotEngine:
                 'source': 'engine_launch' if phase.startswith('launch') else 'engine', 'reason': reason})
             from core.navigation.longitudinal_diagnostics import hold_snapshot
             source['service_hold'] = hold_snapshot(getattr(self,'_service_brake_hold',None))
+            if getattr(self,'_traffic_runtime_timing',None):
+                source['traffic_producer_runtime'] = self._traffic_runtime_timing
             record = getattr(self,'_automatic_longitudinal_fault',None)
             if isinstance(record, dict) and record.get('epoch') == source.get('activation'):
                 # Decision context and consumed inputs are already immutable
@@ -4431,54 +4548,9 @@ class UltraPilotEngine:
                     "game_route_time": float(truck.get("routeTime", 0.0) or 0.0),
                 })
 
-                # Surrounding traffic + the traffic light controlling us.
-                # This legacy list remains useful for lane-aligned ACC. Its ABI
-                # cannot distinguish every unavailable/empty case and supplies
-                # neither complete coverage/history nor confirmed dimensions,
-                # so it is never promoted to Phase 5D maneuver evidence.
-                try:
-                    from core.longitudinal import context as longitudinal_context
-                    traffic_binding = longitudinal_context(self.shared_state)
-                    traffic = self.ets2la.read_traffic()
-                    pos = (truck.get("x", 0.0), truck.get("z", 0.0))
-                    hdg = truck.get("rotation", 0.0)
-                    signal = self._signal_observation(truck, traffic_binding)
-                    light = signal.get('candidate') if signal.get('valid') else signal.get('stop_candidate')
-                    # A raw nearest head is detection only. Never replace a
-                    # failed directed-passage selection with a control object.
-                    from core.sdk.ets2la_data import nearest_light_ahead
-                    try:
-                        detected_light = (signal.get('unassigned_candidate') or
-                            nearest_light_ahead(self.ets2la.read_traffic_lights(), pos, hdg))
-                    except Exception:
-                        detected_light = None  # Optional display cannot erase a qualified red.
-                    traffic_available = bool(self.ets2la.traffic_available)
-                    from core.navigation.traffic_producer import capture_traffic
-                    maneuver_capture = capture_traffic(self.ets2la,
-                        self.shared_state.get("game_session_id"), time.monotonic())
-                    following,traffic_brake = self._traffic_control_observation(
-                        maneuver_capture,truck,traffic_binding,traffic)
-                    traffic_available = following['status'] in ('candidate','no_candidate_unproven_coverage')
-                    published_traffic = self._publish_traffic_control(truck, telemetry_timestamp,
-                        traffic_binding, traffic, maneuver_capture, following, traffic_brake,
-                        signal, detected_light)
-                except Exception as error:
-                    published_traffic=None
-                    self.shared_state.set("longitudinal_traffic", None)
-                    # Never retain actuator-facing values from an older frame.
-                    self.shared_state.update_batch({
-                        "traffic": [], "traffic_light": None,
-                        "traffic_light_detected": None,
-                        "traffic_light_relevance": 'unavailable',
-                        "traffic_light_coverage": None,
-                        "traffic_light_selection_reason": str(error),
-                        "maneuver_traffic_capture": None,
-                        "traffic_brake": 0.0, "light_brake": 0.0,
-                        "lead_distance": None,
-                        "traffic_snapshot_valid": False,
-                        "traffic_snapshot_timestamp": telemetry_timestamp,
-                        "traffic_snapshot_failure": str(error),
-                    })
+                # The single traffic producer has its own cadence. GPS,
+                # screen capture or supervision cannot stall its input lease.
+                published_traffic = getattr(self, '_latest_published_traffic', None)
                 self.shared_state.set(
                     "stage5d_runtime_data_availability",
                     production_data_availability(
@@ -4489,23 +4561,8 @@ class UltraPilotEngine:
                 camera_snapshot = self.camera_snapshot_producer.read(
                     0, telemetry_timestamp)
                 self._camera_diagnostic(camera_snapshot, False)
-                # The telemetry producer is the sole owner of telemetry loss
-                # and its atomic fail-closed navigation payload.  This slower
-                # consumer only clears equally slow camera/traffic evidence;
-                # it cannot overwrite a newer producer frame.
-                self.shared_state.update_batch({
-                    "camera_snapshot": camera_snapshot,
-                    "traffic": [],
-                    "traffic_light": None,
-                    "traffic_light_detected": None,
-                    "traffic_light_relevance": 'unavailable',
-                    "traffic_light_selection_reason": 'vehicle telemetry unavailable',
-                    "traffic_brake": 0.0,
-                    "light_brake": 0.0,
-                    "lead_distance": None,
-                    "traffic_snapshot_valid": False,
-                    "traffic_snapshot_timestamp": telemetry_timestamp,
-                })
+                # Telemetry/traffic loss belong to their independent owners.
+                self.shared_state.set("camera_snapshot", camera_snapshot)
 
             # A transient error in any one frame must NOT kill the engine — log
             # it and keep looping (self-healing). The bootloader also restarts

@@ -2,6 +2,13 @@
 
 Release history for individual plugins. See [PLUGIN_VERSIONS.md](PLUGIN_VERSIONS.md) for versioning rules.
 
+## Core systemic longitudinal handoff — unreleased, 2026-10-18
+
+- Give the existing traffic producer a single bounded independent cadence instead of leaving required input renewal behind main-loop supervision/GPS/camera work. Keep original native/SDK clocks, one-flight work, coherent packet/presentation publication and authority recheck. Activation consumes the validated producer snapshot without concurrently mutating its reader/selector.
+- Reject an older same-authority result on the existing bounded reread. Permit only the existing zero-drive renewal from a demonstrably newer qualified dependency within the original fixed bound, preserving all other live dependency deadlines, current vehicle validation and the rejection of a genuinely old decision. Never execute or retimestamp the rejected pedals.
+- Retain compact dependency deadlines and current/previous producer phase witnesses in the existing bounded immutable journal/export, without a new collector or enlarged memory limits. Original first faults and final physical gates remain authoritative.
+- Core implementation only: plugin versions and DLL remain unchanged. Historical exact inner blocking operations remain unrecorded; the report separates reproduced defects from unresolved attribution and game acceptance. See [PHASE7_SYSTEMIC_LONGITUDINAL_RELIABILITY_20261018.md](PHASE7_SYSTEMIC_LONGITUDINAL_RELIABILITY_20261018.md).
+
 ## Core following, service-hold and indicator reactivation — unreleased, 2026-10-17
 
 - Complete a continuously observed original crossing constraint by its own identity and conflict witnesses, independently of another actor's still-active body hazard. The latter retains braking priority; disappearance, duplicate IDs, incomplete prediction and stale/foreign data do not prove completion.

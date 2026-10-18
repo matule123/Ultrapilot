@@ -394,6 +394,12 @@ def bounded_fault_details(value, *, packed=False):
         selected['comparison_fields'] = sum(1 << i for i, k in enumerate(_COMPARISON_FIELDS) if k in selected)
         selected['comparison_values'] = [selected.pop(k) for k in _COMPARISON_FIELDS if k in selected]
     result = bounded_copy(selected, limit=8192)[0]
+    if result.get('snapshot_status') and 'recovery_deadlines' in selected:
+        # New recovery receipts must not erase an otherwise retained first
+        # comparison. Exact existing codec, unchanged 8 KiB evidence budget.
+        compact = bounded_copy(pack_source(selected), limit=8192)[0]
+        if not compact.get('snapshot_status'):
+            result = unpack_source(compact)
     if result.get('snapshot_status') and value.get('invalid_reason'):
         # Preserve the complete comparison first, including its deadline and
         # vehicle binding. Reuse the exact codec within the SAME byte budget.
@@ -546,6 +552,7 @@ def bounded_input(value):
     result['unavailable_field_mask'] = sum(1 << i for i,k in enumerate(keys) if value.get(k) is None)
     # Additive fields do not change schema-1 bitmap positions or byte limits.
     for key in ('deadline_basis', 'refresh_protocol', 'invalid_reason', 'traffic_availability', 'destination_brake_selected',
+                'producer_timing',
                 'signal_stop_control','signal_brake_selected',
                 'leader_prediction', 'stop_clearance', 'requested_acceleration_ms2',
                 'selected_acceleration_ms2', 'acceleration_basis', 'motion_constraint', 'braking_actor_ids',

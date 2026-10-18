@@ -515,6 +515,12 @@ def rejection_details(value, binding, now):
     result.update({k: value.get(k) for k in ('sdk_frame_us', 'observation_timestamp',
         'computed_at', 'expires_at', 'valid', 'source', 'decision_source', 'reason',
         'deadline_basis', 'handoff_required', 'remaining_at_computation_s')})
+    # Recovery is a control decision, not a diagnostic budget fallback. Preserve
+    # the exact compact dependency receipts used to create this deadline.
+    if isinstance(value.get('lease_dependencies'),list) and len(value['lease_dependencies'])<=16:
+        result['recovery_deadlines']=[r.get('expires_at') for r in value['lease_dependencies']]
+    if isinstance(value.get('producer_timing'),dict):
+        result['producer_timing']=dict(value['producer_timing'])
     # Absent producer extensions add no evidence. Keep ordinary receipts within
     # their original budget rather than spending it on two empty field names.
     result.update({k:value[k] for k in ('invalid_reason', 'speed_control_reason')
@@ -738,7 +744,17 @@ def read(state, source, now=None, *, required=False, binding=None, diagnostic=No
         newer = state.get('longitudinal_' + source)
         rechecked = time.monotonic() if now is None else now
         reread_count = 1
-        if not rejection(newer, compared_binding, rechecked):
+        # A delayed publisher/RPC must not replace a newer expiring decision
+        # with an older, superficially valid one from the same activation.
+        ordered = (isinstance(value,dict) and isinstance(newer,dict)
+            and newer.get('source')==value.get('source')
+            and isinstance(newer.get('context'),(list,tuple))
+            and isinstance(value.get('context'),(list,tuple))
+            and tuple(newer.get('context') or ())==tuple(value.get('context') or ())
+            and all(isinstance(newer.get(k),(int,float)) and not isinstance(newer[k],bool)
+                and isinstance(value.get(k),(int,float)) and newer[k]>=value[k]
+                for k in ('sdk_frame_us','observation_timestamp','computed_at')))
+        if ordered and not rejection(newer, compared_binding, rechecked):
             read_returned_at = rechecked
             value, reason, checked_at = newer, '', rechecked
     if not reason:
@@ -1015,9 +1031,13 @@ def refresh_handoff(state, truck, value, binding, reason):
             value = current['rejected']
         obs, computed, expiry = (float(value[k]) for k in (
             'observation_timestamp', 'computed_at', 'expires_at'))
-        if not 0 < obs <= computed <= now or now-obs > LEASE_S or expiry > obs+LEASE_S:
+        if (not 0 < obs <= computed <= now or now-computed > LEASE_S
+                or expiry > obs+LEASE_S
+                or now > expiry+HANDOFF_WAIT_S):
             return None
         basis = value['deadline_basis']
+        if float(basis['expires_at']) != expiry:
+            return None  # inconsistent receipt cannot justify a recovery wait
         source = basis['source']
         same_request = (isinstance(current, dict)
             and tuple(current.get('context', ())) == tuple(binding))
@@ -1082,6 +1102,18 @@ def refresh_handoff(state, truck, value, binding, reason):
                 and fresh['observation_timestamp'] == basis.get('observation_timestamp'))))
         if not (newer or expiring or same_request and now <= current['expires_at']):
             return None
+        if now-obs>LEASE_S:
+            # The rejected command is NEVER executable. A genuinely newer leaf
+            # can justify the existing ZERO-drive wait after the old vehicle
+            # sample expires, only while every other original dynamic receipt
+            # remains valid. No fresh source/no receipts means a real failure.
+            receipts=value.get('recovery_deadlines')
+            if receipts is None and isinstance(value.get('lease_dependencies'),list):
+                receipts=[r.get('expires_at') for r in value['lease_dependencies']]
+            if (not newer or not isinstance(receipts,list) or not 1<=len(receipts)<=16
+                    or any(not isinstance(r,(float,int)) or not math.isfinite(r)
+                        or (r!=expiry and r<now) for r in receipts)):
+                return None
     except (KeyError, TypeError, ValueError, OverflowError):
         return None
     if not same_request:
@@ -1091,7 +1123,12 @@ def refresh_handoff(state, truck, value, binding, reason):
         import json
         token = hashlib.sha256(json.dumps([binding, basis], sort_keys=True,
             separators=(',', ':')).encode()).hexdigest()[:24]
-        current = dict(context=binding, token=token, started_at=now, expires_at=expiry+HANDOFF_WAIT_S,
+        deadlines=value.get('recovery_deadlines')
+        if deadlines is None:
+            deadlines=[r.get('expires_at') for r in value.get('lease_dependencies',()) if isinstance(r,dict)]
+        others=[r for r in deadlines if isinstance(r,(int,float)) and r!=expiry]
+        bound=min(expiry+HANDOFF_WAIT_S,*others) if others else expiry+HANDOFF_WAIT_S
+        current = dict(context=binding, token=token, started_at=now, expires_at=bound,
                        reason=reason, rejected=value, source=source)
         state.set('longitudinal_refresh_request', current)
     if now > current['expires_at']:
