@@ -1,0 +1,53 @@
+{
+  "schema": 1,
+  "game": "ETS2",
+  "game_version": "1.61",
+  "native_version": "1.61.0-up-scoped-read",
+  "game_exe_sha256": [
+    "b70c2357cc56eb5834ee47fea3c60b2f2d4591383ff2ac479cfd3cd254301b8c"
+  ],
+  "native_controls_enabled": false,
+  "control_backend": "SCS_SDK",
+  "non_ai_multiplayer_motion_supported": false,
+  "files": {
+    "ets2la_plugin.dll": "330c37eb5540cd23c84dba9a7b7824c1f791cd5aac7cd7c9bb5341db8ad5715c",
+    "scs-telemetry.dll": "f361894a5434746933dab47ed8bc17a6f22f65802ce92256fc7cd7d4fc7fac3a",
+    "scs_sdk_controller.dll": "d9fbd5ace5e76eed70b7e10b78c450b111566ad6aa814dff65d6244ad23e687e"
+  },
+  "source_archive_sha256": "e00c79c987d506f9d1ed2059630e9ddfec976121b70761cd9bc147e855cf3772",
+  "provenance": {
+    "upstream_commit": "c925bd965a96c58b73eaea9ca033fe0f0dc623a7",
+    "scs_bundle_commit": "f6cd09fe1b6e808200b5c9279113b45f2c28f31a",
+    "candidate_e_sha256": "cd5cabf8bbb55ee257c56ce9aa24442f14479bfe110207976911305e1dc5575c",
+    "build_receipt_sha256": "ccc78fdd7c40d60171b82c1a5903694b2ee416ef6cd03262c894ed4cb6b38587"
+  },
+  "validation": {
+    "stationary_candidate_live_pass": true,
+    "standard_name_live_pass": false,
+    "autonomous_driving_verified": false,
+    "native_host_pass": true,
+    "sentinel_regression_pass": true,
+    "captures": {
+      "stationary": {
+        "file": "candidate-e-live-3380-1792850918128057400.json",
+        "sha256": "6f639e42cf02c19c9e58c7ae33f0a4cc6f22c7df59ca423f578ee202b0072806",
+        "samples": 20
+      },
+      "route_changed": {
+        "file": "candidate-e-live-3380-1792851664829228300.json",
+        "sha256": "eabbf23f4c4bf266915bcb118e9680a83a7eccdc379768c3b2165755c0e4b8e7",
+        "samples": 16
+      },
+      "route_cancelled": {
+        "file": "candidate-e-live-3380-1792852334484744400.json",
+        "sha256": "7203424cd40ecf61c3458d72028887d34ce65f7d39382410cd2426604c529e16",
+        "samples": 16
+      },
+      "profile_reloaded": {
+        "file": "candidate-e-live-3380-1792852868218253700.json",
+        "sha256": "760f8de815e5e0f2d156346c4322d2f16b34957ce7db46ad433be99592329d59",
+        "samples": 20
+      }
+    }
+  }
+}

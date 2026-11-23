@@ -85,7 +85,8 @@ def get_version_number(filename):
     return (0, 0, 0, 0)
 
 def get_version_for_game(game_path):
-    if "Euro Truck Simulator" in game_path:
+    if ("Euro Truck Simulator" in game_path or
+            os.path.isfile(os.path.join(game_path,'bin','win_x64','eurotrucks2.exe'))):
         exe_path = os.path.join(game_path, "bin", "win_x64", "eurotrucks2.exe")
         version = get_version_number(exe_path)
         return ".".join([str(i) for i in version[:2]])
@@ -98,13 +99,13 @@ def get_version_for_game(game_path):
 
 def install_game_dlls(assets_dir: str, names=None) -> list:
     """
-    Copy the SCS SDK plugin DLLs from ``assets_dir`` into every detected game's
-    ``bin/win_x64/plugins/`` folder so the game shares telemetry AND accepts
-    control input.
+    Install the game-version-specific SDK into detected supported games.
 
-    ``names`` defaults to both the telemetry and controller plugins.  Returns the
-    list of plugin folders written to.  Files already locked by a running game
-    are skipped quietly (they're usually already the right version).
+    ``names`` defaults to telemetry, controller and native data producer.
+    Versioned bundles require all three, exact EXE/DLL hashes and a stopped
+    game; they never use the legacy files at the root of ``assets_dir``.
+    Returns successfully verified plugin folders. Legacy locked files are
+    skipped; unknown game versions are not modified.
     """
     import filecmp
     import shutil
@@ -118,6 +119,20 @@ def install_game_dlls(assets_dir: str, names=None) -> list:
     installed = []
     for game_path in find_scs_games():
         plugins_dir = os.path.join(game_path, "bin", "win_x64", "plugins")
+        from core.sdk import sdk_downloader, versioned_sdk
+        version = get_version_for_game(game_path)
+        if versioned_sdk.major_minor(version) in versioned_sdk.VERSIONED_VERSIONS:
+            if set(names) != set(sdk_downloader.SDK_FILES):
+                logging.warning('SDK %s requires the complete verified bundle; partial copy skipped.',version)
+                continue
+            ok, message = sdk_downloader.ensure_installed(game_path,version,
+                assets_dir=assets_dir,log=logging.info)
+            if ok:installed.append(plugins_dir)
+            else:logging.warning('SDK %s not changed: %s',version,message)
+            continue
+        if not sdk_downloader.is_supported(version,assets_dir=assets_dir):
+            logging.warning('Unknown/unsupported game %s: legacy DLL copy skipped.',version)
+            continue
         try:
             os.makedirs(plugins_dir, exist_ok=True)
         except Exception as e:
@@ -163,6 +178,12 @@ def install_telemetry_dll(dll_source: str) -> list:
 
     installed = []
     for game_path in find_scs_games():
+        from core.sdk import sdk_downloader, versioned_sdk
+        version = get_version_for_game(game_path)
+        if (versioned_sdk.major_minor(version) in versioned_sdk.VERSIONED_VERSIONS
+                or not sdk_downloader.is_supported(version)):
+            logging.warning('Single telemetry copy skipped for %s; use the version-aware SDK installer.',version)
+            continue
         plugins_dir = os.path.join(game_path, "bin", "win_x64", "plugins")
         try:
             os.makedirs(plugins_dir, exist_ok=True)

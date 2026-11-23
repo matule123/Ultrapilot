@@ -37,6 +37,16 @@ _BASE = INDEX_URL.rsplit("/", 1)[0]  # .../raw/main
 # that previously invoked ETS2LA/maps and produced invalid 1.60 data from a
 # parser whose newest supported format is 1.59.
 COMPATIBILITY_DATASETS = {
+    "ets2-1.61": {
+        "game": "ETS2", "version": "1.61", "game_version": "1.61",
+        "content": "Base game + official map DLC",
+        "source": "trucklib-required", "parser": "TruckLib (format 907)",
+    },
+    "promods-2.84": {
+        "game": "ETS2", "version": "1.61", "game_version": "1.61",
+        "mod": "ProMods", "mod_version": "2.84",
+        "source": "trucklib-required", "parser": "TruckLib (format 907)",
+    },
     "ets2-1.60": {
         "game": "ETS2", "version": "1.60", "game_version": "1.60",
         "content": "Base game + official map DLC",
@@ -137,7 +147,7 @@ def is_downloaded(key: str) -> bool:
                     found.add(category)
     if found != required:
         return False
-    # New 1.60 datasets are trusted only after the standalone generator's
+    # New versioned datasets are trusted only after the standalone generator's
     # transactional validation marker is present.
     try:
         with open(os.path.join(d, "config.json"), "r", encoding="utf-8") as stream:
@@ -145,6 +155,7 @@ def is_downloaded(key: str) -> bool:
         generator = config.get("generator") or {}
         validation = config.get("validation") or {}
         packages = config.get("packages")
+        expected = COMPATIBILITY_DATASETS[key]
         valid_packages = (isinstance(packages, list) and bool(packages)
                           and all(isinstance(package, dict)
                                   and re.fullmatch(
@@ -154,14 +165,14 @@ def is_downloaded(key: str) -> bool:
         return bool(
             config.get("dataset_key") == key
             and config.get("map_format") == 907
-            and str(config.get("game_version_major_minor")) == "1.60"
+            and str(config.get("game_version_major_minor")) == expected["game_version"]
             and generator.get("library") == "TruckLib"
             and generator.get("trucklib_version") == "0.5.1"
             and config.get("generation_complete") is True
             and validation.get("valid") is True
             and valid_packages
-            and (key != "promods-2.83"
-                 or str(config.get("promods_version")) == "2.83")
+            and (not expected.get("mod_version")
+                 or str(config.get("promods_version")) == expected["mod_version"])
         )
     except (OSError, ValueError, TypeError):
         return False

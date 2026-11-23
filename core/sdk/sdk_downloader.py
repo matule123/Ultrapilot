@@ -11,10 +11,10 @@ folder so the game exposes telemetry and accepts control input:
 
 The ETS2LA project keeps versioned copies of these DLLs in its repository, but
 that repo is currently private, so we can't fetch new builds from it at runtime.
-UltraPilot therefore ships DLLs for the most common game version (1.59) inside
-``assets/`` and uses them directly.  Other game versions fall back to a clear
-„install manually“ message.  The data structure below is ready to point at
-remote URLs once a public source exists.
+Legacy DLLs remain in ``assets/``. ETS2 1.61 uses a separate manifest-bound
+bundle in ``assets/sdk/1.61/`` and accepts only the pinned game executable.
+Unknown versions never fall back to a legacy native layout. Stationary
+read-side validation is not a certificate for autonomous driving.
 """
 
 import logging
@@ -27,6 +27,7 @@ except Exception:  # pragma: no cover
     requests = None
 
 from core.paths import app_dir, resource
+from core.sdk import versioned_sdk
 
 # All SDK DLLs required for telemetry, controls, GPS route and camera data.
 SDK_FILES = ("scs-telemetry.dll", "scs_sdk_controller.dll", "ets2la_plugin.dll")
@@ -35,6 +36,7 @@ SDK_FILES = ("scs-telemetry.dll", "scs_sdk_controller.dll", "ets2la_plugin.dll")
 # is used directly (no network).  ``urls`` (optional) would let us download a
 # build for a version we don't bundle — left as a hook for the future.
 SOURCES = {
+    "1.61": {"bundled": True, "versioned": True},
     "1.60": {"bundled": True, "alias": "1.59"},
     "1.59": {
         "bundled": True,        # present in assets/scs-telemetry.dll etc.
@@ -45,17 +47,14 @@ SOURCES = {
     "1.57": {"bundled": True, "alias": "1.59"},
 }
 
-DEFAULT_ALIAS = "1.59"
-
-
 def supported_versions() -> list:
     """Game versions we have a SDK source for (sorted, newest first)."""
-    return sorted(SOURCES.keys(), reverse=True)
+    return sorted((v for v in SOURCES if is_supported(v)), reverse=True)
 
 
 def _resolve(version: str) -> dict:
     """Follow ``alias`` chains to a concrete source entry."""
-    version = (version or "").strip()
+    version = versioned_sdk.major_minor(version)
     seen = set()
     cur = version
     while cur and cur in SOURCES and cur not in seen:
@@ -66,13 +65,19 @@ def _resolve(version: str) -> dict:
             cur = nxt
         else:
             return entry
-    # Unknown version: best-effort fallback to the default alias.
-    return SOURCES.get(DEFAULT_ALIAS, {"bundled": True})
+    # Never install a legacy native layout into an unknown game version.
+    return {}
 
 
-def is_supported(version: str) -> bool:
-    version = str(version or "").strip()
-    return ".".join(version.split(".")[:2]) in SOURCES
+def is_supported(version: str, assets_dir=None) -> bool:
+    version = versioned_sdk.major_minor(version)
+    if version in versioned_sdk.VERSIONED_VERSIONS:
+        try:
+            versioned_sdk.load_bundle(assets_dir or _dll_source_dir(),version)
+            return True
+        except versioned_sdk.BundleError:
+            return False
+    return version in SOURCES
 
 
 def _dll_source_dir() -> str:
@@ -83,16 +88,20 @@ def _dll_source_dir() -> str:
         return os.path.join(app_dir(), "assets")
 
 
-def _ensure_dlls_local(version: str, dest_dir: str, log=None, force: bool = False) -> bool:
+def _ensure_dlls_local(version: str, dest_dir: str, log=None, force: bool = False,
+                       assets_dir=None) -> bool:
     """Get the SDK DLLs for ``version`` into ``dest_dir`` (no game install).
 
     Returns True if all required DLLs are present in ``dest_dir`` afterwards.
     """
     entry = _resolve(version)
+    # Versioned bundles may only be installed through the exact-EXE gate.
+    if not entry or entry.get('versioned'):
+        return False
     os.makedirs(dest_dir, exist_ok=True)
 
     if entry.get("bundled"):
-        src_dir = _dll_source_dir()
+        src_dir = assets_dir or _dll_source_dir()
         ok = True
         for name in SDK_FILES:
             s = os.path.join(src_dir, name)
@@ -140,14 +149,26 @@ def _ensure_dlls_local(version: str, dest_dir: str, log=None, force: bool = Fals
     return ok
 
 
-def is_sdk_installed(game_path: str) -> bool:
-    """True if all required DLLs are already in the game's plugins folder."""
+def is_sdk_installed(game_path: str, version=None, assets_dir=None) -> bool:
+    """Versioned games require the exact EXE and DLL bytes, not just names."""
+    if version is None:
+        from core.sdk.game_utils import get_version_for_game
+        version = get_version_for_game(game_path)
+    if versioned_sdk.major_minor(version) in versioned_sdk.VERSIONED_VERSIONS:
+        try:
+            _,profile=versioned_sdk.load_bundle(assets_dir or _dll_source_dir(),version)
+            versioned_sdk.verify_game(game_path,profile)
+            return (not os.path.exists(os.path.join(game_path,'bin','win_x64','plugins',
+                        'UltraPilot161ReadCandidate.dll'))
+                    and versioned_sdk.installed_matches(game_path,profile))
+        except versioned_sdk.BundleError:
+            return False
     plugins_dir = os.path.join(game_path, "bin", "win_x64", "plugins")
     return all(os.path.exists(os.path.join(plugins_dir, n)) for n in SDK_FILES)
 
 
 def ensure_installed(game_path: str, version: str, log=None, progress_cb=None,
-                     force: bool = False) -> tuple:
+                     force: bool = False, assets_dir=None) -> tuple:
     """Make sure the SDK DLLs are installed into ``game_path`` for ``version``.
 
     Returns ``(ok: bool, message: str)`` where ``message`` is a short status:
@@ -157,12 +178,31 @@ def ensure_installed(game_path: str, version: str, log=None, progress_cb=None,
     if not game_path or not os.path.isdir(game_path):
         return False, "failed:no_game_path"
 
+    from core.sdk.game_utils import get_version_for_game
+    detected = get_version_for_game(game_path)
+    if (detected not in ('Unknown','0.0')
+            and versioned_sdk.major_minor(detected) != versioned_sdk.major_minor(version)):
+        return False,'failed:game_version_mismatch'
+
+    # DLL presence alone does not prove that its native layouts support this
+    # game. In particular the installed 1.59 producer rejects ETS2 1.61.
+    if not is_supported(version,assets_dir=assets_dir):
+        return False, "unsupported:" + str(version)
+
+    if versioned_sdk.major_minor(version) in versioned_sdk.VERSIONED_VERSIONS:
+        try:
+            result=versioned_sdk.install_bundle(game_path,assets_dir or _dll_source_dir(),
+                version,force=force,log=log)
+            if progress_cb:progress_cb(1.0)
+            return result
+        except (versioned_sdk.BundleError,OSError) as error:
+            if log:log('SDK 1.61: '+str(error))
+            return False,'failed:'+str(error)
+
     # Already there? Nothing to do.
-    if is_sdk_installed(game_path) and not force:
+    if is_sdk_installed(game_path,version=version,assets_dir=assets_dir) and not force:
         return True, "already"
 
-    if not is_supported(version):
-        return False, "unsupported:" + str(version)
     version = ".".join(str(version).strip().split(".")[:2])
 
     # Stage DLLs into the game's plugins folder.
@@ -175,7 +215,7 @@ def ensure_installed(game_path: str, version: str, log=None, progress_cb=None,
 
     if progress_cb:
         progress_cb(0.2)
-    if not _ensure_dlls_local(version, plugins_dir, log=log, force=force):
+    if not _ensure_dlls_local(version, plugins_dir, log=log, force=force,assets_dir=assets_dir):
         return False, "failed:dll_missing"
     if progress_cb:
         progress_cb(1.0)

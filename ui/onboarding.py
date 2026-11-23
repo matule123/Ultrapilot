@@ -774,7 +774,7 @@ class OnboardingWizard(QWidget):
         name.setStyleSheet("font-size:14px; font-weight:700; color:#111827; border:none;")
         left.addWidget(name)
         status_key = "path:" + game["path"]
-        installed = sdk_downloader.is_sdk_installed(game["path"])
+        installed = sdk_downloader.is_sdk_installed(game["path"],version=game["version"])
         self._sdk_status[status_key] = "installed" if installed else ("unsupported" if not sdk_downloader.is_supported(game["version"]) else "missing")
         self._refresh_game_status(card, game, status_key)
         status_lbl = QLabel()
@@ -896,7 +896,7 @@ class OnboardingWizard(QWidget):
     def _on_sdk_maintained(self, ok, game_path, msg, action, card, game):
         from core.sdk import sdk_downloader
         status_key = "path:" + game_path
-        installed = sdk_downloader.is_sdk_installed(game_path)
+        installed = sdk_downloader.is_sdk_installed(game_path,version=game["version"])
         self._sdk_status[status_key] = "installed" if installed else "missing"
         card._uninstall_btn.setText(_("sdk_uninstall"))
         card._uninstall_btn.setEnabled(True)
