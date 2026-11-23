@@ -2,6 +2,109 @@
 
 Release history for individual plugins. See [PLUGIN_VERSIONS.md](PLUGIN_VERSIONS.md) for versioning rules.
 
+## November 3 recorded roundabout prediction / signed stop / AP continuation — unreleased
+
+- Map **1.1.3 → 1.1.4**: prepare a bounded, identity-bound set of authored directed prefab navigation curves once per immutable LanePath. Preserve the original route geometry and controller. This metadata describes candidate motion, not verified actor lane membership, physical road boundaries or exit intent.
+- Core crossing and native-box prediction consume the same causal native-history-qualified branch hypotheses. Retain every compatible authored branch within fixed bounds, use the strongest possible contact demand, and expose the actual prediction paths/model to the existing dev HUD. Unsupported topology/history retains the original protective straight model; no ACC/AEB bypass or actor-ID exception.
+- Keep signed native ego motion available to body prediction independently of forward-drive permission. Small signed near-stop SDK speeds use the existing -0.10 m/s drive-boundary tolerance; original speed values, real reverse/R, freshness, identity and backend guards remain intact. No timeout, pedal regulator or service-hold change.
+- Diagnostics retain one bounded original predecessor tail and the existing retired AP ring after either completion path, so an inactive AP can deliver a later continuation seal. Do not replace historical inputs with newer packets or upgrade incomplete old dossiers. No new queue, exporter, limit or DLL change. ACC **1.3.8** and Autopilot **1.3.5** implementations/versions remain unchanged.
+- Preserve the exact forward AP middle while its predecessor export is busy, within the same retired-slot byte ceiling. Link a later Engine part to the fully verified immutable predecessor resolution instead of the earlier incomplete manifest; reject corrupted resolutions. Keep original manifests and all completeness/lineage checks.
+- Reserve the existing compact-seal background poll for an inactive AP; an active AP must not occupy its writer with a disabled-plugin rendezvous. A newly sealed case does not inherit a completed predecessor's poll backoff. Keep actual disable delivery, failed-case retry bounds and first-cause evidence unchanged.
+- Bound and reuse exact geometric broad phases and shared prefix calculations; preserve scalar crossing/contact decisions, distinct actor/body identities and original timestamps. Report maximum-population timing separately from the captured-incident input load; no changed freshness or scheduling limits.
+- Qualification and evidence limits: [PHASE7_NOV3_ROUNDABOUT_REPAIR.md](PHASE7_NOV3_ROUNDABOUT_REPAIR.md). No deployment or game verification.
+
+## November 2 steering preparation and diagnostic quota — unreleased
+
+- Map **1.1.2 → 1.1.3**: distinguish a deferred new calculation from loss of the preceding valid command. Preserve only the last accepted, same-identity packet within its original observation/computation deadlines when a preparation read has not advanced; do not recalculate, retimestamp or republish it. Genuine stale/incoherent/regressing observations and authority changes remain rejected. Keep the bounded deferred-attempt witness in the existing next-tick timing.
+- Core diagnostics: recover active quota occupied by verified standalone dense `devinputs` replays which never received a main incident. Archive original bytes recoverably under their content hash, preserve live references and pending AP prerequisites, and keep all existing active/archive limits and corrupt-source rejection. No ACC/AEB, signal, hold, gearbox, steering controller, DLL or timeout change.
+- Reuse at most two exact-content replay decodes within a single late-assembly export operation, re-reading and hashing current bytes on every access. Preserve all request/lineage/manifest checks and the existing child RSS bound. On the actual stored Engine/AP pair, decoded records fall from 15,188 to 7,594 and profiled assembly time from 39.920 to 25.490 s, with identical assembled bytes; no historical timeout subphase is fabricated.
+- Read-only installed-base audit, disk preflight, old-runtime reproductions and frozen-candidate qualification are recorded in [PHASE7_NOV2_STEERING_AND_CAPTURE.md](PHASE7_NOV2_STEERING_AND_CAPTURE.md). Historical export-timeout inner phase and the six earlier AP capture-failure causes were not stored and remain explicitly unknown. Nothing deployed.
+
+## Evening reactivation recording — 2026-10-29, diagnostic-only candidate
+
+- Preserve exact intermediate observations while the existing incident writer is busy, within the unchanged pinned/rolling byte allowances. Keep original frames, bytes, times and pedal/input links; report real overload explicitly.
+- Admit the non-daemon Engine and daemon Autopilot through the same existing Manager export service. Never wait for an AP prerequisite while holding the export-child admission slot. Retain crash cleanup, bounded retries and immutable late assembly.
+- Independently reject complete-part claims containing actual periodic-stream gaps, even when endpoint timestamps cover the requested window. No ACC, AEB, signal/hold, gearbox, steering, DLL, timeout or plugin VERSION change. See [PHASE7_OCT29_REACTIVATION_RECORDING.md](PHASE7_OCT29_REACTIVATION_RECORDING.md). Historical actor-85 fault-time inputs and exact disk-lock ownership remain unavailable; modeled identity regressions do not reconstruct them.
+- October 31 qualification follow-up: remove the redundant Windows PID census from the supervised daemon's measurement thread while retaining 20 ms local-host and complete external Manager/child RSS sampling. Correct allocating lock-probe call machinery proven to trigger GC in an empty measured critical section. These are qualifier-only corrections; original failed runs are preserved and numeric release gates remain unchanged.
+- Avoid per-row empty shared-input set allocation when pinning an existing simple-record prefix; reuse prepared input ownership and original byte accounting within unchanged budgets. Final installed-base candidate 02 passes both automatic-mode timing/resource gates and exact Engine/AP/pedal coverage; 73 final affected regressions and 11 qualifier checks pass. READY FOR CONTROLLED CAPTURE applies to this diagnostic build only, not the historical ACC behavior or ETS2 verification. Nothing deployed; no plugin VERSION increase.
+
+## October 29 crossing handoff and diagnostic assembly — core correction, no plugin release
+
+- Preserve the acquired ACC owner in Engine selection and recognize the same producer-confirmed crossing-model completion at the final positive-write guard. Discard the old positive drive, preserve original clocks/deadlines, and let the next existing ACC tick decide; empty conflict lists or ID continuity alone remain insufficient. Fresh emergency braking retains immediate priority.
+- Complete late exact AP attachments through the existing admitted export child into one hash-linked immutable assembly resolution. Preserve original manifests, capture counters, exact command/range checks, coherent archiving and fixed daemon-safe export/resource limits.
+- Preserve slightly-over-4-KiB expanded decision summaries through the existing bounded compressed format; retain actual error causes within the existing history budget. Merge successive exact retired AP rows within one unchanged 32 MiB slot instead of dropping the active stream on a second disable. No DLL, controller, ACC/AEB tuning, traffic/signal policy, hold, timeout or plugin VERSION change. See [PHASE7_OCT29_TRAFFIC_TRANSITION_AND_ASSEMBLY.md](PHASE7_OCT29_TRAFFIC_TRANSITION_AND_ASSEMBLY.md).
+
+## Daemon-host diagnostic correction — 2026-10-27, capture-ready; no plugin release
+
+- Route the existing diagnostic background writer through the application's existing non-daemon Manager, with one reserved export slot and fixed entry points. Do not change multiprocessing daemon flags. Bound Windows spawn transfer in one capped shared-memory payload and release admission after an export-child crash.
+- Observe braking/stop/resume/disable episodes without changing their control decisions. Preserve exact overlapping Engine/AP input references, physical pedal calls and linked bounded continuation parts. Deliver the AP seal after disable through a compact background-only request; do not replace historical inputs with that request or with a newly read packet.
+- Preserve immediate original fault replay priority and reject incomplete or damaged assemblies. Earlier tests that checked only assembly rather than full completeness are superseded by strict daemon-host lifecycle tests. Build 10 is not qualified for the live architecture. No ACC, AEB, signal/hold/gearbox, safety timeout, DLL or plugin VERSION change. See [PHASE7_DAEMON_STOP_EPISODES_20261026.md](PHASE7_DAEMON_STOP_EPISODES_20261026.md).
+- Keep exact journal ownership in the existing bounded primitive codec and defer legacy JSON/compaction work to normalization/export; preserve the original oversize marker contract. Final frozen candidate 26 passes 470 targeted tests / 30 subtests, both actual daemon-host lifecycle modes, maximum-population capacity and original numeric time/resource gates. Eight additional assessment tests preserve mandatory enabled-capture completeness; the explicitly approved off baseline remains time/control-only with its two reported short-journal losses. One nine-file ZIP and installed-base return archive prepared; no deployment or game verification.
+
+## Combined diagnostic handoff — 2026-10-26, temporary build 10; no plugin release
+
+- Move combined pedal-source expansion/deepcopy and repeated JSON preparation off the control tick. Own the existing packed journal through the verified bounded primitive codec and normalize on the existing one-slot collector worker; preserve exact original source/frame/time/order and external JSON/schema/integrity.
+- Advance the combined cursor only on accepted handoff. Full-queue rejection remains immediate and counted; retries preserve unaccepted writes. The collector test double now returns the real admission acknowledgement. No new queue/worker, SDK/IPC reads, control behavior, timeout, plugin VERSION or approved-budget change.
+- Qualification includes actual bounded worker normalization concurrently with maximum native actor population and incident export. Both automatic modes pass original timing gates; 449 targeted tests and 30 subtests pass. One hash-frozen seven-file candidate and exact installed-original return ZIP prepared, nothing deployed. See [PHASE7_COMBINED_PEDAL_HANDOFF_20261026.md](PHASE7_COMBINED_PEDAL_HANDOFF_20261026.md).
+
+## Approved temporary diagnostic budget — 2026-10-26, no plugin release
+
+- Apply the explicitly approved 64 MiB Engine ring/32 MiB Engine-file bounds only with the approved temporary config; preserve original limits without it, and keep AP at 32 MiB. Bound export concurrency to one child, sample its approved 1,536 MiB RSS ceiling on the existing background wait and retain explicit failure handling.
+- Coalesce optional retention-compression notifications for one 60 Hz period on the passive worker; preserve exact raw ownership, charged limits, weak queue and 32-record batches. No controller wait, safety-timeout, record-format or control-behavior change.
+- Frozen 09 retains complete maximum-load windows and every pedal call without overrides; 444 selected regression tests/30 subtests pass. Original absolute Engine timing still blocks qualification, including an overrun already present in the measured baseline. No final ZIP/deployment and no ACC/plugin VERSION change. See [PHASE7_DIAGNOSTIC_APPROVED_BUDGET_20261026.md](PHASE7_DIAGNOSTIC_APPROVED_BUDGET_20261026.md).
+
+## Diagnostic export overhead — 2026-10-26, not a plugin release
+
+- Preserve canonical JSON hashes through the C encoder instead of per-scalar Python iteration. Keep the verified exact record format, timestamps, identities and integrity checks unchanged.
+- Serialize existing Engine/AP background exports through one bounded admission slot. Wait for the AP prerequisite before admitting Engine; fully verify a late-arriving AP part rather than marking it missing from an earlier presence timeout.
+- Detach bounded owned-row references on seal, deferring dependency/order/gap assembly to the existing export boundary. A sealed but not assembled window is explicitly incomplete. No control, ACC/AEB, signal/hold, timeout or plugin VERSION change.
+- Same-input frozen-runtime timing gates pass for both automatic modes; original child RSS/capacity allowances remain unapproved. No new ZIP or deployment. See [PHASE7_DIAGNOSTIC_EXPORT_OVERHEAD_20261026.md](PHASE7_DIAGNOSTIC_EXPORT_OVERHEAD_20261026.md).
+
+## Simple-record diagnostic proposal — 2026-10-25, not a release
+
+- Independently verify exact primitive values/types, float bits, original clocks and bytes before enabling a simple-record flag in an isolated installed-base candidate. Store one owned record per observation; no rejected live-row repacking, transactional grouping or nested deduplication algorithm is applied.
+- Add a worker-only whitelisted typed-JSON record representation to preserve original tuples/bytes/nonfinite float bits through the existing hashed incident/AP export. Internal primitive ownership copies reject custom reducers; external files never deserialize pickle.
+- Separate no-capture, capture-only and export timing on the same model. Complete model-only 64 MiB ring/32 MiB file probes preserve 30 s pre + 19 s post and 2,067/2,069 exact calls, but original timing gates still fail. Present one explicit memory/disk budget for approval; production quotas stay unchanged and packaging is blocked. No plugin VERSION, control behavior, DLL or timeout change. See [PHASE7_SIMPLE_RECORD_PROPOSAL_20261025.md](PHASE7_SIMPLE_RECORD_PROPOSAL_20261025.md).
+
+## Diagnostic-only continuation — 2026-10-25, unfinished; no release
+
+- Add exact ordered pedal callbacks and immutable decision/input references to the existing incident window, alongside the unchanged 64 KiB safety journal. Retain request/start/return, backend result/error and pair evidence; no new SDK/IPC reads, control changes or game-consumption claim.
+- Move large input retention compression to one bounded passive worker, avoid full-window expansion when handing AP evidence to the existing exporter, and replace growing-ring work scans with bounded weak references. Preserve exact hashes, partial/incomplete exports and original timestamps. Internal ownership encoding avoids Python reference-count flags which defeated sharing of equal IPC copies.
+- Qualification is **still BLOCKED**: recording every consumed input exposes nested duplicated data, exceeding the 32 MiB capacity and export-child RSS gate. Current narrow tests are 18 PASS / 1 known failing nested-sharing reproduction. Intermediate 05 ZIP withdrawn; no further final BLOCKED ZIP delivered. Do not deploy any development directory. No plugin VERSION, ACC, DLL, timeout or decision change. See the latest continuation in [PHASE7_DIAGNOSTIC_TRAFFIC_QUALIFICATION_20261025.md](PHASE7_DIAGNOSTIC_TRAFFIC_QUALIFICATION_20261025.md).
+
+## Temporary diagnostic build 04 — 2026-10-25, populated-traffic qualification
+
+- Preserve exact native binary payloads in incident event manifests with the existing length/SHA-256/raw-byte codec. Retain dense owner receipts by lossless compression within the unchanged 16 KiB receipt budget, and compress the exact immutable Engine JSON on the export worker within the unchanged 16 MiB file quota. Keep 32 MiB input rings, original timestamps, identities, ordering and strict incomplete verdicts.
+- Restore the pre-existing immediate automatic-disable pedal replay on the existing exporter; a new grouped dossier's 10 s tail must not suppress it. Combined, dense steering and original safety export regressions are retained without changing their expectations.
+- Maximum native 40 moving + 40 parked slots, three moving trailer slots, lead change, crossing and signal-wait/resume are modeled. Capacity and AP assembly pass; predeclared timing qualification remains **BLOCKED**. A copy/marshal performance experiment did not establish improvement and was removed. No ACC/plugin VERSION, DLL, control rule, timeout or regulator change. Nothing deployed. Current report: [PHASE7_DIAGNOSTIC_TRAFFIC_QUALIFICATION_20261025.md](PHASE7_DIAGNOSTIC_TRAFFIC_QUALIFICATION_20261025.md).
+
+## Temporary diagnostic build 03 — 2026-10-25, fixed-budget capacity correction
+
+- Preserve the existing 32 MiB Engine input-window limit and original sampling/state edges. Large owned input trees now use exact compressed internal retention instead of retaining expanded nested producer copies. Expand and verify them only at the worker/public-inspection boundary; final files keep the existing immutable JSON/raw-byte codec and hashes. No control/SDK timestamp, frame, decision, regulator or timeout changes.
+- Reproduce the previous capacity failure at the same 900-tick/45-second production load (20 Hz traffic publication, 6,960 + 1,720 native bytes, no actors). The former rolling streams retained about 17 seconds, violating the required 30-before/10-after window. Add direct capacity, exact-byte/clock and corruption regressions; the package gate rejects any capacity loss or less than 39.9 seconds on the same test.
+- Keep an additional bounded diagnostic receiver-history margin in the existing AP ring so the later seal publication does not lose the oldest command Engine actually consumed. This changes retained evidence only, within the same byte cap, not command validity. Preserve complete-part validation and strict incomplete flags for genuine loss. Build 03 supersedes build 02; no plugin VERSION or DLL is changed for this temporary diagnostic overlay. See [PHASE7_DIAGNOSTIC_CAPACITY_20261025.md](PHASE7_DIAGNOSTIC_CAPACITY_20261025.md).
+
+## Temporary diagnostic build 02 — 2026-10-25, no deployment or plugin release
+
+- Complete exact Autopilot-part delivery for successful braking/wait/green/restart episodes without requiring disable or shutdown. Piggyback bounded diagnostic open/seal requests on the existing traffic publication; capture actual read values, tick locals and finalized commands without extra SDK/IPC reads or control changes.
+- Reuse the existing bounded AP input ring and exporters. Retain exact compressed transactions, validate full command content and immutable request/range identity, and publish the dossier manifest last. Missing, late, failed, corrupt or shutdown-before-seal parts cannot certify completeness; aggregate backend, summary, Engine and AP loss separately.
+- Supersede the earlier build-01 complete-capture blocker. Frozen qualification: 180 tests / 10 subtests, plus 2 worker/shutdown checks. Physical writes and IPC reads match off/on during live export. Existing Engine-capacity/backend-detail losses remain explicit limitations; nothing is deployed or game-verified. Plugin VERSION declarations and DLL are unchanged for this temporary installed-base instrumented overlay. See [PHASE7_INCIDENT_ASSEMBLY_20261025.md](PHASE7_INCIDENT_ASSEMBLY_20261025.md).
+
+## Temporary diagnostic review candidate — 2026-10-25, not a plugin release
+
+- Extend the existing PedalJournal and dense replay with bounded original-input windows, state edges, first-intervention receipts, hash-checked grouped dossiers and recoverable closed-incident archival. Isolate large export work in bounded children of the existing exporters; no extra SDK/IPC reads or control authority.
+- The prepared six-file overlay uses the verified installed SDK 1.61 application baseline, excluding the workspace's unfinished Oct18 driving changes. No ACC/Autopilot/other plugin version, DLL, controller, timeout or planner change is released.
+- **REVIEW ONLY / BLOCKED for complete capture:** successful non-disable events can close before the exact AP consumer part is exported; dossier window completeness must not substitute for backend/AP component loss counters. Nothing installed or game-verified. See [PHASE7_DIAGNOSTIC_BUILD_20261025.md](PHASE7_DIAGNOSTIC_BUILD_20261025.md) for the one package, qualification, measured overhead and conditional rollback/deployment procedure.
+
+## Joint crossing, publication and restart handoff — unreleased, 2026-10-18
+
+- Core: retain each continuously observed, already acquired crossing owner's positive-motion scope when a different lead becomes selected. A zero-urgency crossing ray is not completion; a passive, never-acquired ray still creates no new constraint. Preserve independent body/AEB demands and original-owner completion/ambiguity checks.
+- Core: begin the existing bounded zero-drive refresh at final command construction if calculation consumed the publication reserve. Keep the original input/command deadline and original observation clocks; the physical owner alone constructs its separate bounded zero transition. Do not publish practically unusable propulsion and rely on a later receiver to start recovery after the source expired.
+- Core/IPC: compare activation/route identity and result order with slot assignment in one Manager-server operation, including malformed Autopilot pedal results. Serialize identity writes with this short server-local commit, without holding a cross-process lock across calculation or I/O. Retired results cannot overwrite the current activation; current producer faults remain visible. Bootloader, SharedState and PluginSDK must be updated together.
+- Autopilot **1.3.4 → 1.3.5**: when Engine's qualified service-brake release overtakes an in-flight input capture, recapture and fully validate the control inputs at most once. Pair current launch/history/SDK evidence instead of declaring a false zero-ratio failure or reusing an old hold intent. Preserve original absolute launch bounds, R/telemetry/identity/backend checks and manual cancellation.
+- Core: publish one immutable admitted resume transition and bind the actual release history/launch witness to existing pedal export, replacing the preceding hold-phase diagnostic attribution. No new collector or budget increase.
+- ACC **1.3.8**, DrivePolicy **1.1.4**, Map **1.1.2** and Turn Signals **1.0.2** implementations/versions and DLL **1.59.5-up-parked-records** are unchanged. No controller gains, 5 m derived signal offset, geometry, steering cadence, 500 ms limit or parking-brake changes. See [PHASE7_JOINT_HANDOFFS_20261018.md](PHASE7_JOINT_HANDOFFS_20261018.md). Historical missing actor geometry/final traffic phase remain explicit; offline evidence is not ETS2 verification.
+
 ## Core systemic longitudinal handoff — unreleased, 2026-10-18
 
 - Give the existing traffic producer a single bounded independent cadence instead of leaving required input renewal behind main-loop supervision/GPS/camera work. Keep original native/SDK clocks, one-flight work, coherent packet/presentation publication and authority recheck. Activation consumes the validated producer snapshot without concurrently mutating its reader/selector.
@@ -198,6 +301,9 @@ Release history for individual plugins. See [PLUGIN_VERSIONS.md](PLUGIN_VERSIONS
 - Apply the current GPS stopping ceiling after non-stop preference smoothing; suppress only the duplicate auxiliary brake when ACC owns that ceiling.
 
 ## Autopilot
+
+### 1.3.5 — unreleased, 2026-10-18
+- Recapture all inputs at most once when Engine's admitted green restart overtakes the in-flight hold/history/SDK sample. Preserve absolute launch bounds and all normal navigation, reverse, telemetry and backend checks; bind release writes to the actual restart history/witness. Requires the coordinated core/IPC package described in PHASE7_JOINT_HANDOFFS_20261018.md; no deployment or ETS2 verification is implied.
 
 ### 1.3.4 — unreleased, 2026-10-11
 

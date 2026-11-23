@@ -1,5 +1,270 @@
 # Odložená a nedokončená práca
 
+## November 3 roundabout actor prediction and AP continuation
+
+See [PHASE7_NOV3_ROUNDABOUT_REPAIR.md](PHASE7_NOV3_ROUNDABOUT_REPAIR.md).
+Preserve signed near-stop observations, directed prefab branch uncertainty and
+all native lifecycle/identity, reverse, freshness and physical-write guards.
+The actor-61 straight forecast was wrong; this does not establish roundabout
+priority or prove that yielding was unnecessary. Recorded vehicle speed after
+the old brake is not a counterfactual vehicle simulation of the new output.
+The historical AP11926 part and periodic observation gaps remain missing;
+retaining future late continuations cannot repair original evidence. No new
+deployment or game result is authorized by offline qualification.
+Final November 4 targeted control qualification: 526 tests / 984 subtests;
+39 unchanged-component diagnostic tests cover the actual daemon continuation.
+Original-data paced runs remain active in both modes. Release11 is NOT a
+deployment-ready package: the overlapping maximum-population prediction model
+still exceeds the unchanged 50 ms modeled p99 period (68.61/76.41 ms whole tick).
+Remaining CPU work is in authored motion hypotheses, crossing pair admission
+and body prediction; do not hide this with 500 ms freshness or raise limits.
+No final ZIP/deployment/READY verdict has been issued for this correction.
+
+## November 2 steering preparation / capture incident — offline qualified, not deployed
+
+See [PHASE7_NOV2_STEERING_AND_CAPTURE.md](PHASE7_NOV2_STEERING_AND_CAPTURE.md).
+Installed `UP-OCT29-REACTIVATION-02` and all 57 receipt files are hash verified;
+earlier NOT DEPLOYED handovers describe their original delivery, not this base.
+The new correction separates a failed new Map preparation from the still-valid
+preceding packet, and supplies recoverable archival for active-counted standalone
+devinputs files. Keep all clocks, freshness gates, native-owner checks and
+unrelated changes. No new deployment authorized. Installed disk quota requires
+verified archival before another 32 MiB export; a read-only plan is available.
+The historical 60 s export subphase and reasons behind six AP aggregate failures
+remain unknown. Actual old Engine/AP assembly repeated full replay decoding;
+bounded exact-content reuse halves decoded records and reduces profiled time,
+preserving final bytes and all integrity/lineage checks. The AP part from the
+earlier event cannot replace the fault's missing evidence. Final installed-base
+`UP-NOV2-PREPARATION-02` passes original maximum-population, timing, capacity,
+equivalence and approved-memory gates in both modes. One three-file package and
+exact rollback are frozen under `nov2-sdk-preparation/release02/`; no deployment
+or new game test authorized. Installed quota is NOT ready without the verified
+archival plan. Historical unknowns remain explicit; GAME NOT VERIFIED.
+
+## October 29 evening reactivation recording
+
+Current targeted correction and evidence boundaries:
+[PHASE7_OCT29_REACTIVATION_RECORDING.md](PHASE7_OCT29_REACTIVATION_RECORDING.md).
+The receipt now proves the preceding `UP-OCT29-INCIDENT-01` diagnostic patch is
+installed; earlier "not deployed" descriptions below describe their original
+handover, not the current installation. The new diagnostic-only candidate 02
+is NOT deployed. Preserve the original 37.2349363-second traffic gap and missing
+AP part as incomplete evidence. Fix busy-writer intermediate retention, common
+Engine/AP admission and independent completeness checks; do not invent the
+missing actor-85 acquisitions or change traffic authority to assume clearance.
+No new drive requested. Final frozen-runtime qualification is READY FOR
+CONTROLLED CAPTURE for the diagnostic build only: both automatic modes pass
+the unchanged timing, capacity, exact Engine/AP/pedal coverage, output/read
+equivalence and approved memory gates. Earlier failed measurements remain
+preserved and superseded after proven qualifier corrections and the simple-record
+prefix-allocation fix. One three-file candidate 02 and installed-base rollback
+ZIP are frozen under `docs/steering-audit/oct29-reactivation/release02/`.
+Separate approval is required before deployment; GAME NOT VERIFIED. Exact old
+lock ownership, actor-85 fault-time acquisitions and native per-actor incarnation
+remain open historical/interface boundaries. Diagnostic readiness does not
+establish a repair of the historical ACC braking behavior.
+
+## October 29 incident correction — offline qualified, not deployed
+
+Current specific handover:
+[PHASE7_OCT29_TRAFFIC_TRANSITION_AND_ASSEMBLY.md](PHASE7_OCT29_TRAFFIC_TRANSITION_AND_ASSEMBLY.md).
+The exact crossing-completion write race, summary overflow, repeated retired-AP
+stream loss and verified late attachment handling are corrected offline against
+the installed diagnostic26 base. One four-file patch plus rollback archive is
+under `docs/steering-audit/oct29-transition/release01/`. No plugin VERSION/DLL,
+ACC regulator or general traffic-policy change. No deployment authorized.
+
+Open historical boundaries: 118 original AP commands cannot be recovered;
+the sixth summary increment and exact AP aggregate-error branch are not saved;
+the full original delay lacks per-operation timestamps. Zero 3 s box contacts
+do not prove 8 s crossing caution unnecessary or establish right of way. Do not
+remove crossing protection for unproven clearance. Game effect requires
+separate approval/verification; no new drive requested now.
+
+## 27 October diagnostic handover — READY FOR CONTROLLED CAPTURE, not deployed
+
+Build 10's old readiness claim below is superseded by the live failure:
+plugin daemon processes cannot spawn the export child. The current diagnostic-
+only correction uses the application's existing non-daemon Manager service,
+bounded spawn argument transport, stop episodes and exact AP-part rendezvous.
+See [PHASE7_DAEMON_STOP_EPISODES_20261026.md](PHASE7_DAEMON_STOP_EPISODES_20261026.md).
+Frozen candidate 26 passed the actual daemon host, full episode coverage in
+both modes and unchanged numeric timing/memory/output gates: 470 targeted
+tests / 30 subtests, plus eight scope-assessment tests. The enabled capture
+preserves all calls; the user explicitly approved using the disabled baseline
+only for time/control comparison (its two short-journal losses stay reported).
+One nine-file candidate and exact installed-base rollback archive are under
+`docs/steering-audit/oct25-incident-assembly/daemon26-release/`, with verified
+SHA-256 receipts. Nothing deployed. Open: explicit deployment approval and a
+user-operated controlled capture. The original >52 s evidence gap remains
+unexplained; missing original AP/input records cannot be recovered. Readiness
+does not certify ACC, game consumption, or safe autonomous behavior.
+
+The following older handovers are historical and superseded by candidate 26.
+
+## 26 October combined handoff — READY FOR CONTROLLED CAPTURE, not deployed
+
+Current handover: [PHASE7_COMBINED_PEDAL_HANDOFF_20261026.md](PHASE7_COMBINED_PEDAL_HANDOFF_20261026.md).
+The measured combined blocker is corrected: the controller offers one owned
+packed snapshot; the existing one-slot worker expands/normalizes it. Admission
+failure no longer advances the producer cursor. The same enabled model retains
+every physical pedal call through heavy queue rejection, full 30+19 s incident
+windows, AP parts and exact source identities without changing final formats.
+Both modes meet unchanged timing gates and the explicitly approved memory
+bounds. Final regressions: 449 passed/30 subtests; seven runtime hashes frozen.
+One build-10 ZIP and installed-original return ZIP are delivered; older
+development candidates are superseded. No installation, arming or game run.
+Open: separately approved deployment and one user-operated controlled capture;
+model success is not repaired driving behavior or GAME VERIFIED.
+
+## 26 October approved budget — implemented; absolute baseline timing still blocks
+
+Current result: [PHASE7_DIAGNOSTIC_APPROVED_BUDGET_20261026.md](PHASE7_DIAGNOSTIC_APPROVED_BUDGET_20261026.md).
+The user approved the 2 GiB additional diagnostic budget, 64 MiB Engine ring
+and 32 MiB Engine file without deployment. Frozen 09 uses these actual limits;
+no sizing override. Capacity/exact evidence and 444 tests/30 subtests pass.
+Timing remains BLOCKED: simple Engine p99 is 19.708 ms against 16.67 ms;
+the same baseline with automatic incident capture off is already 22.138 ms.
+Do not waive this gate or blame its whole cost on the new collector.
+The attribution-only profile identifies expensive expanded pedal snapshot and
+repeated JSON conversion in the pre-existing combined capture hook. The
+smallest next correction is deferred expansion through that existing bounded
+worker, with unchanged output format and a fair worker-concurrency test.
+No such change is claimed implemented; no further blind variants or final ZIP.
+Budget approval is complete and must not be requested again. No deployment.
+
+## 26 October export-overhead correction — timing passes; budget decision open
+
+Current report: [PHASE7_DIAGNOSTIC_EXPORT_OVERHEAD_20261026.md](PHASE7_DIAGNOSTIC_EXPORT_OVERHEAD_20261026.md).
+Canonical hashing, a single admitted export child and deferred sealed-window
+metadata assembly preserve the existing lossless format and control outputs.
+Both same-input timing pairs pass the original gates; full warm windows and
+all individual physical pedal calls remain verified without AP disable.
+The original 512 MiB export-child RSS gate does not pass. The measured largest
+child is 1,229,299,712 B, and maximum added family peak contrast is
+1,309,085,696 B. A single **2,048 MiB additional diagnostic budget** is proposed,
+including one 1,536 MiB child and 512 MiB parent ownership/scratch allowance;
+the older 4 GiB recommendation is superseded, not applied.
+The Engine 64 MiB ring/32 MiB file remain test-only sizing overrides pending
+explicit approval. No production limit change, READY claim, final ZIP,
+deployment, arming or game test. Driving changes remain out of scope.
+
+## Simple-record proposal — awaiting budget decision; timing not qualified
+
+Current follow-up: [PHASE7_SIMPLE_RECORD_PROPOSAL_20261025.md](PHASE7_SIMPLE_RECORD_PROPOSAL_20261025.md).
+Independent exact-value/type/byte tests precede integration. The simple format
+has complete 30+19 s model dossiers and every physical call in both automatic
+modes using explicit model-only capacity/file probes. One budget is proposed,
+including parents, two overlapping exporter children and disk quotas. No
+production limit or installed file changed; no ZIP may be packaged without
+approval. Original timing failures are reported separately from baseline and
+collection/export increments; they are not waived by memory approval.
+Earlier sharing/repacking proposals remain unapplied. No game retry requested.
+
+## 25 October populated-traffic diagnostic qualification — BLOCKED
+
+Current report: [PHASE7_DIAGNOSTIC_TRAFFIC_QUALIFICATION_20261025.md](PHASE7_DIAGNOSTIC_TRAFFIC_QUALIFICATION_20261025.md).
+Latest continuation supersedes all readiness claims for intermediate artifacts:
+full physical calls are now retained with immutable binding/read references,
+but every-consumer capture needs 48,542,312 B in the current representation,
+not the required 32 MiB. A model-only 64 MiB sizing probe retains 30+19.1 s and
+2,069 exact backend calls; it is explicitly ineligible for release and still
+fails Engine/export-child memory gates. The remaining nested-sharing test is
+failing (current targeted result 18 PASS / 1 FAIL), preserved without weakening.
+Automatic review rejected insufficiently validated packing/reconstruction
+proposals; they were not applied. A bounded, independently exactness-tested
+storage representation is the next design step, not another ordinary drive.
+Build-05 ZIP was withdrawn before handover. No new final BLOCKED package, no
+deployment and no GAME VERIFIED claim. No plugin/ACC VERSION changed.
+
+The paragraphs below retain the earlier build-04 history:
+Build 04 supersedes collection-readiness claims for build 03. Full native
+population (40 moving + 40 parked, three moving trailer slots) now preserves
+30 s pre/10 s post inputs and exact AP assembly without disable, after fixes
+for binary event JSON, dense receipt capacity and compressed file quota.
+The original immediate safety/pedal replay is restored, not replaced by the
+longer grouped-dossier tail. No control rules, ACC version or DLL changed.
+
+OPEN/BLOCKED: predeclared added p99 and output/max latency criteria are unmet
+under the populated modeled load; no threshold was relaxed. A performance
+experiment was rejected. Remaining worst-tick/GIL/GC allocation attribution is
+not complete. The 64 KiB detailed backend trace also cannot prove all individual
+30-second physical pedal edges, despite retained decision/write summaries.
+Do not deploy or request an ordinary game retry as the next diagnostic step.
+The final report identifies the sole frozen review package and return backup;
+earlier candidates/evidence are preserved, not installation alternatives.
+
+## 25 October fixed-budget diagnostic capacity correction
+
+Current handover: [PHASE7_DIAGNOSTIC_CAPACITY_20261025.md](PHASE7_DIAGNOSTIC_CAPACITY_20261025.md).
+The old build-02 Engine capacity limitation below is superseded by the build-03
+correction and its same-load capacity gate. The previous 45-second production
+load retained only about 17 seconds of rolling inputs; exact compressed
+retention preserves the original 32 MiB limit, sampling and original values.
+No driving behavior or native DLL is changed. Older candidate ZIPs/reports remain
+historical; only the package identified in the current report is for review.
+Deployment and ETS2 effect remain unverified and require separate approval.
+
+## 25 October non-disable incident assembly — offline blocker correction
+
+See [PHASE7_INCIDENT_ASSEMBLY_20261025.md](PHASE7_INCIDENT_ASSEMBLY_20261025.md).
+Build 02 supersedes the build-01 handover below. Successful short braking and
+red/wait/green/restart now assemble the exact AP consumer part while AP stays
+active. Required parts are verified before the final manifest, with strict
+component-loss aggregation and no newer-packet substitution. Frozen installed-base
+qualification: 180 tests / 10 subtests PASS, plus 2 worker/shutdown tests PASS.
+Control AST, physical outputs and IPC read counts are unchanged. No deployment.
+
+REMAINING: the 32 MiB Engine ring filled under the measured ABI-buffer stress;
+its losses and the intentionally short 64 KiB backend stream prevent full-evidence
+claims and are explicitly reported. Early shutdown, failed/late delivery, long
+episodes and forced termination remain partial cases. Whole-tick median overhead
+was about 2.8 ms; measured on-run maxima were 79.7 / 46.6 ms. These diagnostic
+limits and pending game/deployment approval are not resolved driving behavior.
+Only the new `oct25-incident-assembly/final/` package is current; older candidates
+and evidence remain preserved. No new feature phase or game test is requested.
+
+## 25 October diagnostic-only handover — review candidate, complete collection blocked
+
+See [PHASE7_DIAGNOSTIC_BUILD_20261025.md](PHASE7_DIAGNOSTIC_BUILD_20261025.md).
+The existing journal/replay extension has a frozen installed-base qualification:
+165 tests / 10 subtests PASS, with 141 control-function AST comparisons and
+separate physical-output/IPC-read equivalence checks. One six-file diagnostic
+candidate and its installed-base rollback are hash-verified. No deployment,
+arming, game operation, plugin version release or driving repair was performed.
+
+OPEN: a successful non-disable slowdown/wait may close its Engine dossier before
+the exact AP consumer input stream is exported from the existing dense replay.
+Top-level window completeness also does not aggregate backend-detail/AP loss.
+These block the original complete automatic capture claim. The manifest says
+REVIEW_ONLY_BLOCKED_COMPLETE_CAPTURE and not ready for collection approval.
+The user requested closure of current verification without additional features;
+no new drive or follow-on implementation is requested by this handover.
+All unrelated workspace repairs and original evidence remain preserved.
+
+## 18 October four joint handoff incidents — candidate, no game verification
+
+See [PHASE7_JOINT_HANDOFFS_20261018.md](PHASE7_JOINT_HANDOFFS_20261018.md).
+Reproduced acquired-crossing scope loss, near-expiry publication without starting
+the existing zero-drive request, retired-activation slot overwrite and split
+service-hold/launch input capture have coordinated offline repairs. Preserve
+all previous producer/DLL, packet-refresh, signal-profile and indicator fixes.
+Only Autopilot implementation advances to 1.3.5; core changes do not release ACC,
+Map or DrivePolicy. Bootloader/SharedState/PluginSDK require one consistent package.
+Final frozen candidate: 3,069 tests and 1,592 subtests PASS in 916.83 s, hashes
+unchanged. One 28-file candidate and a separate read-back-verified rollback ZIP
+are prepared under `docs/steering-audit/oct18-joint-handoffs/`; nothing deployed.
+This verifies the reproduced repairs offline, not complete historical attribution
+or ETS2 behavior. The report records both prior failed test-isolation attempts.
+
+OPEN: exact final traffic producer/IPC phase for the 13:18:00 receipt is absent.
+A separate 208.150 ms pause is localized to signal acquisition but its inner wait
+is unexplained; do not attribute it to CPU/GC or call scheduling stalls solved.
+Original complete actor poses at the 13:16:53 failure are also absent. Reproduced
+model geometry is not recovered historical geometry or proof every brake was
+unnecessary. No new generic drive, deployment or autonomous safety certification
+is implied. Whole-system and GAME VERIFIED remain open.
+
 ## 18 October systemic longitudinal review — historical attribution incomplete
 
 See [PHASE7_SYSTEMIC_LONGITUDINAL_RELIABILITY_20261018.md](PHASE7_SYSTEMIC_LONGITUDINAL_RELIABILITY_20261018.md).
