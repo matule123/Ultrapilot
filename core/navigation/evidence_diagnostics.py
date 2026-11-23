@@ -10,6 +10,7 @@ capture without waiting.
 from __future__ import annotations
 
 from collections import Counter, deque
+from collections.abc import Mapping
 from dataclasses import asdict, dataclass, is_dataclass, replace
 from datetime import datetime, timezone
 import hashlib
@@ -220,7 +221,42 @@ def _finite(value):
     return type(value) in (int, float) and math.isfinite(value)
 
 
+class _DeferredLongitudinal(Mapping):
+    """Internal immutable handoff, using the existing bounded primitive codec.
+
+    Mapping inspection returns detached values. The collector normalizes once
+    on its existing worker; no private transport fields enter the exported row.
+    """
+    __slots__=('_record',)
+
+    def __init__(self,value):
+        from core.navigation.longitudinal_diagnostics import freeze_primitive_record
+        object.__setattr__(self,'_record',tuple(freeze_primitive_record(value).items()))
+
+    def __setattr__(self,name,value):raise AttributeError('Immutable diagnostic snapshot')
+    def __deepcopy__(self,memo):return self
+
+    def materialize(self):
+        from core.navigation.longitudinal_diagnostics import restore_exact_record,expand_journal
+        return _jsonable(expand_journal(restore_exact_record(dict(self._record))))
+
+    def __getitem__(self,key):return self.materialize()[key]
+    def __iter__(self):return iter(self.materialize())
+    def __len__(self):return len(self.materialize())
+
+
+_JSON_PRIMITIVE_TYPES=(str,bool,int,type(None))
+
+
 def _jsonable(value):
+    # Most leaves are primitive scalars. Reflecting on each one steals the
+    # worker's Python/GIL budget without changing the normalization contract.
+    kind=type(value)
+    if kind in _JSON_PRIMITIVE_TYPES:
+        return value
+    if kind is float:
+        return value if math.isfinite(value) else None
+    if isinstance(value,_DeferredLongitudinal):return value.materialize()
     if is_dataclass(value):
         return _jsonable(asdict(value))
     if isinstance(value, dict):
@@ -229,10 +265,8 @@ def _jsonable(value):
         return [_jsonable(v) for v in value]
     if isinstance(value, bytes):
         return {"bytes": len(value), "sha256": hashlib.sha256(value).hexdigest()}
-    if value is None or isinstance(value, (str, bool, int)):
-        return value
-    if isinstance(value, float):
-        return value if math.isfinite(value) else None
+    if value is None or isinstance(value,(str,bool,int)):return value
+    if isinstance(value,float):return value if math.isfinite(value) else None
     return str(value)
 
 
@@ -319,7 +353,8 @@ def capture_diagnostic_application(state, steering, now, sequence, *,
     # IPC may deliver a newer observation after the caller sampled ``now``.
     # Timestamp the actual completion, while retaining the original SDK time.
     after = {key: state.get(source) for key, source in OBSERVATION_IDENTITY_KEYS}
-    pedals = _jsonable(longitudinal) if longitudinal is not None else {
+    deferred=isinstance(longitudinal,dict) and longitudinal.get('journal_storage')=='packed'
+    pedals = (dict(longitudinal) if deferred else _jsonable(longitudinal)) if longitudinal is not None else {
         'schema_version': 1, 'events': [], 'dropped_events': 0,
         'game_consumption_verified': False, 'status': 'NO_BOUND_PEDAL_WRITES'}
     pedals['sampled_state'] = _pick({
@@ -331,7 +366,7 @@ def capture_diagnostic_application(state, steering, now, sequence, *,
         'safety_reason': state.get('automatic_safety_stop_reason')},
         ('autopilot_active', 'auto_drive_pending', 'control_state', 'activation', 'disable_reason', 'safety_reason'))
     return replace(capture,
-        longitudinal=pedals,
+        longitudinal=_DeferredLongitudinal(pedals) if deferred else pedals,
         captured_at_s=float(clock()) if clock else capture.captured_at_s,
         observation_identity={"before": before, "after": after,
                               "reads_match": before == after, "atomic": False})

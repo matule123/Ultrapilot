@@ -59,7 +59,8 @@ def geometry(observed, selector, truck, progress, binding, result, prediction, *
     conflicts=crossing.get('conflicts') or ()
     crossing=dict(status=crossing.get('status'),brake=crossing.get('brake'),
         conflicts=[{k:c.get(k) for k in ('id','point_xyz','distance_m','actor_arrival_s',
-            'ego_arrival_earliest_s','brake')} for c in conflicts[:64]],
+            'ego_arrival_earliest_s','brake','motion_model','branch_count',
+            'hypothesis_index','exit_intent_verified')} for c in conflicts[:64]],
         omitted_conflicts=max(0,len(conflicts)-64))
     frame = dict(schema=1, context=binding, source={k:raw_source.get(k) for k in
         ('valid','reason','lifecycle','generation','frame_us','observed_at')},
@@ -503,6 +504,9 @@ def draw_overlay(qp, rect, snapshot, project, now=None, *, test_data=False):
         at=project(body['x'],body['y']+body['dimensions_whl'][1]/2,body['z'])
         if at is None:continue
         label=f"{actor['id']} [{actor.get('source','?')}:{actor.get('slot','?')}]"
+        branches=max((p.get('branch_count',1) for p in prediction.get('actor_paths') or ()
+            if p.get('id')==actor['id'] and p.get('model')=='directed_prefab_branch_hypotheses_fixed_articulation'),default=0)
+        if branches:label+=f' map x{branches} / exit ?'
         if actor.get('speed_source')=='parked_classification':label+=' static model'
         elif isinstance(actor.get('speed'),(int,float)):label+=f" {actor['speed']:.1f}m/s"
         cap=next((t.get('cap_mps') for t in (snapshot.get('applied') or {}).get('targets') or ()
@@ -525,7 +529,10 @@ def draw_overlay(qp, rect, snapshot, project, now=None, *, test_data=False):
                 qp.setPen(QPen(QColor(COLORS[style]),1,Qt.PenStyle.DashLine));qp.setBrush(Qt.BrushStyle.NoBrush)
                 qp.drawEllipse(at,4.,4.)
                 body=(actor.get('bodies') or [{}])[0]
-                if 'x' in body:poly([[body['x'],body['y'],body['z']],p],COLORS[style],True,.8)
+                # A chord to the conflict point is not the curved hypothesis
+                # used for the decision. Actual sampled branches are above.
+                if 'x' in body and conflict.get('motion_model') in (None,'constant_tractor_speed_raw_body_heading'):
+                    poly([[body['x'],body['y'],body['z']],p],COLORS[style],True,.8)
     applied=snapshot.get('applied') or {};selected=applied.get('source') or {}
     pair=applied.get('backend_pair') or {};stats=applied.get('write_stats') or {}
     ctx=applied.get('context') or frame.get('context') or ()
@@ -552,7 +559,9 @@ def draw_overlay(qp, rect, snapshot, project, now=None, *, test_data=False):
         str(selected.get('reason') or 'reason unavailable')[:54],
         f"refresh {fmt((applied.get('refresh') or {}).get('state'))} / AEB {bool(selected.get('emergency'))}",
         str((applied.get('first_fault') or {}).get('reason') or 'first fault not captured')[:54],
-        'constant native motion: bodies 3s / crossing rays 8s',
+        ('map branches; exit unknown; bodies 3s / crossing 8s'
+         if prediction.get('model')=='native_boxes_directed_reference_fixed_articulation_actor_hypotheses'
+         else 'constant native motion: bodies 3s / crossing rays 8s'),
         ('EXACT consumed acquisition' if snapshot.get('consumed_geometry') else 'consumed geometry unavailable'),
         f"omitted labels/actors {omitted}/{frame.get('omitted_actors',0)}; priority {frame.get('omitted_priority_actors',0)}",
         f"omitted bodies/paths/points {frame.get('omitted_bodies',0)}/{frame.get('omitted_prediction_paths',0)}/{frame.get('omitted_prediction_points',0)}; backend != game"]

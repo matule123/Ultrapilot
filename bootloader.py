@@ -231,8 +231,10 @@ def main():
     _ensure_vigembus()
 
     # ONE shared manager dict, handed to every process.
-    manager = mp.Manager()
-    shared_dict = manager.dict()
+    from core.ipc.shared_state import ControlStateManager
+    manager = ControlStateManager()
+    manager.start()
+    shared_dict = manager.control_dict()
     shared_dict["runtime_root_pid"] = os.getpid()
     # Resolve release metadata before launching UI processes (no startup race).
     try:

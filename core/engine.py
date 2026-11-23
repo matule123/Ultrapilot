@@ -420,11 +420,9 @@ class UltraPilotEngine:
             diagnostic_read["control_sample_valid"] = self._latest_telemetry_success
         try:
             journal = getattr(self.controller, '_pedal_journal', None)
-            pedals = journal.snapshot(after_sequence=getattr(self,'_combined_pedal_cursor',0)) if journal is not None and journal.enabled else None
-            if pedals is not None:
-                self._combined_pedal_cursor = pedals['last_sequence']
+            pedals = journal.snapshot(after_sequence=getattr(self,'_combined_pedal_cursor',0),expanded=False) if journal is not None and journal.enabled else None
             self._longitudinal_offer_done = True
-            diagnostic.offer(capture_diagnostic_application(
+            accepted = diagnostic.offer(capture_diagnostic_application(
                 self.shared_state, steering, time.monotonic(),
                 self._maneuver_diagnostic_sequence,
                 steering_boundary=boundary,
@@ -432,6 +430,8 @@ class UltraPilotEngine:
                 application_sdk_frame_us=application_sdk_frame_us,
                 steering_write_returned_at_s=steering_write_returned_at_s,
                 longitudinal=pedals))
+            if accepted and pedals is not None:
+                self._combined_pedal_cursor = pedals['last_sequence']
         except (AttributeError, TypeError, ValueError):
             self.shared_state.set(
                 "maneuver_evidence_diagnostic_failure",
@@ -1029,7 +1029,8 @@ class UltraPilotEngine:
                 same_dependency=(isinstance(selector.binding,(tuple,list))
                     and len(selector.binding)==len(binding)==8
                     and tuple(selector.binding[:5])==tuple(binding[:5]))
-                selector.prepare(lane['points'], binding, preserve_target=same_dependency)
+                selector.prepare(lane['points'], binding, preserve_target=same_dependency,
+                    actor_motion=lane.get('actor_motion'))
             debug = self.shared_state.get('nav_steering_debug') or {}
             identity = self.shared_state.get('lane_trajectory_identity') or {}
             if (debug.get('authority_valid') is not True
@@ -1070,7 +1071,7 @@ class UltraPilotEngine:
                 result['constraint_completions']=list(selector._completed_crossings.values())
             # A no-lead crossing still needs native motion history. select()
             # may return before its candidate-specific calculations.
-            selector.source_motion(observed['actors'], observed.get('source'))
+            selector.source_motion(observed['actors'], observed.get('source'), include_predictions=False)
             hold = getattr(self, '_service_brake_hold', None) or {}
             engagement=getattr(self,'_drive_engagement',None) or {}
             resume=engagement.get('signal_resume') or {}
@@ -1329,7 +1330,11 @@ class UltraPilotEngine:
         # trajectory preserves an ACTUAL crossing demand, not every 8 s ray.
         retained = (following.get('retained_target_continuity') or {}).get('target_id')
         selector = getattr(self, '_acc_selector', None)
+        continuing_crossings = {p['target_id'] for p in selector.continuing_owners()
+            if selector._retained_owners[p['target_id']]['kind'] == 'crossing'
+            and selector._retained_owners[p['target_id']].get('completed_at') is None} if selector else set()
         actionable = [c for c in crossing.get('conflicts', ()) if c.get('brake', 0.) > 0.
+            or str(c.get('id')) in continuing_crossings
             or (getattr(selector, '_target_is_crossing', False) and retained == str(c.get('id')))]
         if (not following.get('emergency') and actionable
                 and bodies.get('status')=='protective_observed_body_prediction'
@@ -1768,6 +1773,23 @@ class UltraPilotEngine:
                 })
         self._hotkey_was_down = down
 
+    def _read_control_lane_snapshot(self):
+        """Reuse one owned read-only route copy for the current publication.
+
+        The state publisher writes the token and snapshot atomically. The
+        token is checked at each use, including the checks after IPC during
+        launch handoff. Telemetry, authority and deadline checks stay live.
+        """
+        state = self.shared_state
+        token = state.get('lane_trajectory_publication_token')
+        cached = getattr(self, '_control_lane_snapshot', None)
+        if token and cached is not None and cached[0] is state and cached[1] == token:
+            return cached[2]
+        snapshot = state.get('lane_trajectory', {}) or {}
+        after = state.get('lane_trajectory_publication_token') if token else None
+        self._control_lane_snapshot = (state, token, snapshot) if token and token == after else None
+        return snapshot
+
     def _autopilot_activation_rejection_reason(self, *, allow_neutral=False,
                                               observed_truck=None):
         """Return why a new engagement is unsafe; empty means ready."""
@@ -1817,7 +1839,7 @@ class UltraPilotEngine:
             game_gps_navigation_present, lane_authority_rejection_reason,
             navigation_command, engagement_lateral_limit, ENGAGEMENT_MAX_HEADING_RAD,
         )
-        snapshot = self.shared_state.get("lane_trajectory", {}) or {}
+        snapshot = self._read_control_lane_snapshot()
         if game_gps_navigation_present(self.shared_state, snapshot):
             reason = lane_authority_rejection_reason(
                 self.shared_state, snapshot)
@@ -1903,7 +1925,7 @@ class UltraPilotEngine:
             return "automatické D vyžaduje pripojený SCS backend"
         self._release_controller()
         now = time.monotonic()
-        snapshot = self.shared_state.get("lane_trajectory", {}) or {}
+        snapshot = self._read_control_lane_snapshot()
         identity = tuple(snapshot.get(key) for key in (
             "navigation_intent_id", "revision", "route_build_id",
             "source_game_session_id", "source_map_key",
@@ -1989,6 +2011,7 @@ class UltraPilotEngine:
         return ""
 
     def _clear_simple_auto_forward_history(self):
+        self.shared_state.set('simple_auto_resume_transition', None)
         self._first_pedal_request = None
         self._first_pedal_started_at = None
         self._longitudinal_initialization = None
@@ -2110,12 +2133,16 @@ class UltraPilotEngine:
         if mode == 0:
             self._simple_auto_forward_history = history
         self._service_brake_hold = None
-        self.shared_state.update_batch({'simple_auto_service_hold': None,
-            'simple_auto_forward_history': history if mode == 0 else None, 'simple_auto_launch_output': None,
-            'simple_auto_launch': (dict(request_id=request, context=history['context'],
+        transition = dict(schema=1, context=witness['authority'], witness=witness,
+            history=history if mode == 0 else None,
+            launch=(dict(request_id=request, context=history['context'],
                 deadline_at=now+2.5, throttle=.12, signal_resume=True) if mode == 0 else None),
-            'service_brake_resume': dict(request_id=request, context=witness['authority'],
-                mode=mode, deadline_at=now+2.5),
+            resume=dict(request_id=request, context=witness['authority'], mode=mode, deadline_at=now+2.5))
+        self.shared_state.update_batch({'simple_auto_resume_transition': transition,
+            'simple_auto_service_hold': None,
+            'simple_auto_forward_history': history if mode == 0 else None, 'simple_auto_launch_output': None,
+            'simple_auto_launch': transition['launch'],
+            'service_brake_resume': transition['resume'],
             'autopilot_control_state': 'resuming',
             'navigation_status': ('Pôvodná prekážka pozorovane odišla – rozbieham'
                 if witness.get('kind') == 'traffic' else 'Zelená overená – uvoľňujem brzdu a rozbieham'),
@@ -2123,6 +2150,15 @@ class UltraPilotEngine:
         # Zero opposing channel FIRST. A callback/backend failure cannot cause
         # simultaneous positive channels or renew the fixed handoff deadline.
         probe = .12 if mode == 0 else 0.
+        trace = getattr(self, '_longitudinal_trace', None)
+        if not isinstance(trace, dict):
+            from core.navigation.longitudinal_diagnostics import local_source_snapshot
+            trace = local_source_snapshot(truck, self._drive_engagement)
+            trace.update(context=witness['authority'], activation=witness['authority'][0])
+            self._longitudinal_trace = trace
+        trace.update(service_hold=None, forward_history=transition['history'],
+            launch={k:self._drive_engagement.get(k) for k in (
+                'mode','phase','request_id','started_at','deadline_at','signal_resume')})
         self._bind_longitudinal_output('signal_resume', probe, 0.,
             'fresh original traffic body clearance' if witness.get('kind') == 'traffic' else 'fresh locked signal green')
         self.controller.set_brake(0.)
@@ -2231,7 +2267,7 @@ class UltraPilotEngine:
             return True
         reason = self._autopilot_activation_rejection_reason(
             allow_neutral=True, observed_truck=truck)
-        snapshot = self.shared_state.get("lane_trajectory", {}) or {}
+        snapshot = self._read_control_lane_snapshot()
         identity = tuple(snapshot.get(key) for key in (
             "navigation_intent_id", "revision", "route_build_id",
             "source_game_session_id", "source_map_key",
@@ -2505,7 +2541,7 @@ class UltraPilotEngine:
                 # allowing the normal physical output path to take ownership.
                 reason = self._autopilot_activation_rejection_reason(
                     allow_neutral=True, observed_truck=truck)
-                latest_snapshot = self.shared_state.get("lane_trajectory", {}) or {}
+                latest_snapshot = self._read_control_lane_snapshot()
                 latest_identity = tuple(latest_snapshot.get(key) for key in (
                     "navigation_intent_id", "revision", "route_build_id",
                     "source_game_session_id", "source_map_key",
@@ -2535,7 +2571,7 @@ class UltraPilotEngine:
                 return True
             reason = self._autopilot_activation_rejection_reason(
                 allow_neutral=True, observed_truck=truck)
-            latest_snapshot = self.shared_state.get("lane_trajectory", {}) or {}
+            latest_snapshot = self._read_control_lane_snapshot()
             latest_identity = tuple(latest_snapshot.get(key) for key in (
                 "navigation_intent_id", "revision", "route_build_id",
                 "source_game_session_id", "source_map_key",
@@ -2936,7 +2972,7 @@ class UltraPilotEngine:
             current, _ = read(self.shared_state, source)
             if current and any(current.get(field, 0.) > 0 for field in fields):
                 return False
-        snapshot = self.shared_state.get("lane_trajectory", {}) or {}
+        snapshot = self._read_control_lane_snapshot()
         if self._gps_output_packet_rejection_reason(time.monotonic(), snapshot):
             return False
         if self.shared_state.get("autopilot_control_state") == "controlled_stop":
@@ -3162,7 +3198,7 @@ class UltraPilotEngine:
             "throttle_command": throttle,
             "brake_command": brake,
             "route_revision": self.shared_state.get("lane_trajectory_revision"),
-            "route_build_id": (self.shared_state.get("lane_trajectory", {}) or {}).get(
+            "route_build_id": self._read_control_lane_snapshot().get(
                 "route_build_id"),
         }
         metadata, metadata_reason = vehicle_control_observation(self.shared_state, truck)
@@ -3433,7 +3469,7 @@ class UltraPilotEngine:
 
         steering = self.shared_state.get(CTL_STEERING, 0.0)
         brake = self.shared_state.get(CTL_BRAKE, 0.0)  # diagnostic intent; not applied
-        snapshot = self.shared_state.get("lane_trajectory", {}) or {}
+        snapshot = self._read_control_lane_snapshot()
 
         gps_control = self.shared_state.get("navigation_source") == "gps_lane"
         gps_output_reason = (self._gps_output_packet_rejection_reason(

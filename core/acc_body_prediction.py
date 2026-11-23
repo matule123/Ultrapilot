@@ -34,15 +34,18 @@ def rear_contact_not_brake_mitigable(body, ego_bodies, samples):
     return True
 
 
-def contact_interval(a, b, va, vb, duration):
+def _axes(yaw):
+    c,s=math.cos(yaw),math.sin(yaw)
+    return ((c,-s),(-s,-c))
+
+
+def contact_interval(a, b, va, vb, duration, *, axes_a=None, axes_b=None):
     """Exact 2-D swept SAT for fixed oriented boxes, including vertical gate."""
     aw, ah, al = a['dimensions_whl']; bw, bh, bl = b['dimensions_whl']
     if abs(a['y']-b['y']) > (ah+bh)*.5:
         return None
-    def axes(body):
-        yaw = body['yaw']
-        return ((math.cos(yaw), -math.sin(yaw)), (-math.sin(yaw), -math.cos(yaw)))
-    aa, ba = axes(a), axes(b)
+    aa = axes_a if axes_a is not None else _axes(a['yaw'])
+    ba = axes_b if axes_b is not None else _axes(b['yaw'])
     def dot(x, y):
         return x[0]*y[0]+x[1]*y[1]
     offset = b['x']-a['x'], b['z']-a['z']
@@ -63,11 +66,22 @@ def contact_interval(a, b, va, vb, duration):
     return lo
 
 
-def predict(route, ego_bodies, actors, speed, progress, anchor, *, source_age=0., debug_geometry=None):
+def _outside_segment(position, travel, radius):
+    """A whole fixed-orientation interval lies outside the projected radius."""
+    end = position + travel
+    if not math.isfinite(end) or not math.isfinite(radius):
+        return False
+    # Leave rounding at a touching or numerically uncertain boundary to SAT.
+    margin = 16 * math.ulp(max(abs(position), abs(travel), radius))
+    return min(position, end) > radius + margin or max(position, end) < -radius - margin
+
+
+def predict(route, ego_bodies, actors, speed, progress, anchor, *, source_age=0., debug_geometry=None,
+            prefilter=True):
     result = dict(status='unavailable_ego_body_or_prediction', brake=0., conflicts=[],
         complete_envelope_verified=False, coverage_confirmed=False,
         model='native_boxes_directed_reference_fixed_articulation_constant_actor_motion')
-    if (not ego_bodies or not 1 <= len(ego_bodies) <= 4 or not 0 <= speed <= 70. or len(actors) > 80
+    if (not ego_bodies or not 1 <= len(ego_bodies) <= 4 or not -70. <= speed <= 70. or len(actors) > 80
             or not math.isfinite(source_age) or not 0 <= source_age <= .5):
         return result
     root = ego_bodies[0]
@@ -76,7 +90,7 @@ def predict(route, ego_bodies, actors, speed, progress, anchor, *, source_age=0.
     if projected is None or projected[0] > 2.6 or not route.arcs:
         return result
     def pose(s):
-        if s > route.arcs[-1]:
+        if s < 0. or s > route.arcs[-1]:
             return None  # a rolling horizon end is not extrapolated geometry
         i = max(0, min(len(route.edges)-1, bisect.bisect_right(route.arcs, s)-1))
         x, y, z, dx, dy, dz, length, inv, _, start = route.edges[i]
@@ -86,7 +100,13 @@ def predict(route, ego_bodies, actors, speed, progress, anchor, *, source_age=0.
     samples = []
     for i in range(13):
         at = i*STEP_S
-        target = pose(projected[1]+speed*at)
+        # Body availability is independent of forward-drive permission. A
+        # signed backward displacement uses the observed heading, not a clamp
+        # to zero or invented geometry behind a rolling route's left edge.
+        # Engine/ACC still reject R / backward drive at their original gates.
+        target = ((initial[0]-math.sin(root['yaw'])*speed*at, initial[1],
+                   initial[2]-math.cos(root['yaw'])*speed*at, initial[3])
+                  if speed < 0. else pose(projected[1]+speed*at))
         if target is None:
             break
         # Rotate measured offsets with reference heading. Trailer articulation
@@ -104,7 +124,29 @@ def predict(route, ego_bodies, actors, speed, progress, anchor, *, source_age=0.
             step_s=STEP_S, model=result['model'])
     missing = 0
     rear_contacts=[]
+    own_extent = max(math.hypot(e['x']-root['x'], e['z']-root['z'])+
+        .5*math.hypot(e['dimensions_whl'][0], e['dimensions_whl'][2]) for e in ego_bodies)
+    observed_ego = [(body, .5 * (body['dimensions_whl'][0] + body['dimensions_whl'][2]))
+                    for body in ego_bodies]
+    # Identical ego enclosure for every actor/hypothesis: prepare it once,
+    # retaining all measured boxes and the original swept-contact model.
+    ego_segments=[]
+    for before,after in zip(samples,samples[1:]):
+        segment=[]
+        for a,b in zip(before,after):
+            av=(b['x']-a['x'])/STEP_S,(b['z']-a['z'])/STEP_S
+            w,h,length=a['dimensions_whl']
+            turn=abs(math.remainder(b['yaw']-a['yaw'],2*math.pi))
+            margin=math.hypot(w,length)*math.sin(turn*.5)
+            conservative=dict(a,dimensions_whl=(w+2*margin,h,length+2*margin))
+            segment.append((conservative,av,math.hypot(w+2*margin,length+2*margin),_axes(a['yaw'])))
+        ego_segments.append(segment)
     for actor in actors:
+        motion=route.actor_motion(actor) if hasattr(route,'actor_motion') else None
+        prepared = None
+        if motion:
+            result['model']='native_boxes_directed_reference_fixed_articulation_actor_hypotheses'
+            if debug_geometry is not None:debug_geometry['model']=result['model']
         parked = (actor.get('source') == 'parked'
                   and actor.get('speed_source') == 'parked_classification')
         if actor.get('temporary') or (actor.get('speed_source') != 'buffer' and not parked):
@@ -127,44 +169,87 @@ def predict(route, ego_bodies, actors, speed, progress, anchor, *, source_age=0.
             # Observed overlap must survive a truncated future route horizon.
             # This is the original source frame, never an inferred current pose
             # or proof of game consumption of a brake write.
-            if any(contact_interval(e, body, (0., 0.), (0., 0.), 0.) is not None
-                   for e in ego_bodies):
+            observed_extent = .5 * (dims[0] + dims[2])
+            if any((not prefilter or (not _outside_segment(body['x'] - e['x'], 0., own + observed_extent)
+                                      and not _outside_segment(body['z'] - e['z'], 0., own + observed_extent)))
+                   and contact_interval(e, body, (0., 0.), (0., 0.), 0.) is not None
+                   for e, own in observed_ego):
                 contact = 0.
                 contact_basis = 'observed_overlap_at_source_frame'
                 break
             # Broad phase from measured extents and the finite prediction range.
             extent = .5*math.hypot(dims[0], dims[2])
-            own_extent = max(math.hypot(e['x']-root['x'], e['z']-root['z'])+
-                .5*math.hypot(e['dimensions_whl'][0], e['dimensions_whl'][2]) for e in ego_bodies)
-            if math.hypot(body['x']-root['x'], body['z']-root['z']) > (speed+v)*HORIZON_S+extent+own_extent:
+            if math.hypot(body['x']-root['x'], body['z']-root['z']) > (abs(speed)+v)*HORIZON_S+extent+own_extent:
                 continue
-            bv = -math.sin(body['yaw'])*v, -math.cos(body['yaw'])*v
-            rear_only = rear_only and rear_contact_not_brake_mitigable(body,ego_bodies,samples)
-            path = None
-            if debug_geometry is not None and len(debug_geometry['actor_paths']) < 64:
-                path = dict(id=actor['id'], source=actor['source'], slot=actor['slot'],
-                    record_fingerprint=actor.get('record_fingerprint'), body_index=body_index, points=[])
-                debug_geometry['actor_paths'].append(path)
-            elif debug_geometry is not None:
-                debug_geometry['omitted_actor_paths'] += 1
-            for i, (before, after) in enumerate(zip(samples, samples[1:])):
-                at = i*STEP_S
-                other = dict(body, x=body['x']+bv[0]*at, z=body['z']+bv[1]*at)
-                if path is not None:
-                    path['points'].append([at, other['x'], other['y'], other['z']])
-                for a, b in zip(before, after):
-                    av = (b['x']-a['x'])/STEP_S, (b['z']-a['z'])/STEP_S
-                    # Rotation envelope around the segment-start orientation;
-                    # contact is conservative for the declared segment model.
-                    w,h,length=a['dimensions_whl']
-                    turn=abs(math.remainder(b['yaw']-a['yaw'],2*math.pi))
-                    margin=math.hypot(w,length)*math.sin(turn*.5)
-                    conservative=dict(a,dimensions_whl=(w+2*margin,h,length+2*margin))
-                    t = contact_interval(conservative, other, av, bv, STEP_S)
-                    if t is not None:
-                        contact = min(contact if contact is not None else math.inf, at+t)
-                if contact is not None:
-                    break
+            if motion and prepared is None and hasattr(route, 'actor_body_motion'):
+                prepared = route.actor_body_motion(actor, motion)
+            hypotheses=motion['branches'] if motion else [None]
+            rear_only = rear_only and motion is None and rear_contact_not_brake_mitigable(body,ego_bodies,samples)
+            # Directed exits share an exact already-generated prefix. Its
+            # contact with the SAME ego segment/body is independent of which
+            # future branch follows it. Reuse only exact pose keys, local to
+            # this observed body and this invocation (<=8 * 12 entries).
+            segment_contacts={}
+            for hypothesis_index,branch in enumerate(hypotheses):
+                if branch is not None:
+                    if prepared is not None:
+                        positions = prepared[body_index,hypothesis_index,:len(samples)].tolist()
+                    else:
+                        from core.actor_motion import body_poses
+                        poses=body_poses(actor,body,branch,count=len(samples))
+                        positions = [(p['x'],p['y'],p['z'],p['yaw']) for p in poses]
+                else:
+                    bv=-math.sin(body['yaw'])*v,-math.cos(body['yaw'])*v
+                    positions=[(body['x']+bv[0]*i*STEP_S,body['y'],body['z']+bv[1]*i*STEP_S,body['yaw'])
+                        for i in range(len(samples))]
+                path = None
+                if debug_geometry is not None and len(debug_geometry['actor_paths']) < 64:
+                    path = dict(id=actor['id'], source=actor['source'], slot=actor['slot'],
+                        record_fingerprint=actor.get('record_fingerprint'), body_index=body_index,
+                        hypothesis_index=hypothesis_index,model=motion['model'] if motion else 'constant_observed_heading',
+                        branch_count=len(hypotheses),exit_intent_verified=False,
+                        points=[[i*STEP_S,x,y,z] for i,(x,y,z,_) in enumerate(positions)])
+                    debug_geometry['actor_paths'].append(path)
+                elif debug_geometry is not None:debug_geometry['omitted_actor_paths'] += 1
+                bw,bh,bl = dims
+                diagonal = math.hypot(bw,bl)
+                for i, (before, after) in enumerate(zip(positions,positions[1:])):
+                    at = i*STEP_S
+                    x,y,z,heading = before
+                    next_x,next_y,next_z,next_heading = after
+                    key=(i,x,y,z,heading,next_x,next_y,next_z,next_heading)
+                    if key in segment_contacts:
+                        prior=segment_contacts[key]
+                        if prior is not None:contact=min(contact if contact is not None else math.inf,prior)
+                        if contact is not None and contact<=at+STEP_S:break
+                        continue
+                    bv=(next_x-x)/STEP_S,(next_z-z)/STEP_S
+                    actor_turn=abs(math.remainder(next_heading-heading,2*math.pi))
+                    actor_margin=diagonal*math.sin(actor_turn*.5)
+                    ow,ol = bw+2*actor_margin,bl+2*actor_margin
+                    other_diagonal = math.hypot(ow,ol)
+                    segment_contact=None
+                    other = None
+                    for conservative,av,own_diagonal,axes in ego_segments[i]:
+                        # Circumscribed swept discs can only reject a pair
+                        # whose exact oriented boxes cannot meet this segment.
+                        radius=.5*(own_diagonal+other_diagonal)
+                        if (abs(x-conservative['x'])>radius+abs(bv[0]-av[0])*STEP_S
+                                or abs(z-conservative['z'])>radius+abs(bv[1]-av[1])*STEP_S):continue
+                        if prefilter and (_outside_segment(x-conservative['x'], (bv[0]-av[0])*STEP_S, radius)
+                                          or _outside_segment(z-conservative['z'], (bv[1]-av[1])*STEP_S, radius)):
+                            continue
+                        if other is None:
+                            other = dict(x=x,y=y,z=z,yaw=heading,dimensions_whl=(ow,bh,ol))
+                            other_axes = _axes(heading)
+                        t = contact_interval(conservative, other, av, bv, STEP_S,
+                            axes_a=axes, axes_b=other_axes)
+                        if t is not None:
+                            segment_contact=min(segment_contact if segment_contact is not None else math.inf,at+t)
+                    segment_contacts[key]=segment_contact
+                    if segment_contact is not None:
+                        contact=min(contact if contact is not None else math.inf,segment_contact)
+                    if contact is not None and contact<=at+STEP_S:break
         if contact is not None:
             if contact>0. and rear_only:
                 if len(rear_contacts)<16:
@@ -182,8 +267,11 @@ def predict(route, ego_bodies, actors, speed, progress, anchor, *, source_age=0.
                     'x','y','z','yaw','speed','dimensions_whl')},
                 ego_bodies=[dict(e) for e in ego_bodies],
                 ego_anchor_xyz=list(anchor), ego_observed_speed_mps=speed,
+                ego_motion_basis=('observed_signed_reverse_heading' if speed<0. else 'directed_route_forward'),
                 actor_motion_basis=('native_parked_classification_static_model' if parked
-                                    else 'native_observed_speed_constant_heading_model')))
+                                    else motion['model'] if motion else 'native_observed_speed_constant_heading_model'),
+                actor_motion_hypotheses=motion['branch_count'] if motion else 1,
+                exit_intent_verified=False))
     result.update(status='protective_observed_body_prediction', unsupported_actors=missing,
         non_braking_rear_contacts=rear_contacts,
         prediction_duration_s=max(0.,(len(samples)-1)*STEP_S),

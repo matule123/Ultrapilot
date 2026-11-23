@@ -488,7 +488,7 @@ class Plugin(BasePlugin):
     """
 
     NAME = "autopilot"
-    VERSION = "1.3.4"
+    VERSION = "1.3.5"
 
     def on_start(self):
         logging.info("Autopilot Plugin started (Phase 1 tuning).")
@@ -1093,7 +1093,7 @@ class Plugin(BasePlugin):
             if sample is not None:
                 self._record_passive_steering_timing(*sample)
 
-    def _control_tick(self, delta_time: float):
+    def _control_tick(self, delta_time: float, *, _resume_retry=True):
         control_tick_started_at = time.monotonic()
         self._control_failure_epoch = self.sdk.shared_state.get(
             "autopilot_failure_epoch")
@@ -1461,6 +1461,13 @@ class Plugin(BasePlugin):
             _history, ratio_reason = simple_auto_forward_transition(
                 self.sdk.shared_state, truck,
                 forward_history)
+            if (ratio_reason == 'simple automatic resume requires input snapshot refresh'
+                    and _resume_retry):
+                # Engine committed hold->launch after our initial IPC reads.
+                # One complete recapture rechecks SDK, launch, navigation and
+                # every producer; never mix its new history with our old truck
+                # or emit a brake intent from the preceding hold phase.
+                return self._control_tick(delta_time, _resume_retry=False)
             ratio_brake_only = bool(_history and _history.get('brake_only'))
             if not ratio_reason and gear > 0:
                 # Publish only the positive ratio actually validated above.

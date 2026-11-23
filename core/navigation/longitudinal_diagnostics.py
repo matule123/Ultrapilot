@@ -3,13 +3,18 @@
 This journal cannot send controls. Contexts belong to a single Engine flush;
 calls outside that flush remain explicitly unbound. No game consumption proof.
 """
-from collections import deque
+from collections import deque, Counter
 import copy
 import json
 import math
 import threading
 import time
 import zlib
+import marshal
+import hashlib
+import weakref
+import pickle
+
 
 INPUT_KEYS = (
     'schema_version', 'source', 'context', 'sdk_frame_us', 'observation_timestamp',
@@ -149,6 +154,11 @@ def pack_source(value):
 
 
 def unpack_source(value):
+    # Internal-only reuse of the already verified primitive ownership codec.
+    # External replay/combined readers still receive the original source fields.
+    if isinstance(value,dict) and value.get('record_codec')=='pickle5-primitives-v1':
+        restored=restore_exact_record(value)
+        return pack_journal_inputs(compact_decision(restored)) if value.get('journal_compaction_pending') else restored
     if isinstance(value,dict) and value.get('source_blob_schema') == 2:
         decoder=zlib.decompressobj()
         blob=decoder.decompress(value['source_blob'],32769)
@@ -1010,6 +1020,7 @@ class _DecisionHistory:
         self.bytes={'regular':0,'changes':0}
         self.dropped={'regular':0,'changes':0};self.aged_out={'regular':0,'changes':0}
         self.failures=0;self.regressions=0;self.sequence=0
+        self.failure_reasons=[];self.failure_reason_bytes=0
         self.last_time=None;self.last_sample=None;self.last_signature=None;self.first_time=None
         self.first_reason=None;self.first_reason_at=None;self.first_epoch=None
         self.aggregate={};self.aggregate_started=None
@@ -1037,20 +1048,27 @@ class _DecisionHistory:
         identity_blob=json.dumps(identity,ensure_ascii=False,allow_nan=False,separators=(',',':')).encode('utf-8')
         capacity=self.REGULAR_CAPACITY if kind=='regular' else self.CHANGE_CAPACITY
         budget=self.REGULAR_BYTES if kind=='regular' else self.CHANGE_BYTES
-        if len(blob)>self.ROW_LIMIT or len(identity_blob)>4096:
-            self.failures+=1;return
+        # The exact summary can be slightly over 4 KiB before compression
+        # (observed 4,193--4,256 B), yet its retained representation is much
+        # smaller. Bound BOTH independently; do not discard valid fields or
+        # enlarge any retained ring/pool allowance. The source journal already
+        # supports a 32 KiB temporary ownership envelope.
+        if len(blob)>32768 or len(identity_blob)>4096:
+            self.capture_failure('summary_encode','expanded summary/identity bound',now);return
         # Fixed-value summaries repeat nulls/labels, not full producer packets.
         # Lossless bounded compression retains the thirty-second reservation
         # even with long real identities and physical-edge aggregate fields.
         blob=zlib.compress(blob,1)
+        if len(blob)>self.ROW_LIMIT:
+            self.capture_failure('summary_encode','compressed summary bound',now);return
         size=len(blob)+256  # Owned bytes/tuple/deque and reference accounting.
         while getattr(self,kind) and (len(getattr(self,kind))>=capacity or self.bytes[kind]+size>budget):
             self._release(kind,capacity=True)
         identity_id=self.identity_keys.get(identity_blob)
         if identity_id is None:
             identity_size=len(identity_blob)+512
-            if self.identity_bytes+identity_size>self.IDENTITY_BYTES:
-                self.failures+=1;return  # No guessed identity or growing pool.
+            if self.identity_bytes+self.failure_reason_bytes+identity_size>self.IDENTITY_BYTES:
+                self.capture_failure('summary_identity','identity pool bound',now);return
             self.next_identity+=1;identity_id=self.next_identity
             self.identities[identity_id]=dict(blob=identity_blob,uses=0,size=identity_size)
             self.identity_keys[identity_blob]=identity_id;self.identity_bytes+=identity_size
@@ -1059,10 +1077,20 @@ class _DecisionHistory:
         getattr(self,kind).append((self.sequence,now,identity_id,blob,size))
         self.bytes[kind]+=size
 
+    def capture_failure(self,operation,reason,now=None):
+        self.failures+=1
+        # Error-only metadata shares the EXISTING identity-pool reservation.
+        # Counters never disappear when the bounded reason ledger fills.
+        entry=dict(operation=str(operation)[:48],reason=str(reason)[:96],at_s=now)
+        size=128+len(json.dumps(entry,separators=(',',':')).encode('utf-8'))
+        if (len(self.failure_reasons)<8 and self.failure_reason_bytes+size<=2048
+                and self.identity_bytes+self.failure_reason_bytes+size<=self.IDENTITY_BYTES):
+            self.failure_reasons.append(entry);self.failure_reason_bytes+=size
+
     def observe(self,now,row,identity):
         if not math.isfinite(now) or self.last_time is not None and now<self.last_time:
             self.regressions+=1;return
-        if row.get('capture_incomplete'):self.failures+=1
+        if row.get('capture_incomplete'):self.capture_failure('summary_input','consumed input marked incomplete',now)
         self._prune(now)
         if self.first_time is None:self.first_time=now
         self.last_time=now
@@ -1124,7 +1152,7 @@ class _DecisionHistory:
         return dict(schema_version=1,storage='fixed_values_zlib',fields=HISTORY_FIELDS,
             regular_samples=list(self.regular),changes=list(self.changes),
             identities={str(k):v['blob'] for k,v in self.identities.items()},
-            byte_budget=self.MAX_BYTES,retained_bytes=sum(self.bytes.values())+self.identity_bytes,
+            byte_budget=self.MAX_BYTES,retained_bytes=sum(self.bytes.values())+self.identity_bytes+self.failure_reason_bytes,
             regular_byte_budget=self.REGULAR_BYTES,change_byte_budget=self.CHANGE_BYTES,
             identity_byte_budget=self.IDENTITY_BYTES,regular_capacity=self.REGULAR_CAPACITY,change_capacity=self.CHANGE_CAPACITY,
             requested_window_s=self.WINDOW_S,regular_period_s=self.PERIOD_S,
@@ -1133,6 +1161,7 @@ class _DecisionHistory:
             regular_dropped_capacity=self.dropped['regular'],change_dropped_capacity=self.dropped['changes'],
             regular_aged_out=self.aged_out['regular'],change_aged_out=self.aged_out['changes'],
             capture_failures=self.failures,time_regressions=self.regressions,
+            failure_reasons=list(self.failure_reasons),failure_reason_bytes=self.failure_reason_bytes,
             incomplete=bool(sum(self.dropped.values()) or self.failures or self.regressions),
             aggregate_tail=dict(self.aggregate),full_backend_resolution=False,
             last_decision_at_s=self.last_time,
@@ -1159,11 +1188,772 @@ def expand_history(value):
     return result
 
 
+class _WindowEntry(list):
+    __slots__=('__weakref__',)
+
+
+def freeze_exact_record(value, *, byte_limit=512*1024):
+    """Standalone primitive-record codec; not connected to runtime by default.
+
+    No field splitting, deduplication, live-row rewriting or timestamp changes.
+    Validation rejects types marshal would silently coerce (e.g. bytearray).
+    The private binary transport is decoded only by the paired bounded reader;
+    the external incident files keep their existing JSON/integrity contract.
+    """
+    remaining=[(value,0)];nodes=0;estimated=0
+    while remaining:
+        item,depth=remaining.pop();nodes+=1
+        if depth>32 or nodes>40000:raise ValueError('EXACT_RECORD_NODE_BUDGET')
+        kind=type(item)
+        if kind is dict:
+            estimated+=5
+            for key,child in item.items():remaining.extend(((key,depth+1),(child,depth+1)))
+        elif kind in (list,tuple):
+            estimated+=5;remaining.extend((child,depth+1) for child in item)
+        elif kind is str:estimated+=5+len(item)*4
+        elif kind is bytes:estimated+=5+len(item)
+        elif kind is int:estimated+=5+2*((item.bit_length()+14)//15)
+        elif kind is float:estimated+=9
+        elif item is None or kind is bool:estimated+=1
+        else:raise ValueError('EXACT_RECORD_UNSUPPORTED_TYPE:'+kind.__name__)
+        if estimated>byte_limit:raise ValueError('EXACT_RECORD_BYTE_BUDGET')
+    raw=marshal.dumps(value,2)
+    if len(raw)>byte_limit:raise ValueError('EXACT_RECORD_BYTE_BUDGET')
+    return dict(encoding='internal-owned-raw-v1',record_codec='marshal2-exact-v1',
+        blob=raw,raw_bytes=len(raw),raw_sha256=hashlib.sha256(raw).hexdigest())
+
+
+def restore_exact_record(record, *, byte_limit=512*1024):
+    """Restore exactly once; source dictionaries are never interpreted as tags."""
+    import io
+    length=record.get('raw_bytes')
+    if (record.get('record_codec') not in ('marshal2-exact-v1','pickle5-primitives-v1') or type(length) is not int
+            or not 0<=length<=byte_limit or type(record.get('blob')) is not bytes):
+        raise ValueError('EXACT_RECORD_HEADER')
+    encoding=record.get('encoding')
+    if encoding=='internal-owned-window-v1':
+        decoder=zlib.decompressobj();raw=decoder.decompress(record['blob'],length+1)
+        if not decoder.eof or decoder.unused_data or decoder.unconsumed_tail:raise ValueError('EXACT_RECORD_COMPRESSION')
+    elif encoding in ('internal-owned-raw-v1','internal-owned-raw-stored-v1'):raw=record['blob']
+    else:raise ValueError('EXACT_RECORD_ENCODING')
+    if len(raw)!=length or hashlib.sha256(raw).hexdigest()!=record.get('raw_sha256'):
+        raise ValueError('EXACT_RECORD_HASH')
+    source=io.BytesIO(raw)
+    value=(_PrimitiveRecordUnpickler(source).load() if record['record_codec']=='pickle5-primitives-v1'
+        else marshal.load(source))
+    if source.tell()!=len(raw):raise ValueError('EXACT_RECORD_TRAILING_BYTES')
+    return value
+
+
+class _PrimitiveRecordPickler(pickle.Pickler):
+    """C fast path for built-in values; never invoke a producer object's reducer."""
+    def reducer_override(self,value):
+        raise ValueError('EXACT_RECORD_UNSUPPORTED_TYPE:'+type(value).__name__)
+
+
+class _PrimitiveRecordUnpickler(pickle.Unpickler):
+    # Only this process's owned internal frames use pickle. External incident
+    # files use the independently tested whitelisted typed-JSON reader above.
+    def find_class(self,module,name):raise ValueError('EXACT_RECORD_CLASS_FORBIDDEN')
+    def persistent_load(self,pid):raise ValueError('EXACT_RECORD_PERSISTENT_FORBIDDEN')
+
+
+def freeze_primitive_record(value, *, byte_limit=512*1024):
+    """One bounded C ownership copy, no custom object hooks or field walk.
+
+    The existing SDK's primitive dict/list/tuple/bytes/scalar contract is used;
+    custom instances are rejected before __reduce__ can execute. This function
+    is not connected to the candidate until its standalone tests pass.
+    """
+    import io
+    stream=io.BytesIO();_PrimitiveRecordPickler(stream,protocol=5).dump(value);raw=stream.getvalue()
+    if len(raw)>byte_limit:raise ValueError('EXACT_RECORD_BYTE_BUDGET')
+    return dict(encoding='internal-owned-raw-v1',record_codec='pickle5-primitives-v1',
+        blob=raw,raw_bytes=len(raw),raw_sha256=hashlib.sha256(raw).hexdigest())
+
+
+def pack_exact_window(value):
+    """Worker-only JSON transport of independent exact records, not a new ring.
+
+    The simple frame's original primitive types survive the existing JSON
+    export. No paths into producer fields, cross-record interning or deferred
+    mutable shared-state references are introduced.
+    """
+    import base64,struct
+    def typed(item):
+        kind=type(item)
+        if item is None:return ['n']
+        if kind is bool:return ['b',item]
+        if kind is int:return ['i',hex(item)]
+        if kind is float:return ['f',struct.pack('!d',item).hex()]
+        if kind is str:return ['s',item]
+        if kind is bytes:return ['y',base64.b64encode(item).decode('ascii')]
+        if kind is dict:return ['d',[[typed(k),typed(v)] for k,v in item.items()]]
+        if kind in (list,tuple):return ['l' if kind is list else 't',[typed(v) for v in item]]
+        raise ValueError('EXACT_RECORD_UNSUPPORTED_TYPE')
+    def frame(original):
+        record=freeze_exact_record(original)
+        # External files never deserialize marshal. An explicit per-record
+        # primitive-type JSON tree preserves float bits/tuples/bytes without
+        # callable classes, field paths or cross-record reconstruction.
+        raw=json.dumps(typed(original),ensure_ascii=False,separators=(',',':')).encode('utf-8')
+        if len(raw)>4*1024*1024:raise ValueError('EXACT_WINDOW_WIRE_SIZE')
+        return dict(record_codec='typed-json-v1',source_bytes=record['raw_bytes'],
+            source_sha256=record['raw_sha256'],blob=dict(encoding='typed-json-zlib-base64',raw_bytes=len(raw),
+            raw_sha256=hashlib.sha256(raw).hexdigest(),data=base64.b64encode(zlib.compress(raw,1)).decode('ascii')))
+    result=dict(value,_exact_record_window=1,
+        records=[dict(row,value=frame(row['value'])) for row in value['records']])
+    if 'subevents' in value:
+        result['subevents']=[dict(event,receipt=frame(event['receipt'])) for event in value['subevents']]
+    if value.get('first_intervention'):
+        result['first_intervention']=dict(value['first_intervention'],receipt=frame(value['first_intervention']['receipt']))
+    return result
+
+
+def unpack_exact_window(value):
+    """Paired bounded reader, after the existing outer JSON/file hash check."""
+    import base64,struct
+    if value.get('_exact_record_window')!=1:raise ValueError('EXACT_WINDOW_SCHEMA')
+    def original(frame):
+        blob=frame.get('blob') or {};length=blob.get('raw_bytes')
+        if (frame.get('record_codec')!='typed-json-v1' or type(length) is not int or not 0<=length<=4*1024*1024
+                or blob.get('encoding')!='typed-json-zlib-base64'):raise ValueError('EXACT_WINDOW_RECORD_HEADER')
+        compressed=base64.b64decode(blob['data'],validate=True)
+        decoder=zlib.decompressobj();raw=decoder.decompress(compressed,length+1)
+        if (not decoder.eof or decoder.unused_data or decoder.unconsumed_tail or len(raw)!=length
+                or hashlib.sha256(raw).hexdigest()!=blob.get('raw_sha256')):raise ValueError('EXACT_WINDOW_WIRE_HASH')
+        nodes=[0]
+        def untyped(item,depth=0):
+            nodes[0]+=1
+            if depth>32 or nodes[0]>40000 or type(item) is not list or not item:raise ValueError('EXACT_WINDOW_TYPE_TREE')
+            tag=item[0]
+            if tag=='n' and len(item)==1:return None
+            if len(item)!=2:raise ValueError('EXACT_WINDOW_TYPE_TREE')
+            v=item[1]
+            if tag=='b' and type(v) is bool:return v
+            if tag=='i' and type(v) is str:return int(v,16)
+            if tag=='f' and type(v) is str and len(v)==16:return struct.unpack('!d',bytes.fromhex(v))[0]
+            if tag=='s' and type(v) is str:return v
+            if tag=='y' and type(v) is str:return base64.b64decode(v,validate=True)
+            if tag in ('l','t') and type(v) is list:
+                values=[untyped(child,depth+1) for child in v]
+                return values if tag=='l' else tuple(values)
+            if tag=='d' and type(v) is list:
+                result={}
+                for pair in v:
+                    if type(pair) is not list or len(pair)!=2:raise ValueError('EXACT_WINDOW_TYPE_TREE')
+                    key=untyped(pair[0],depth+1)
+                    if key in result:raise ValueError('EXACT_WINDOW_DUPLICATE_KEY')
+                    result[key]=untyped(pair[1],depth+1)
+                return result
+            raise ValueError('EXACT_WINDOW_TYPE_TREE')
+        result=untyped(json.loads(raw));checked=freeze_exact_record(result)
+        if checked['raw_bytes']!=frame.get('source_bytes') or checked['raw_sha256']!=frame.get('source_sha256'):
+            raise ValueError('EXACT_WINDOW_SOURCE_HASH')
+        return result
+    result=dict(value,records=[dict(row,value=original(row['value'])) for row in value['records']])
+    result.pop('_exact_record_window')
+    if 'subevents' in value:
+        result['subevents']=[dict(event,receipt=original(event['receipt'])) for event in value['subevents']]
+    if value.get('first_intervention'):
+        result['first_intervention']=dict(value['first_intervention'],receipt=original(value['first_intervention']['receipt']))
+    return result
+
+
+class _SharedWindowInput:
+    """Exact immutable-byte identity, shared only within one evidence window."""
+    __slots__=('value','size','uses','__weakref__')
+    def __init__(self,value):
+        self.value=value;self.size=1024+len(value['blob']);self.uses=0
+
+
+class _WindowCompression:
+    """One bounded, passive compression worker per process; no payload queue.
+
+    Windows own all bytes in their existing budgets. Notifications retain only
+    weak window references (maximum 16), never additional producer snapshots.
+    A batch pins at most 32 existing records, <=16 MiB of bounded scratch.
+    """
+    lock=threading.Lock()
+    windows=weakref.WeakSet()
+    wake=threading.Event()
+    worker=None
+
+    @classmethod
+    def register(cls,window):
+        with cls.lock:
+            if len(cls.windows)>=16:
+                window.failures+=1
+                return  # Diagnostic overload must never fail plugin startup.
+            cls.windows.add(window)
+            if cls.worker is None:
+                cls.worker=threading.Thread(target=cls.run,name='diagnostic-window-compression',daemon=True)
+                cls.worker.start()
+
+    @classmethod
+    def run(cls):
+        while True:
+            cls.wake.wait();cls.wake.clear()
+            # Optional retention compression is not control work. Coalesce
+            # notifications for one existing 60 Hz control period instead of
+            # repeatedly reacquiring the parent's GIL after every offered row.
+            # Raw rows remain exact and charged to the SAME fixed ring budget;
+            # the existing 32-record batch/weak queue limits are unchanged.
+            time.sleep(1/60)
+            with cls.lock:windows=list(cls.windows)
+            for window in windows:
+                batch=[]
+                with window.lock:
+                    for _ in range(min(32,len(window.compression_pending))):
+                        entry=window.compression_pending.popleft()()
+                        if entry is not None:batch.append(entry)
+                for entry in batch:
+                    shared=isinstance(entry,_SharedWindowInput)
+                    value=entry.value if shared else entry[0]['value'];raw=value['blob']
+                    try:blob=zlib.compress(raw,1)
+                    except Exception:
+                        # Exact raw bytes are still retained. Compression is
+                        # optional; do not kill the sole worker or lose data.
+                        blob=raw
+                        with window.lock:window.compression_errors+=1
+                    if len(blob)>=len(raw):
+                        # Do not retry incompressible bytes each notification.
+                        replacement=dict(value,encoding='internal-owned-raw-stored-v1')
+                    else:
+                        replacement=dict(value,encoding='internal-owned-window-v1',blob=blob)
+                    with window.lock:
+                        if shared:
+                            size=1024+len(replacement['blob'])
+                            if entry.uses:window.bytes+=size-entry.size
+                            if entry in window._pin_shared:window._pin_bytes+=size-entry.size
+                            entry.value=replacement;entry.size=size
+                        else:entry[0]['value']=replacement
+                        if not shared and id(entry) in window.live:
+                            size=1024+len(replacement['blob'])
+                            if id(entry) in window._pin_ids:window._pin_bytes+=size-entry[1]
+                            window.bytes+=size-entry[1];entry[1]=size
+                if window.compression_pending:cls.wake.set()
+            # The registry is weak. A daemon's loop locals must not accidentally
+            # retain all finished test/application windows forever.
+            windows.clear()
+            if 'batch' in locals():batch.clear()
+            window=entry=value=raw=blob=replacement=None
+
+
+def _freeze_input(value):
+    """Bounded C ownership copy; no JSON, compression, I/O or worker wait.
+
+    Marshal operates only on already-consumed primitive snapshots. It is not
+    an external-file codec. Original values and times are never synthesized.
+    """
+    # Version 4 embeds Python reference-count-dependent intern/reference flags.
+    # IPC copies of equal primitive values then hash differently and defeat
+    # exact-value sharing. Version 2 preserves the same values/types/order and
+    # float bytes without those process-local ownership flags. This changes no
+    # observation, source field, live-record layout or control decision.
+    raw=marshal.dumps(value,2)
+    if len(raw)>512*1024:raise ValueError('INCIDENT_PACKED_RECORD_SIZE')
+    return dict(encoding='internal-owned-raw-v1',blob=raw,raw_bytes=len(raw),
+        raw_sha256=hashlib.sha256(raw).hexdigest())
+
+
+def _thaw_input(value):
+    if isinstance(value,dict):
+        encoding=value.get('encoding')
+        if encoding in ('internal-owned-raw-v1','internal-owned-raw-stored-v1','internal-owned-window-v1'):
+            length=value['raw_bytes']
+            if type(length) is not int or not 0<=length<=512*1024:raise ValueError('INCIDENT_PACKED_SIZE')
+            raw=(zlib.decompressobj().decompress(value['blob'],length+1)
+                if encoding=='internal-owned-window-v1' else value['blob'])
+            if len(raw)!=length or hashlib.sha256(raw).hexdigest()!=value['raw_sha256']:
+                raise ValueError('INCIDENT_PACKED_HASH')
+            return _thaw_input(marshal.loads(raw))
+        return {k:_thaw_input(v) for k,v in value.items()}
+    if isinstance(value,list):return [_thaw_input(v) for v in value]
+    if isinstance(value,tuple):return tuple(_thaw_input(v) for v in value)
+    return value
+
+
+def diagnostic_build_limits():
+    """Only the separately approved temporary build uses the larger budget."""
+    try:
+        from core.navigation.diagnostic_build_config import ENABLED, MEMORY_BUDGET_APPROVED
+        approved=ENABLED is True and MEMORY_BUDGET_APPROVED is True
+    except ImportError:approved=False
+    return dict(approved=approved,engine_ring_bytes=(64 if approved else 32)*1024*1024,
+        autopilot_ring_bytes=32*1024*1024,engine_file_bytes=(32 if approved else 16)*1024*1024,
+        export_child_rss_bytes=(1536 if approved else 512)*1024*1024,
+        additional_family_rss_bytes=2048*1024*1024 if approved else None,
+        parent_additional_rss_bytes=512*1024*1024 if approved else None)
+
+
+class _IncidentWindow:
+    """Optional full-input window owned by the existing journal, not authority.
+
+    10 Hz per source, exact state edges, 40 s rolling retention, 32 MiB ceiling.
+    One pending incident pins no second ring. Large owned input values use
+    exact compressed retention in this same budget. Expansion and disk export
+    belong to the existing worker, never the control tick.
+    """
+    PRE_S, POST_S, PERIOD_S = 30., 10., .1
+    MAX_EVENTS = 256
+    PART_SECONDS = 20.
+
+    def __init__(self, byte_limit, *, deferred=False, simple_records=None):
+        if not 4096 <= byte_limit <= diagnostic_build_limits()['engine_ring_bytes']:
+            raise ValueError('INCIDENT_MEMORY_BUDGET')
+        self.limit = byte_limit
+        self.rows = deque()
+        self.live=set()
+        # Weak work references cannot keep evicted payloads alive. The minimum
+        # charged row size is 1 KiB, so this also bounds queued references by
+        # the maximum rows in the unchanged 32 MiB ring. No scanning of 40 s
+        # of history under the producer lock is needed for each new record.
+        self.compression_pending=deque(maxlen=32768)
+        self.shared_inputs=weakref.WeakValueDictionary()
+        self.deferred=deferred
+        self.bytes = self.drops = self.failures = self.sequence = 0
+        self.compression_errors=0
+        self.pending = None
+        self._pin_ids=set();self._pin_shared=set();self._pin_bytes=0
+        self.last = {}
+        self.signatures = {}
+        self.lock = threading.Lock()
+        self.session = __import__('uuid').uuid4().hex
+        self.receiver_retention_margin_s = 0.
+        self.exact_consumers=False
+        if simple_records is None:
+            try:
+                from core.navigation.diagnostic_build_config import SIMPLE_RECORDS
+            except ImportError:SIMPLE_RECORDS=False
+            simple_records=SIMPLE_RECORDS
+        self.simple_records=deferred and bool(simple_records)
+        if deferred:_WindowCompression.register(self)
+
+    @staticmethod
+    def copy(value, limit):
+        remaining = [limit]
+        visits = [0]
+        def own(item, depth=0):
+            visits[0] += 1
+            if depth > 32 or visits[0] > 40000:
+                raise ValueError('INCIDENT_NODE_BUDGET')
+            if isinstance(item, dict):
+                remaining[0] -= 72+len(item)*32
+                result = {str(k):own(v,depth+1) for k,v in item.items()}
+            elif isinstance(item,(tuple,list)):
+                remaining[0] -= 64+len(item)*8
+                result = [own(v,depth+1) for v in item]
+            elif isinstance(item,(str,bytes)):
+                remaining[0] -= 64+len(item)* (4 if isinstance(item,str) else 1)
+                result = item  # immutable bytes/string, no pointer to producer dict
+            elif item is None or isinstance(item,(int,float,bool)):
+                remaining[0] -= 32
+                result = item
+            else:
+                remaining[0] -= 128
+                result = {'status':'unavailable','type':type(item).__name__}
+            if remaining[0] < 0:
+                raise ValueError('INCIDENT_RECORD_MEMORY_BUDGET')
+            return result
+        copied = own(value)
+        return copied, limit-remaining[0]
+
+    @staticmethod
+    def retain(value,size):
+        if size<8192 or isinstance(value,dict) and value.get('encoding')=='ap-transaction-zlib-v1':return value,size
+        # Only owned primitive trees enter this internal transport. Marshal is
+        # never accepted from an external replay/file; final evidence remains
+        # the existing JSON/immutable-reference codec. No values are discarded.
+        import marshal,hashlib
+        raw=marshal.dumps(value,4)
+        if len(raw)>512*1024:raise ValueError('INCIDENT_PACKED_RECORD_SIZE')
+        blob=zlib.compress(raw,1)
+        retained=1024+len(blob)  # container, row, digest and primitive overhead
+        if retained>=size:return value,size
+        return dict(encoding='internal-owned-window-v1',blob=blob,
+            raw_bytes=len(raw),raw_sha256=hashlib.sha256(raw).hexdigest()),retained
+
+    @staticmethod
+    def expanded_row(row, cache=None):
+        value=row.get('value') or {}
+        if isinstance(value,dict) and value.get('record_codec') in ('marshal2-exact-v1','pickle5-primitives-v1'):
+            return dict(row,value=restore_exact_record(value))
+        if isinstance(value,dict) and value.get('encoding')=='owned-input-envelope-v1':
+            result=_thaw_input(value['skeleton'])
+            for key,shared in value['inputs'].items():
+                token=id(shared)
+                if cache is not None and token in cache:decoded=cache[token]
+                else:
+                    decoded=_thaw_input(shared.value)
+                    if cache is not None:cache[token]=decoded
+                result[key]=decoded
+            return dict(row,value=result)
+        if isinstance(value,dict) and value.get('encoding') in ('internal-owned-raw-v1','internal-owned-raw-stored-v1'):
+            return dict(row,value=_thaw_input(value))
+        if not isinstance(value,dict) or value.get('encoding')!='internal-owned-window-v1':return row
+        import marshal,hashlib
+        length=value['raw_bytes']
+        if type(length) is not int or not 0<=length<=512*1024:raise ValueError('INCIDENT_PACKED_SIZE')
+        raw=zlib.decompressobj().decompress(value['blob'],length+1)
+        if len(raw)!=length or hashlib.sha256(raw).hexdigest()!=value['raw_sha256']:
+            raise ValueError('INCIDENT_PACKED_HASH')
+        return dict(row,value=_thaw_input(marshal.loads(raw)))
+
+    def own_envelope(self,value):
+        """Freeze large field values once, share their exact SHA-256 identity.
+
+        Read/check times stay in each individual envelope. The weak intern
+        table cannot keep expired payloads alive; live/pinned row references
+        own them. All unique live payload bytes count in the SAME ring limit.
+        """
+        skeleton=dict(value);inputs={};total=0
+        for key,item in value.items():
+            if not isinstance(item,(dict,list,tuple,bytes)):continue
+            frozen=_freeze_input(item);total+=len(frozen['blob'])
+            if total>512*1024:raise ValueError('INCIDENT_RECORD_MEMORY_BUDGET')
+            if len(frozen['blob'])<1024:continue
+            token=(frozen['raw_sha256'],frozen['raw_bytes'])
+            with self.lock:
+                shared=self.shared_inputs.get(token)
+                if shared is None:
+                    shared=_SharedWindowInput(frozen);self.shared_inputs[token]=shared
+                    if frozen['raw_bytes']>=8192:self.compression_pending.append(weakref.ref(shared))
+            inputs[key]=shared;del skeleton[key]
+        frozen=_freeze_input(skeleton)
+        if total+len(frozen['blob'])>512*1024:raise ValueError('INCIDENT_RECORD_MEMORY_BUDGET')
+        return dict(encoding='owned-input-envelope-v1',skeleton=frozen,inputs=inputs),1024+len(frozen['blob'])+len(inputs)*64
+
+    @staticmethod
+    def row_inputs(row):
+        value=row['value']
+        return set(value['inputs'].values()) if isinstance(value,dict) and value.get('encoding')=='owned-input-envelope-v1' else set()
+
+    def drop_entry(self,entry):
+        self.live.discard(id(entry));self.bytes-=entry[1]
+        value=entry[0]['value']
+        if isinstance(value,dict) and value.get('encoding')=='owned-input-envelope-v1':
+            for shared in self.row_inputs(entry[0]):
+                shared.uses-=1
+                if shared.uses==0:self.bytes-=shared.size
+
+    def retained_cost(self,entries):
+        entries=list(entries)
+        shared={v for row,_ in entries for v in self.row_inputs(row)}
+        return sum(size for _,size in entries)+sum(v.size for v in shared)
+
+    def _start_pending_pin(self):
+        # Called under the existing window lock. Retain original mutable size
+        # accounting entries, not copies whose charge cannot follow compression.
+        before=self.pending['before']
+        self.pending['before']=list(before)
+        self._pin_ids={id(e) for e in before}
+        if self.simple_records:
+            # This format never has shared-envelope rows. Do not allocate two
+            # empty tracked sets PER retained row under the common ring lock.
+            # Those needless allocations could run a major collection here.
+            self._pin_shared.clear()
+            self._pin_bytes=sum(e[1] for e in before)
+        else:
+            self._pin_shared={s for row,_ in before for s in self.row_inputs(row)}
+            self._pin_bytes=self.retained_cost(before)
+
+    def _pin_pending_entry(self,entry,inputs):
+        if self.pending is None or id(entry) in self._pin_ids:return
+        # observe already prepared this exact set OUTSIDE the shared lock.
+        # Do not allocate another set/list here: collection under this lock
+        # can otherwise stall the independent producer/executor.
+        size=entry[1]
+        for shared in inputs:
+            if shared not in self._pin_shared:size+=shared.size
+        if self._pin_bytes+size>self.limit:
+            self.drops+=1
+            return  # Honest finite overload, never an unbounded second queue.
+        self.pending['before'].append(entry)
+        self._pin_ids.add(id(entry));self._pin_shared.update(inputs);self._pin_bytes+=size
+
+    def observe(self, kind, value, now, *, force=False, primitive_snapshot=None):
+        packet=(value.get('packet') or value.get('command') or value) if isinstance(value,dict) else {}
+        packet=packet if isinstance(packet,dict) else {}
+        following=packet.get('following') or {}
+        signal=packet.get('signal') or {}
+        following=following if isinstance(following,dict) else {}
+        signal=signal if isinstance(signal,dict) else {}
+        light=signal.get('candidate') or signal.get('stop_candidate') or {}
+        selected=packet.get('selected') or packet
+        light=light if isinstance(light,dict) else {}
+        selected=selected if isinstance(selected,dict) else {}
+        def pedal_mode(field):
+            v=selected.get(field)
+            return v>0. if isinstance(v,(int,float)) else None
+        signature=(packet.get('context'),packet.get('valid'),value.get('reason') if isinstance(value,dict) else None,
+            packet.get('phase'),packet.get('control_state'),following.get('target_id'),following.get('status'),
+            light.get('id'),light.get('color'),light.get('stop_required'),pedal_mode('throttle'),pedal_mode('brake'),
+            bool(packet.get('traffic_brake')),bool(packet.get('light_brake')),packet.get('emergency'))
+        with self.lock:
+            previous = self.last.get(kind)
+            changed=kind in self.signatures and self.signatures[kind]!=signature
+            if previous is not None and not force and not changed and now >= previous and now-previous < self.PERIOD_S-1e-9:
+                return
+            self.last[kind] = now
+            self.signatures[kind]=signature
+        # Own the source outside the short ring lock. The traffic producer's
+        # native array copy must not hold up the executor's independent tap.
+        try:
+            if self.deferred:
+                if self.simple_records:
+                    owned=freeze_primitive_record(value);size=1024+len(owned['blob'])
+                    if primitive_snapshot is not None:
+                        # Each store owns its metadata. Only the immutable bytes are shared.
+                        primitive_snapshot.append(owned.copy())
+                elif self.exact_consumers and isinstance(value,dict):owned,size=self.own_envelope(value)
+                else:owned=_freeze_input(value);size=1024+len(owned['blob'])
+                if size>self.limit:raise ValueError('INCIDENT_RECORD_MEMORY_BUDGET')
+                if kind=='ap_decision':owned['command_computed_at']=value.get('command_computed_at')
+                if kind=='backend_call':owned['decision_reference']=value.get('decision_reference')
+                if kind=='pedal_binding':owned['consumed_input_references']=value.get('consumed_input_references')
+            else:
+                owned,size = self.copy(value,min(self.limit,512*1024))
+                owned,size = self.retain(owned,size)
+        except (ValueError,TypeError,RecursionError):
+            with self.lock:
+                self.failures += 1
+            return
+        # Allocate GC-tracked containers and weak references before taking the
+        # shared ring lock. A generation collection here must not stall its
+        # independent producer/executor while holding that lock.
+        row=dict(sequence=None,stream_id=self.session,kind=kind,at_s=now,value=owned)
+        entry=_WindowEntry([row,size])
+        inputs=self.row_inputs(row)
+        compression_reference=(weakref.ref(entry) if self.deferred and owned.get('raw_bytes',0)>=8192 else None)
+        with self.lock:
+            self.sequence += 1
+            row['sequence']=self.sequence
+            while self.rows and now-self.rows[0][0]['at_s']>self.PRE_S+self.POST_S+.2+self.receiver_retention_margin_s:
+                self.drop_entry(self.rows.popleft())
+            required=size
+            for shared in inputs:
+                if not shared.uses:required+=shared.size
+            while self.rows and self.bytes+required>self.limit:
+                self.drop_entry(self.rows.popleft());self.drops+=1
+                required=size
+                for shared in inputs:
+                    if not shared.uses:required+=shared.size
+            if self.bytes+required>self.limit:
+                self.failures+=1;return
+            for shared in inputs:
+                if not shared.uses:self.bytes+=shared.size
+                shared.uses+=1
+            self.rows.append(entry);self.live.add(id(entry));self.bytes+=size
+            self._pin_pending_entry(entry,inputs)
+            if compression_reference is not None:self.compression_pending.append(compression_reference)
+        if self.deferred and self.compression_pending:_WindowCompression.wake.set()
+        return [self.session,row['sequence']]
+
+    def event(self, kind, receipt, now):
+        # The previous implementation copied/compressed a potentially large
+        # owner witness while holding the control-side ring lock. A deferred
+        # window freezes it once in C; the unchanged aggregate receipt budget
+        # (256 * 16 KiB) also bounds uncompressed ownership until export.
+        generic=kind in ('EGO_TRANSITION','TRAFFIC_TRANSITION','SIGNAL_NATIVE_TRANSITION','STATE_TRANSITION')
+        if generic and self.pending is None and not (isinstance(receipt,dict) and receipt.get('reason')):return
+        frozen=None
+        if self.deferred:
+            try:
+                original=receipt
+                details=receipt.get('details') if isinstance(receipt,dict) else None
+                if isinstance(details,dict):
+                    # Preserve the pre-existing compact first-fault contract
+                    # even when exact shared-value ownership now fits the full
+                    # witness which formerly exhausted the recursive budget.
+                    priority={k:details.get(k) for k in ('checked_at','sdk_frame_us',
+                        'observation_timestamp','computed_at','expires_at','actual_context',
+                        'expected_context','different_fields','rejected_source','rejection_cause')}
+                    original=dict(receipt,priority_details=bounded_copy(priority,limit=4096)[0])
+                frozen=freeze_primitive_record(original) if self.simple_records else _freeze_input(original)
+            except (ValueError,TypeError,RecursionError):pass
+        with self.lock:
+            try:
+                if self.deferred:
+                    if frozen is None:raise ValueError('EVENT_RECEIPT_BUDGET')
+                    size=1024+len(frozen['blob'])
+                    used=(self.pending or {}).get('receipt_bytes',0)
+                    if used+size>self.MAX_EVENTS*16384:raise ValueError('EVENT_RECEIPT_BUDGET')
+                    owned=dict(frozen,**{k:receipt.get(k) for k in ('reason','epoch','observed_at')})
+                else:
+                    owned,size=self.copy(receipt,512*1024)
+                    original=owned
+                    owned,size=self.retain(owned,size)
+                    if size>16384:raise ValueError('EVENT_RECEIPT_BUDGET')
+                    if isinstance(owned,dict) and owned.get('encoding')=='internal-owned-window-v1':
+                        owned=dict(owned,**{k:original.get(k) for k in ('reason','epoch','observed_at')})
+            except (ValueError,RecursionError):
+                owned={'status':'unavailable','capture_error':'EVENT_RECEIPT_BUDGET',
+                    'reason':str(receipt.get('reason'))[:512] if isinstance(receipt,dict) else None,
+                    'epoch':receipt.get('epoch') if isinstance(receipt,dict) else None}
+                if isinstance(receipt,dict):
+                    for key in ('observed_at','producer','kind','sequence'):
+                        owned[key]=receipt.get(key)
+                    details=receipt.get('details') or {}
+                    details=details if isinstance(details,dict) else {}
+                    priority={k:details.get(k) for k in ('checked_at','sdk_frame_us',
+                        'observation_timestamp','computed_at','expires_at','actual_context',
+                        'expected_context','different_fields','rejected_source','rejection_cause')}
+                    owned['priority_details']=bounded_copy(priority,limit=4096)[0]
+                self.failures+=1
+            if self.pending is None:
+                self.pending=dict(incident_id=self.session+'-'+str(self.sequence+1),
+                    trigger_at_s=now,tail_until_s=now+self.POST_S,subevents=[],event_drops=0,
+                    first_reason=None,first_intervention=None,
+                    before=tuple(e for e in self.rows if e[0]['at_s']>=now-self.PRE_S-.2))
+                self._start_pending_pin()
+            p=self.pending
+            if self.deferred:p['receipt_bytes']=p.get('receipt_bytes',0)+(size if frozen is not None else 16384)
+            if not generic:p['tail_until_s']=max(p['tail_until_s'],now+self.POST_S)
+            if kind in ('TECHNICAL_STOP','AEB') and p['first_intervention'] is None:
+                p['first_intervention']=dict(kind=kind,at_s=now,receipt=owned)
+                p['first_reason']=owned.get('reason') if isinstance(owned,dict) else None
+            if p['first_reason'] is None and isinstance(owned,dict) and owned.get('reason'):
+                p['first_reason']=owned['reason']
+            if len(p['subevents'])>=self.MAX_EVENTS:
+                p['event_drops']+=1
+            else:
+                summary=owned.get('summary') or {} if isinstance(owned,dict) else {}
+                summary=summary if isinstance(summary,dict) else {}
+                classification=({'TECHNICAL_STOP':'technical_stop','TECHNICAL_AUTHORITY_LOSS':'technical_stop',
+                    'AEB':'aeb','AVOID_OBSTACLE':'protective_slowdown'}.get(kind) or
+                    ('planned_wait' if summary.get('control_state')=='planned_wait' else
+                     'launch' if summary.get('phase') in ('launch','signal_resume') else 'unknown'))
+                p['subevents'].append(dict(kind=kind,classification=classification,at_s=now,receipt=owned))
+
+    def keep_activity(self, now):
+        """One episode across braking/waiting, not a second incident per edge.
+
+        The pre-event references pin at most ONE ring budget; the rolling tail
+        retains its own original budget. Long gaps are explicitly reported.
+        """
+        with self.lock:
+            if self.pending is not None:
+                self.pending['tail_until_s']=max(self.pending['tail_until_s'],now+self.POST_S)
+
+    def seal(self, now, *, shutdown=False, packed=False):
+        with self.lock:
+            p=self.pending
+            continuation=bool(p and p.get('episode') and now-p['trigger_at_s']>=self.PART_SECONDS
+                and now<p['tail_until_s'] and not shutdown)
+            if p is None or (now<p['tail_until_s'] and not shutdown and not continuation):return None
+            self.pending=None
+            self._pin_ids=set();self._pin_shared=set();self._pin_bytes=0
+            before=p.pop('before')
+            if p.get('episode'):
+                p['episode']=dict(p['episode'],continues=continuation,
+                    closed_at_s=now,clock_basis='time.monotonic (SDK observation times preserved separately)')
+                if continuation:
+                    self.pending=dict(incident_id=self.session+'-'+str(self.sequence+1),
+                        trigger_at_s=now,tail_until_s=p['tail_until_s'],subevents=[],event_drops=0,
+                        first_reason=p['first_reason'],first_intervention=p['first_intervention'],
+                        episode=dict(p['episode'],part=p['episode']['part']+1,
+                            previous_incident_id=p['incident_id'],continues=None),
+                        before=tuple(e for e in self.rows if e[0]['at_s']>=now-self.PRE_S-.2))
+                    self._start_pending_pin()
+            # Detach bounded references only. Sorting, dependency closure and
+            # gap analysis belong to the existing export worker, not to the
+            # controller while holding the ring lock. Payload bytes are owned
+            # already; this neither repacks live rows nor copies their inputs.
+            records=tuple(row for row,_ in before)+tuple(row for row,_ in self.rows)
+            end=self.rows[-1][0]['at_s'] if self.rows else None
+            result=dict(schema_version=1,**p,records=records,
+                record_format='simple-exact-record' if self.simple_records else 'legacy-shared-envelope',
+                range_s=dict(end_s=end),incomplete=True,
+                capacity_drops=self.drops,capture_failures=self.failures,
+                _metadata_pending=dict(now=now,session=self.session,pre_s=self.PRE_S,
+                    period_s=self.PERIOD_S,exact_consumers=self.exact_consumers),
+                unavailable=dict(physical_vehicle_color='unavailable',game_consumption='unavailable'),
+                confirmed=False,runtime_authorized=False,game_verified=False)
+        return result if packed else expand_incident_window(result)
+
+    def status(self):
+        with self.lock:
+            return dict(enabled=True,retained_bytes=self.bytes,byte_limit=self.limit,
+                record_format='simple-exact-record' if self.simple_records else 'legacy-shared-envelope',
+                compression_errors=self.compression_errors,compression_pending=len(self.compression_pending),
+                compression_queue_limit=32768,compression_worker_limit_per_process=1,
+                capacity_drops=self.drops,capture_failures=self.failures,
+                pinned_pre_bytes=self._pin_bytes if self.pending else 0,
+                maximum_ring_and_pinned_bytes=2*self.limit,
+                pending=bool(self.pending),samples=len(self.rows))
+
+    def rolling_snapshot(self, *, packed=False):
+        with self.lock:
+            rows=[row for row,_ in self.rows]
+            result=dict(records=rows,capacity_drops=self.drops,capture_failures=self.failures,
+                byte_limit=self.limit,retained_bytes=self.bytes,
+                requested_window_s=self.PRE_S+self.POST_S,
+                first_s=rows[0]['at_s'] if rows else None,last_s=rows[-1]['at_s'] if rows else None,
+                confirmed=False,runtime_authorized=False)
+        return result if packed else expand_incident_window(result)
+
+
+def _finalize_incident_metadata(value):
+    """Same sealed evidence/order/coverage, assembled on the export boundary."""
+    metadata=value.get('_metadata_pending')
+    if metadata:
+        p={k:v for k,v in value.items() if k!='_metadata_pending'}
+        available={row['sequence']:row for row in value['records']}
+        owned={sequence:row for sequence,row in available.items()
+            if p['trigger_at_s']-metadata['pre_s']-1e-8<=row['at_s']<=metadata['now']}
+        # A call at the left boundary can bind a few microseconds earlier.
+        # Retain that exact dependency, never substitute the next decision.
+        dependencies=list(owned.values())
+        for row in dependencies:
+            if row['kind']=='backend_call':
+                call=row['value']
+                ref=call.get('decision_reference')
+                if ref and ref[0]==metadata['session'] and ref[1] in available:
+                    if ref[1] not in owned:dependencies.append(available[ref[1]])
+                    owned[ref[1]]=available[ref[1]]
+            if row['kind']=='pedal_binding':
+                for ref in (row['value'].get('consumed_input_references') or {}).values():
+                    if ref and ref[0]==metadata['session'] and ref[1] in available:owned[ref[1]]=available[ref[1]]
+        rows=sorted(owned.values(),key=lambda r:(r['at_s'],r['sequence']))
+        start=min((r['at_s'] for r in rows),default=None)
+        end=max((r['at_s'] for r in rows),default=None)
+        pre=0. if start is None else max(0.,p['trigger_at_s']-start)
+        post=0. if end is None else max(0.,end-p['trigger_at_s'])
+        streams={}
+        for r in rows:streams.setdefault(r['kind'],[]).append(r['at_s'])
+        # Call/binding streams are event driven, not periodic sensors.
+        gaps={k:[[a,b] for a,b in zip(v,v[1:]) if b-a>.25] for k,v in streams.items()
+            if k not in ('backend_call','pedal_binding','drive_boundary','activation')
+            and not (metadata['exact_consumers'] and k.startswith('consumer_'))}
+        p.update(records=rows,
+            range_s=dict(start_s=start,end_s=end,pre_s=pre,post_s=post,
+                pre_incomplete=pre<29.9,post_incomplete=post<10.),
+            sampling=dict(period_s=metadata['period_s'],state_events='exact ordered, maximum 256',gaps=gaps,
+                consumer_inputs='every invocation' if metadata['exact_consumers'] else 'periodic and state edges'),
+            incomplete=bool(p['capacity_drops'] or p['capture_failures'] or p['event_drops'] or pre<29.9 or post<10. or any(gaps.values())))
+        return p
+    return value
+
+
+def expand_incident_window(value):
+    """Worker/public inspection boundary; owned compressed rows stay in runtime."""
+    value=_finalize_incident_metadata(value)
+    def receipt(event):
+        if not event:return event
+        return dict(event,receipt=_IncidentWindow.expanded_row(dict(value=event.get('receipt')))['value'])
+    cache={}
+    return dict(value,records=[_IncidentWindow.expanded_row(r,cache) for r in value['records']],
+        subevents=[receipt(e) for e in value.get('subevents',[])],
+        **({'first_intervention':receipt(value['first_intervention'])} if 'first_intervention' in value else {}))
+
+
 class PedalJournal:
     CAPACITY = 128
     MAX_BYTES = 65536
 
     def __init__(self):
+        self._incident_window = None
         self.enabled = False
         self._local = threading.local()
         self._lock = threading.Lock()
@@ -1186,8 +1976,72 @@ class PedalJournal:
         self._event_last_source=None
         self._event_last_fault_signature=None
         self._event_export_failure=None
+        try:
+            from core.navigation.diagnostic_build_config import ENABLED
+        except ImportError:
+            ENABLED = False
+        if ENABLED:
+            self.enable_incident_window()
+
+    def enable_incident_window(self, *, byte_limit=None):
+        """Explicit diagnostic-build opt-in; never changes pedal decisions."""
+        if byte_limit is None:byte_limit=diagnostic_build_limits()['engine_ring_bytes']
+        self._incident_window = _IncidentWindow(byte_limit,deferred=True)
+        self._incident_window.exact_consumers=True
+        # A binding just before the left boundary can refer to inputs from the
+        # preceding validated tick; retain that existing evidence, never invent
+        # or relabel its rows during dependency closure.
+        self._incident_window.receiver_retention_margin_s=.5
+
+    def observe_stop_episode(self,value,now):
+        ring=self._incident_window
+        if ring is None:return
+        active=value.get('active') is True
+        speed=value.get('speed_mps');brake=value.get('brake')
+        stopped=isinstance(speed,(int,float)) and math.isfinite(speed) and abs(speed)<.05
+        braking=active and (isinstance(brake,(int,float)) and brake>0. or value.get('stop_required') is True)
+        previous=getattr(self,'_stop_episode_state',dict(active=False,stopped=False,braking=False))
+        events=[]
+        if braking and not previous['braking']:events.append('BRAKING_STARTED')
+        if active and stopped and not (previous['active'] and previous['stopped']):events.append('STOP_OBSERVED')
+        if previous['active'] and not active:events.append('AUTOPILOT_DISABLED')
+        if active and not stopped and previous['stopped'] and not braking:events.append('MOTION_RESUMED')
+        for kind in events:
+            self.incident_event(kind,dict(value,reason=value.get('reason') or 'unknown',observed_at=now),now)
+            with ring.lock:
+                if ring.pending and 'episode' not in ring.pending:
+                    ring.pending['episode']=dict(id=ring.pending['incident_id'],part=0,
+                        started_at_s=now,first_braking_reason=value.get('reason') or 'unknown',
+                        first_braking_source=value.get('source'),previous_incident_id=None,continues=None)
+        if active and (stopped or braking):ring.keep_activity(now)
+        self._stop_episode_state=dict(active=active,stopped=stopped,braking=braking)
+
+    def observe_incident(self, kind, value, now):
+        window = self._incident_window
+        if self.enabled and window is not None:
+            consumer=kind.startswith('consumer_')
+            reference=window.observe(kind,value,now,force=consumer)
+            if consumer:
+                refs=getattr(self._local,'input_references',None)
+                if refs is None:refs=self._local.input_references={}
+                refs[kind]=reference
+            return reference
+
+    def incident_event(self, kind, receipt, now):
+        window = self._incident_window
+        if self.enabled and window is not None:
+            window.event(kind, receipt, now)
+
+    def seal_incident(self, now, *, shutdown=False, packed=False):
+        window = self._incident_window
+        return window.seal(now, shutdown=shutdown,packed=packed) if window is not None else None
+
+    def incident_status(self):
+        window = self._incident_window
+        return window.status() if window is not None else {'enabled': False}
 
     def begin_decision(self):
+        self._local.input_references={}
         self._local.decision_open=True
         self._local.writes=dict(write_first_sequence=None,write_last_sequence=None,write_count=0,
             write_success_count=0,write_error_count=0,write_unverified_count=0,write_first_started_at_s=None,
@@ -1209,10 +2063,33 @@ class PedalJournal:
         if source is None:return
         row,identity=source
         row=dict(row,**getattr(self._local,'writes',{}))
+        self.observe_stop_episode(dict(active=getattr(self,'_diagnostic_active',
+            row.get('phase') in ('active','signal_resume','launch') or row.get('control_state')=='planned_wait'),
+            speed_mps=row.get('speed_mps'),brake=row.get('selected_brake'),
+            stop_required=row.get('control_state')=='planned_wait',reason=row.get('first_reason') or row.get('reason'),
+            source=row.get('selected_source'),gear=row.get('gear'),activation=row.get('activation'),
+            sdk_frame_us=row.get('sdk_frame_us'),observation_timestamp=row.get('observation_timestamp')),now)
+        if self._incident_window is not None:
+            try:
+                edge=(row.get('activation'),row.get('control_state'),row.get('phase'),
+                    row.get('selected_source'),row.get('pedal_mode'),row.get('signal_color'),
+                    row.get('following_target_id'),row.get('hold_phase'))
+                old=getattr(self,'_incident_last_edge',None)
+                if edge!=old:
+                    self.incident_event('STATE_TRANSITION',dict(previous=old,current=edge,
+                        reason=row.get('first_reason') or row.get('reason'),summary=row),now)
+                self._incident_last_edge=edge
+                self.observe_incident('output_summary',row,now)
+                if not row.get('first_reason') and (
+                        row.get('control_state')=='planned_wait' or
+                        row.get('phase')=='active' and (row.get('selected_brake') or 0.)>0.):
+                    self._incident_window.keep_activity(now)
+            except Exception:
+                self._incident_window.failures+=1
         with self._lock:
             row.update(written_throttle=self._held['throttle'],written_brake=self._held['brake'])
             try:self._history.observe(now,row,identity)
-            except Exception:self._history.failures+=1
+            except Exception as error:self._history.capture_failure('summary_observe',type(error).__name__+': '+str(error),now)
         source=row.get('selected_source')
         if (row.get('selected_brake',0.) and source!=self._event_last_source
                 and row.get('phase')=='active' and not row.get('first_reason')
@@ -1236,6 +2113,9 @@ class PedalJournal:
         existing 1 MiB history / 64 KiB ring; background expansion does disk I/O.
         """
         if not self.enabled:return
+        if self._incident_window is not None:
+            self.incident_event(kind,receipt,now)
+            return
         with self._event_lock:
             if kind not in ('AVOID_OBSTACLE','BRAKE_SOURCE_CHANGED','UNASSIGNED_SIGNAL','TECHNICAL_AUTHORITY_LOSS'):
                 self._event_suppressed+=1;return
@@ -1309,9 +2189,10 @@ class PedalJournal:
 
     def history_intervention(self,fault):
         if self.enabled:
+            self.incident_event('AEB' if fault.get('kind')=='emergency' else 'TECHNICAL_STOP',fault,time.monotonic())
             with self._lock:
                 try:self._history.intervention(fault,time.monotonic())
-                except Exception:self._history.failures+=1
+                except Exception as error:self._history.capture_failure('summary_intervention',type(error).__name__+': '+str(error))
 
     def _pair_mode(self):
         t,b=self._held['throttle'],self._held['brake']
@@ -1319,19 +2200,51 @@ class PedalJournal:
                 else 'brake' if b>0 else 'drive' if t>0 else 'coast')
 
     def bind(self, value):
+        self._local.decision_reference=None
+        window = self._incident_window
+        approved = value is not None and diagnostic_build_limits()['approved']
+        intervention = value.get('intervention') if isinstance(value, dict) else None
+        snapshot = None
+        if self.enabled and window is not None and value is not None:
+            try:
+                now=time.monotonic()
+                if approved and window.simple_records and intervention is None:
+                    snapshot = []
+                    window.observe('consumed_decision',value,now,primitive_snapshot=snapshot)
+                else:
+                    self.observe_incident('consumed_decision',value,now)
+                binding=dict(value,consumed_input_references=dict(getattr(self._local,'input_references',{})))
+                self._local.decision_reference=window.observe('pedal_binding',binding,now,force=True)
+            except Exception:window.failures+=1
         self._local.summary=None
         if value is not None:
             try:self._local.summary=_decision_summary(value)
-            except Exception:self._history.failures+=1
+            except Exception as error:self._history.capture_failure('summary_bind',type(error).__name__+': '+str(error))
         # Keep the rare first intervention beside the decision, not repeated
         # inside its already bounded producer snapshots. Both allocations count
         # against the unchanged total journal byte budget.
-        intervention = value.get('intervention') if isinstance(value, dict) else None
         if intervention is not None:
             value = {k: v for k, v in value.items() if k != 'intervention'}
         self._local.intervention, extra = bounded_copy(_pack_intervention(intervention), limit=16384)
         try:
-            self._local.source, self._local.size = bounded_copy(pack_source(pack_journal_inputs(compact_decision(value))), limit=32768) if value is not None else (None, 64)
+            if value is None:self._local.source,self._local.size=None,64
+            else:
+                if approved:
+                    # The full incident already owns exact raw inputs. The
+                    # legacy short safety journal must not JSON/compress on
+                    # the controller as well. Reuse its approved C ownership
+                    # codec under the SAME 32/64 KiB source/journal ceilings.
+                    frozen=snapshot[0] if snapshot else freeze_primitive_record(value,byte_limit=32768-1024)
+                    frozen['journal_compaction_pending']=True
+                    size=1024+len(frozen['blob'])
+                    if size>32768:raise ValueError('SHORT_JOURNAL_SOURCE_BUDGET')
+                    self._local.source,self._local.size=frozen,size
+                else:self._local.source,self._local.size=bounded_copy(pack_source(pack_journal_inputs(compact_decision(value))),limit=32768)
+        except ValueError as error:
+            status=('UNVERIFIED_SNAPSHOT_BUDGET_EXCEEDED' if str(error) in
+                ('SHORT_JOURNAL_SOURCE_BUDGET','EXACT_RECORD_BYTE_BUDGET') else
+                'UNVERIFIED_DIAGNOSTIC_CAPTURE_FAILURE')
+            self._local.source,self._local.size={'snapshot_status':status},256
         except Exception:
             self._local.source, self._local.size = {'snapshot_status':'UNVERIFIED_DIAGNOSTIC_CAPTURE_FAILURE'},256
         self._local.size += extra
@@ -1406,6 +2319,13 @@ class PedalJournal:
                 source=source, game_consumption_verified=False))
             self._events[-1]['last_successful_pair_after'] = dict(self._last_successful)
             self._events[-1]['intervention'] = intervention
+            if self._incident_window is not None:
+                # One exact binding per bind, shared by every physical call.
+                # The legacy 64 KiB safety tail remains unchanged.
+                event={k:v for k,v in self._events[-1].items() if k not in ('source','intervention')}
+                event['decision_reference']=getattr(self._local,'decision_reference',None)
+                event['first_intervention_reference']=None  # Preserved by incident first_intervention.
+                self._incident_window.observe('backend_call',event,returned,force=True)
             writes=getattr(self._local,'writes',None)
             if writes is not None:
                 self._local.written_summary=getattr(self._local,'summary',None)
@@ -1489,8 +2409,22 @@ def expand_journal(result):
         preceding=dict(result['preceding_significant_event_receipt'])
         preceding['receipt']=expand_decision(unpack_source(preceding['receipt']))
         result['preceding_significant_event_receipt']=preceding
+    sources={};source_bytes=0
     for event in result['events']:
-        event['source'] = expand_decision(unpack_source(event['source']))
+        original=event['source'];cached=sources.get(id(original))
+        if cached is not None and cached[0] is original:
+            event['source']=restore_exact_record(cached[1])
+        else:
+            event['source'] = expand_decision(unpack_source(original))
+            # One call-local, 512 KiB scratch budget; equal physical writes
+            # share the original immutable source, not a nearby/newer packet.
+            # Each returned event still owns a detached mutable source tree.
+            try:
+                frozen=freeze_primitive_record(event['source'])
+                cost=len(frozen['blob'])+256
+                if source_bytes+cost<=512*1024:
+                    sources[id(original)]=(original,frozen);source_bytes+=cost
+            except (TypeError,ValueError,RecursionError):pass
         event['intervention'] = _expand_intervention(event.get('intervention'))
         if isinstance(event['source'], dict) and event.get('intervention') is not None:
             event['source'] = {**event['source'], 'intervention': event['intervention']}
@@ -1558,3 +2492,603 @@ def source_snapshot(state, truck, pending):
         disable_reason=state.get('autopilot_disable_reason'),
         safety_reason=state.get('automatic_safety_stop_reason'),
     )
+
+
+def observe_engine_incident(engine, kind, value):
+    """Observe already-consumed locals only; fail observationally, never reread IPC."""
+    journal=getattr(getattr(engine,'controller',None),'_pedal_journal',None)
+    if journal is None or journal._incident_window is None:return
+    if hasattr(engine,'shared_state'):
+        engine.shared_state._diagnostic_consumer=journal.observe_incident
+        preflight=getattr(engine,'_significant_export_preflight',None)
+        if preflight is not None and not getattr(engine,'_diagnostic_preflight_published',False):
+            engine.shared_state.set('diagnostic_capture_status',dict(preflight,build='UP-DIAGNOSTIC-20261025-07'))
+            engine._diagnostic_preflight_published=True
+    try:
+        now=time.monotonic()
+        journal.observe_incident(kind,value,now)
+        if kind=='ego':
+            journal._diagnostic_active=bool(getattr(engine,'_was_active',False))
+            # Preserve all available SDK fields, but a value near zero is not
+            # proof of a particular hold/gearbox transition or game consumption.
+            edge=(value.get('gear'),abs(value.get('speed') or 0.)<.05,
+                bool(value.get('userThrottle')),bool(value.get('userBrake')))
+        elif kind in ('drive_boundary','activation'):
+            if kind=='activation' and value.get('enabled') is False:
+                journal.observe_stop_episode(dict(active=False,reason=value.get('reason') or 'manual disable',
+                    speed_mps=(value.get('ego') or {}).get('speed')),now)
+            event=('ACTIVATION_REJECTED' if value.get('reason') else
+                'ACTIVATION_REQUESTED' if value.get('enabled') or value.get('pending_started') else
+                'DRIVER_CANCEL_OR_DISABLE') if kind=='activation' else 'ACTIVATION_OR_DRIVE_BOUNDARY'
+            journal.incident_event(event,value,now)
+            return
+        else:
+            packet=value.get('packet') or {}
+            following=packet.get('following') or {}
+            signal=packet.get('signal') or {}
+            light=signal.get('candidate') or signal.get('stop_candidate') or {}
+            edge=(packet.get('context'),following.get('target_id'),following.get('status'),
+                light.get('id'),light.get('color'),signal.get('reason'),
+                bool(packet.get('traffic_brake')),bool(packet.get('light_brake')))
+        attr='_incident_edge_'+kind
+        old=getattr(journal,attr,None)
+        if old!=edge:
+            receipt=dict(previous=old,current=edge)
+            if kind=='traffic':
+                receipt.update(sdk_frame_us=packet.get('sdk_frame_us'),
+                    observation_timestamp=packet.get('observation_timestamp'),
+                    context=packet.get('context'),source=value.get('capture',{}).get('source'),
+                    following={k:following.get(k) for k in ('target_id','status','reason','retained_target_continuity')},
+                    signal={k:signal.get(k) for k in ('observed_at','generation','lifecycle','reason')},
+                    controlling_light=light)
+            journal.incident_event(kind.upper()+'_TRANSITION',receipt,now)
+            setattr(journal,attr,edge)
+    except Exception:
+        journal._incident_window.failures+=1
+
+
+def finish_engine_incident(engine, journal, *, shutdown=False):
+    """Diagnostic-build export on the SAME existing single background writer.
+
+    Returns False for a normal build. A temporary build bypasses only redundant
+    longitudinal export paths, never any control or original steering replay.
+    """
+    if journal._incident_window is None:return False
+    from core.steering_replay import AsyncReplayExporter,export_incident_isolated
+    if not getattr(engine,'_diagnostic_service_configured',False):
+        # Engine is a non-daemon process, unlike plugins. Both export owners
+        # must reserve the SAME existing Manager service before disk admission.
+        # This is local proxy configuration, not another control/SDK IPC read.
+        from core.steering_replay import configure_diagnostic_export
+        configure_diagnostic_export(getattr(engine,'shared_state',None))
+        engine._diagnostic_service_configured=True
+    directory=getattr(engine,'_automatic_replay_directory',None)
+    if not directory:return True
+    fault=getattr(engine,'_automatic_longitudinal_fault',None)
+    if (fault and getattr(engine,'_automatic_longitudinal_export_epoch',None)!=fault.get('epoch')
+            and not shutdown):
+        # The pre-existing immediate safety replay owns the first submission
+        # after its 100 ms tail. A ready continuation must not occupy the sole
+        # writer in that gap and make the original safety replay wait for AP.
+        return True
+    writer=getattr(engine,'_automatic_replay_writer',None)
+    if writer is not None and writer.status.get('busy'):return True
+    retry=getattr(engine,'_diagnostic_export_retry',None)
+    if retry is not None:
+        if not shutdown and time.monotonic()<retry['retry_at']:return True
+        window,snapshot=retry['window'],retry['snapshot']
+    else:
+        window=journal.seal_incident(time.monotonic(),shutdown=shutdown,packed=True)
+        if window is None:return True
+        snapshot=journal.snapshot(expanded=False,include_history=True)
+        start=window['trigger_at_s']-30.
+        end=window['range_s']['end_s']
+        end=window['tail_until_s'] if end is None else end
+        request=dict(schema=2,incident_id=window['incident_id'],phase='seal',
+            start_s=start,end_s=end,trigger_at_s=window['trigger_at_s'],shutdown=shutdown)
+        request['token']=request['incident_id']+'@'+repr(start)+'..'+repr(end)
+        if any(r['kind']=='consumer_command_pair' for r in window['records']):
+            window['required_autopilot_part']=request
+    engine._diagnostic_join_request=window.get('required_autopilot_part')
+    if writer is None:writer=engine._automatic_replay_writer=AsyncReplayExporter()
+    def write():
+        try:
+            # Background-only compact rendezvous for a disabled AP. Its
+            # control path no longer consumes traffic; copying that large
+            # packet just to find a seal is unnecessary. One existing-state
+            # slot, one export owner, no control-thread RPC or payload queue.
+            if hasattr(engine,'shared_state'):
+                engine.shared_state.set('diagnostic_incident_seal_request',window.get('required_autopilot_part'))
+            path=export_incident_isolated(directory,window,snapshot)
+            engine._diagnostic_export_retry=None
+            engine._diagnostic_join_request=None
+            if hasattr(engine,'shared_state'):
+                engine.shared_state.set('diagnostic_capture_status',dict(
+                    build='UP-DIAGNOSTIC-20261025-04',last_incident=window['incident_id'],
+                    last_export=path,export_failed=False,complete=None,
+                    completeness_source='inspect the verified dossier and its component counters',
+                    confirmed=False,runtime_authorized=False))
+            return path
+        except Exception as error:
+            # Existing worker exposes this error. Preserve the FIRST compact
+            # cause on Engine as well; no success attestation on failed export.
+            engine._diagnostic_incident_failure=dict(incident_id=window['incident_id'],
+                first_reason=window['first_reason'],error=type(error).__name__,
+                detail=str(error)[:256],complete=False,confirmed=False)
+            engine._diagnostic_export_retry=dict(window=window,snapshot=snapshot,
+                retry_at=time.monotonic()+30.)
+            if hasattr(engine,'shared_state'):
+                engine.shared_state.set('diagnostic_capture_status',dict(
+                    engine._diagnostic_incident_failure,ready=False,
+                    build='UP-DIAGNOSTIC-20261025-04'))
+            try:
+                # Failure evidence uses a separate explicit 64 KiB disk budget.
+                # Only worker I/O; existing failure is never overwritten.
+                from pathlib import Path
+                import json
+                root=Path(directory);root.mkdir(parents=True,exist_ok=True)
+                files=list(root.glob('incident-failure-*.txt'))
+                if len(files)<8 and sum(p.stat().st_size for p in files)<64*1024:
+                    path=root/('incident-failure-'+window['incident_id']+'.txt')
+                    if not path.exists():
+                        with path.open('x',encoding='utf-8') as stream:
+                            json.dump(engine._diagnostic_incident_failure,stream)
+            except OSError:
+                pass  # Existing worker status/log remains explicit if disk is full.
+            raise
+    if not writer.submit(write):
+        engine._diagnostic_incident_failure=dict(incident_id=window['incident_id'],
+            error='EXISTING_EXPORT_WORKER_BUSY',complete=False,confirmed=False)
+    return True
+
+
+def diagnostic_consume(state, kind, value, now):
+    """Local callback only; never call get()/SDK/IPC for diagnostic source data."""
+    callback=getattr(state,'_diagnostic_consumer',None)
+    if callback is not None:
+        try:callback('consumer_'+kind,value,now)
+        except Exception:
+            # An observation failure must not replace a control result.
+            owner=getattr(callback,'__self__',None)
+            window=getattr(owner,'_incident_window',None)
+            if window is not None:window.failures+=1
+
+
+def decorate_traffic_diagnostic(engine, packet):
+    """Compact request piggybacks on an EXISTING publication; no extra RPC read."""
+    journal=getattr(getattr(engine,'controller',None),'_pedal_journal',None)
+    if journal is None or journal._incident_window is None:return
+    request=getattr(engine,'_diagnostic_join_request',None)
+    if request is None:
+        window=journal._incident_window
+        with window.lock:
+            pending=window.pending
+            if pending:
+                request=dict(schema=2,incident_id=pending['incident_id'],phase='open',
+                    start_s=pending['trigger_at_s']-30.,end_s=None,
+                    trigger_at_s=pending['trigger_at_s'],token=None)
+    if request is not None:packet['diagnostic_part_request']=dict(request)
+
+
+class _RetiredAutopilotInputs:
+    """One bounded retired row set across rotations, retaining exact objects.
+
+    Replaces the prior retired slot; it is not another ring or export queue.
+    Charge actual existing row/shared-input ownership without JSON/codec work.
+    """
+    def __init__(self, previous, current):
+        self.limit=current.limit
+        def entries(owner):
+            if isinstance(owner,_RetiredAutopilotInputs):
+                with owner.lock:return tuple(owner.entries)
+            with owner.lock:return tuple(owner.rows)
+        rows={}
+        for row,size in (*entries(previous),*entries(current)):
+            rows[(row.get('stream_id'),row['sequence'])]=(row,size)
+        ordered=sorted(rows.values(),key=lambda e:(e[0]['at_s'],e[0]['sequence']))
+        kept=[];used=0;shared=set();dropped=0
+        for row,size in reversed(ordered):
+            new=[s for s in _IncidentWindow.row_inputs(row) if s not in shared]
+            charge=size+sum(s.size for s in new)
+            if used+charge>self.limit:
+                dropped+=1;continue
+            shared.update(new);used+=charge;kept.append((row,size))
+        self.lock=threading.Lock()
+        self.entries=deque(reversed(kept));self.bytes=used
+        self.entry_inputs={};self.entry_keys=set();self.shared_counts=Counter()
+        for row,size in self.entries:
+            key=(row.get('stream_id'),row['sequence'])
+            inputs=tuple(_IncidentWindow.row_inputs(row))
+            self.entry_keys.add(key);self.entry_inputs[key]=inputs
+            self.shared_counts.update(inputs)
+        self.failures=previous.failures+current.failures
+        self.drops=previous.drops+current.drops+dropped
+
+    def _discard_first(self):
+        row,size=self.entries.popleft();key=(row.get('stream_id'),row['sequence'])
+        self.entry_keys.remove(key);self.bytes-=size
+        for shared in self.entry_inputs.pop(key):
+            self.shared_counts[shared]-=1
+            if not self.shared_counts[shared]:
+                self.bytes-=shared.size;del self.shared_counts[shared]
+
+    def append_original(self,entry):
+        """Own the already-frozen AP row, without encoding or rereading it.
+
+        This is the existing retired slot, now also protecting the middle
+        AFTER an in-flight seal. It never grows beyond the same byte limit.
+        """
+        row,size=entry;key=(row.get('stream_id'),row['sequence'])
+        inputs=tuple(_IncidentWindow.row_inputs(row))  # outside the short lock
+        with self.lock:
+            if key in self.entry_keys:return
+            self.bytes+=size+sum(s.size for s in inputs if not self.shared_counts[s])
+            self.entries.append(entry);self.entry_keys.add(key);self.entry_inputs[key]=inputs
+            self.shared_counts.update(inputs)
+            while self.bytes>self.limit:
+                self._discard_first();self.drops+=1
+
+    def retain_from(self,cutoff):
+        """Retire only evidence preceding the next possible overlap."""
+        with self.lock:
+            while self.entries and self.entries[0][0]['at_s']<cutoff:self._discard_first()
+
+    def rolling_snapshot(self,*,packed=False):
+        with self.lock:
+            rows=[r for r,_ in self.entries]
+            value=dict(records=rows,capture_failures=self.failures,capacity_drops=self.drops,
+                byte_limit=self.limit,retained_bytes=self.bytes,
+                first_s=rows[0]['at_s'] if rows else None,last_s=rows[-1]['at_s'] if rows else None)
+        return value if packed else expand_incident_window(value)
+
+
+class AutopilotIncidentParts:
+    """Assemble parts from the existing dense input ring, not a new collector.
+
+    One pending case and one frozen existing-worker operation; no control/SDK
+    calls, no filesystem polling on ticks. Requests ride consumed traffic.
+    """
+    def __init__(self, plugin):
+        self.plugin=plugin
+        from core.steering_replay import configure_diagnostic_export
+        configure_diagnostic_export(getattr(getattr(plugin,'sdk',None),'shared_state',None))
+        ring=getattr(plugin._steering_replay,'_diagnostic_inputs',None)
+        if ring is not None:
+            # Engine can consume a legal command from the preceding AP tick;
+            # its seal arrives on a later traffic publication. Retain that
+            # diagnostic boundary within the SAME byte budget, covering the
+            # unchanged maximum 500 ms input-age interval. No control timeout
+            # or command freshness is extended.
+            ring.receiver_retention_margin_s=.5
+        self.local=threading.local()
+        self.case=None
+        self.next_request=None
+        self.next_case=None
+        self.frozen=None
+        self.submitted=False
+        self.retry_at=0.
+        self.completed_id=None
+        self.known_ring=ring
+        self.retired_ring=None
+        self.rendezvous_submitted=False
+        self.previous_tail=()
+
+    def after_disabled_replay(self, sealed_replay, directory):
+        """Existing worker only; fetch a seal, never a new control input.
+
+        The rotated ring owns decisions through disable; the current ring
+        owns passive post-disable observations. Neither is replaced by a
+        newly read traffic packet. No extra worker or request queue is used.
+        """
+        state=getattr(getattr(self.plugin,'sdk',None),'shared_state',None)
+        if state is None:return
+        directory=getattr(self.plugin,'_diagnostic_part_directory',None) or directory
+        incident_id=self.case['request']['incident_id'] if self.case else None
+        old=getattr(sealed_replay,'_diagnostic_inputs',None)
+        old_snapshot=old.rolling_snapshot(packed=True) if old is not None else None
+        old_end=(old_snapshot or {}).get('last_s')
+        deadline=time.perf_counter()+20.
+        request=None
+        while time.perf_counter()<deadline:
+            candidate=state.get('diagnostic_incident_seal_request')
+            if (isinstance(candidate,dict) and candidate.get('phase')=='seal'
+                    and candidate.get('incident_id')!=self.completed_id
+                    and (candidate.get('incident_id')==incident_id or incident_id is None
+                        and isinstance(old_end,(int,float))
+                        and isinstance(candidate.get('start_s'),(int,float))
+                        and isinstance(candidate.get('end_s'),(int,float))
+                        and candidate['start_s']<=old_end<=candidate['end_s'])):
+                self.accept(candidate)
+                if (self.case and self.case['request']['incident_id']==candidate['incident_id']
+                        and self.case['request'].get('phase')=='seal'):
+                    request=dict(self.case['request']);break
+            time.sleep(.02)
+        if request is None:return  # Engine reports the missing part explicitly.
+        incident_id=request['incident_id']
+        current=getattr(self.plugin._steering_replay,'_diagnostic_inputs',None)
+        snapshots=([old_snapshot] if old_snapshot else [])+([current.rolling_snapshot(packed=True)] if current is not None else [])
+        rows={}
+        for row in (*self.case['before'],*(r for snapshot in snapshots for r in snapshot['records'])):
+            value=row.get('value') or {}
+            command=value.get('command') or {}
+            command_at=value.get('command_computed_at',command.get('computed_at'))
+            if request['start_s']-.5<=row['at_s']<=request['end_s']+.5 and (
+                    row['at_s']<=request['end_s'] or isinstance(command_at,(int,float)) and command_at<=request['end_s']):
+                rows[(row.get('stream_id'),row['sequence'])]=row
+        frozen=dict(request=request,records=sorted(rows.values(),key=lambda r:(r['at_s'],r['sequence'])),
+            capacity_drops=max([self.case['before_drops']]+[s['capacity_drops'] for s in snapshots]),
+            capture_failures=sum(s['capture_failures'] for s in snapshots),shutdown_before_seal=False)
+        from core.steering_replay import export_autopilot_part_isolated
+        path=export_autopilot_part_isolated(directory,frozen)
+        # Publish a completion marker; only the AP tick retires/promotes its
+        # case, so the background worker cannot race a tick's state access.
+        self.background_completed_id=incident_id
+        self.background_completion=(incident_id,frozen)
+        return path
+
+    def begin(self):
+        self.local.inputs=[];self.local.command=None;self.local.command_at=None;self.local.bytes=0;self.local.failures=0
+
+    def consume(self, kind, value, now):
+        ring=getattr(self.plugin._steering_replay,'_diagnostic_inputs',None)
+        if ring is None:return
+        if not hasattr(self.local,'inputs'):self.begin()
+        try:
+            frozen=freeze_primitive_record(value) if ring.simple_records else _freeze_input(value)
+            size=1024+len(frozen['blob'])
+            owned=restore_exact_record(frozen) if ring.simple_records else frozen
+            if self.local.bytes+size>512*1024 or len(self.local.inputs)>=16:
+                self.local.failures+=1
+            elif kind=='consumer_ap_command':
+                self.local.command=owned.get('packet') if ring.simple_records else _freeze_input(value.get('packet'))
+                self.local.command_at=(value.get('packet') or {}).get('computed_at');self.local.bytes+=size
+            else:self.local.inputs.append(dict(source=kind,at_s=now,value=owned));self.local.bytes+=size
+        except (ValueError,RecursionError):self.local.failures+=1
+        packet=value.get('packet') if isinstance(value,dict) else None
+        request=packet.get('diagnostic_part_request') if isinstance(packet,dict) else None
+        if isinstance(request,dict):self.accept(request)
+
+    def accept(self, request):
+        import math,re
+        if (request.get('schema')!=2 or not re.fullmatch(r'[a-f0-9]{32}-[0-9]+',str(request.get('incident_id')))
+                or request.get('phase') not in ('open','seal')
+                or not isinstance(request.get('start_s'),(int,float)) or not math.isfinite(request['start_s'])):return
+        if request['phase']=='seal' and (not isinstance(request.get('end_s'),(int,float))
+                or not math.isfinite(request['end_s']) or request['end_s']<request['start_s']):return
+        if request['incident_id']==self.completed_id:return
+        ring=getattr(self.plugin._steering_replay,'_diagnostic_inputs',None)
+        if ring is None:return
+        if self.case and self.case['request']['incident_id']!=request['incident_id']:
+            # Pin the next case's ORIGINAL prehistory when first observed,
+            # not after the current export finishes. One bounded next case;
+            # overflow is reported, never silently replaced by a newer ID.
+            if self.next_case is None:
+                self.next_case=self.pin_case(request,ring)
+            elif self.next_case['request']['incident_id']==request['incident_id']:
+                if not (self.next_case['request']['phase']=='seal' and request['phase']=='open'):
+                    self.next_case['request']=dict(request)
+            else:ring.failures+=1
+            return
+        if self.case is None:
+            if isinstance(self.retired_ring,_RetiredAutopilotInputs):
+                self.retired_ring.retain_from(request['start_s']-.5)
+            self.case=self.pin_case(request,ring)
+            self.retry_at=0.  # prior completed-case backoff does not own this request
+        elif not self.frozen:
+            # Never regress a seal to a repeated older open request.
+            if self.case['request']['phase']=='seal' and request['phase']=='open':return
+            self.case['request']=dict(request)
+
+    def pin_case(self,request,ring):
+        """Exact overlapping references from the preceding sealed part.
+
+        A later seal can arrive after its left edge leaves the rolling ring.
+        Reuse the already-owned ORIGINAL rows, not a newly sampled packet.
+        Keep one bounded 30 s predecessor tail, never a list of prior parts.
+        """
+        snapshot=ring.rolling_snapshot(packed=True);rows={}
+        sources=[self.previous_tail,snapshot['records']]
+        if self.case:sources.append(self.case['before'])
+        if self.frozen:sources.append(self.frozen['records'])
+        for source in sources:
+            for row in source:
+                if row['at_s']>=request['start_s']-.5:
+                    rows[(row.get('stream_id'),row['sequence'])]=row
+        ordered=sorted(rows.values(),key=lambda r:(r['at_s'],r['sequence']))
+        kept=[];used=0
+        for row in reversed(ordered):
+            size=1024+len((row.get('value') or {}).get('blob',b''))
+            if used+size>ring.limit:
+                ring.failures+=1;break  # Explicit incomplete, never growing ownership.
+            used+=size;kept.append(row)
+        return dict(request=dict(request),before=tuple(reversed(kept)),
+            before_drops=snapshot['capacity_drops'],before_failures=ring.failures)
+
+    def keep_previous_tail(self):
+        if not self.frozen:return
+        ring=self.known_ring
+        end=self.frozen['request']['end_s']
+        rows=[r for r in self.frozen['records'] if end-30.5<=r['at_s']<=end]
+        # Same AP ring allowance for this one extra overlapping reference set;
+        # payload bytes are shared with a current frozen/pinned part where equal.
+        used=0;kept=[]
+        for row in reversed(rows):
+            value=row.get('value') or {}
+            size=1024+len(value.get('blob',b''))
+            if used+size>ring.limit:
+                ring.failures+=1;break
+            used+=size;kept.append(row)
+        self.previous_tail=tuple(reversed(kept))
+        if isinstance(self.retired_ring,_RetiredAutopilotInputs):
+            cutoff=min(end-30.5,(self.next_case or {}).get('request',{}).get('start_s',end)-.5)
+            self.retired_ring.retain_from(cutoff)
+
+    def end(self, *, shutdown=False):
+        plugin=self.plugin
+        ring=getattr(getattr(plugin,'_steering_replay',None),'_diagnostic_inputs',None)
+        if ring is None:return
+        if ring is not self.known_ring:
+            if self.retired_ring is None:self.retired_ring=self.known_ring
+            else:self.retired_ring=_RetiredAutopilotInputs(self.retired_ring,self.known_ring)
+            self.known_ring=ring
+        now=time.monotonic()
+        if hasattr(self.local,'inputs'):
+            transaction=dict(inputs=self.local.inputs,command=self.local.command,
+                truck=getattr(plugin,'_longitudinal_truck',{}),
+                context=getattr(plugin,'_longitudinal_binding',None),
+                capture_failures=self.local.failures,
+                no_control_decision=self.local.command is None and not self.local.inputs)
+            try:
+                # Exact compressed immutable transaction, not repeated expanded
+                # producer trees in the fixed ring. Expansion/hash checks are
+                # worker-only. No observation/frame/command field is rewritten.
+                transaction['command_computed_at']=self.local.command_at
+                ring.observe('ap_decision',transaction,now,force=True)
+            except (ValueError,TypeError,RecursionError):ring.failures+=1
+            self.local.inputs=[];self.local.command=None;self.local.bytes=0;self.local.failures=0
+        if self.case is not None:
+            # A later continuation's request can arrive after 30 s while the
+            # old writer is busy. Retain ORIGINAL forward rows in the existing
+            # bounded retired slot; a predecessor snapshot cannot supply them.
+            if not isinstance(self.retired_ring,_RetiredAutopilotInputs):
+                self.retired_ring=_RetiredAutopilotInputs(self.retired_ring or ring,ring)
+            else:
+                with ring.lock:entry=ring.rows[-1] if ring.rows else None
+                if entry is not None:self.retired_ring.append_original(entry)
+        writer=getattr(plugin,'_replay_export_writer',None)
+        if self.case is None:
+            if not getattr(plugin,'_was_active',False) and self.retired_ring is not None and now>=self.retry_at and not (
+                    writer is not None and writer.status.get('busy')):
+                if writer is None:
+                    from core.steering_replay import AsyncReplayExporter
+                    writer=plugin._replay_export_writer=AsyncReplayExporter()
+                from types import SimpleNamespace
+                from core.paths import app_dir
+                import os
+                retired=SimpleNamespace(_diagnostic_inputs=self.retired_ring)
+                directory=getattr(plugin,'_diagnostic_part_directory',None) or os.path.join(app_dir(),'route-diagnostics')
+                self.retry_at=now+30.
+                self.rendezvous_submitted=writer.submit(lambda:self.after_disabled_replay(retired,directory))
+            return
+        completion=getattr(self,'background_completion',None)
+        if completion and completion[0]==self.case['request']['incident_id']:
+            # Exactly the original worker snapshot, not a later traffic read.
+            # Retain one bounded overlapping tail just like the tick-export
+            # path; the next continuation can be sealed after this completes.
+            self.frozen=completion[1]
+            self.keep_previous_tail()
+            self.completed_id=completion[0];self.background_completed_id=None
+            self.background_completion=None
+            self.case=self.next_case;self.next_case=None;self.frozen=None;self.submitted=False
+            # Keep the existing bounded rotated ring for the disabled AP's
+            # compact-seal rendezvous. No next request may exist yet.
+            self.rendezvous_submitted=False
+            if self.case is None:return
+        if self.rendezvous_submitted:
+            if writer is not None and writer.status.get('busy'):return
+            self.rendezvous_submitted=False
+            self.retry_at=0. if self.case['request']['phase']=='seal' else now+30.
+        if self.submitted:
+            if writer is not None and writer.status.get('busy'):return
+            if writer is not None and writer.status.get('path'):
+                self.completed_id=self.case['request']['incident_id']
+                self.keep_previous_tail()
+                self.case=self.next_case;self.next_case=None;self.frozen=None;self.submitted=False
+                if self.next_request:
+                    request=self.next_request;self.next_request=None;self.accept(request)
+                return
+            self.submitted=False;self.retry_at=now+30.
+        request=self.case['request']
+        if request['phase']!='seal' and not shutdown:
+            # A disable can rotate the dense ring while its writer is busy,
+            # so the ordinary replay submission may have been rejected. Once
+            # that SAME writer is free, complete the diagnostic-only handshake
+            # using the retained original ring. No control IPC/SDK read here.
+            if not getattr(plugin,'_was_active',False) and self.retired_ring is not None and now>=self.retry_at and not (
+                    writer is not None and writer.status.get('busy')):
+                if writer is None:
+                    from core.steering_replay import AsyncReplayExporter
+                    writer=plugin._replay_export_writer=AsyncReplayExporter()
+                from types import SimpleNamespace
+                from core.paths import app_dir
+                import os
+                retired=SimpleNamespace(_diagnostic_inputs=self.retired_ring)
+                directory=getattr(plugin,'_diagnostic_part_directory',None) or os.path.join(app_dir(),'route-diagnostics')
+                self.rendezvous_submitted=writer.submit(lambda:self.after_disabled_replay(retired,directory))
+            return
+        if writer is not None and writer.status.get('busy'):return
+        if not shutdown and now<self.retry_at:return
+        if self.frozen is None:
+            snapshot=ring.rolling_snapshot(packed=True)
+            retired=self.retired_ring.rolling_snapshot(packed=True) if self.retired_ring is not None else None
+            end=request.get('end_s')
+            if end is None:end=now
+            rows={}
+            for row in (*self.case['before'],*(retired['records'] if retired else ()),*snapshot['records']):
+                command=(row.get('value') or {}).get('command') or {}
+                if request['start_s']-.5<=row['at_s']<=end+.5 and (
+                        row['at_s']<=end or (row.get('value') or {}).get('command_computed_at',
+                            command.get('computed_at',float('inf')))<=end):
+                    rows[(row.get('stream_id'),row['sequence'])]=row
+            self.frozen=dict(request=dict(request),records=sorted(rows.values(),key=lambda r:(r['at_s'],r['sequence'])),
+                capacity_drops=snapshot['capacity_drops']+(retired['capacity_drops'] if retired else 0),
+                capture_failures=snapshot['capture_failures']+(retired['capture_failures'] if retired else 0),
+                shutdown_before_seal=request['phase']!='seal')
+        if writer is None:
+            from core.steering_replay import AsyncReplayExporter
+            writer=plugin._replay_export_writer=AsyncReplayExporter()
+        directory=getattr(plugin,'_diagnostic_part_directory',None)
+        if not directory:
+            from core.paths import app_dir
+            import os
+            directory=os.path.join(app_dir(),'route-diagnostics')
+        frozen=self.frozen
+        from core.steering_replay import export_autopilot_part_isolated
+        self.submitted=writer.submit(lambda:export_autopilot_part_isolated(directory,frozen))
+
+    def close(self):
+        writer=getattr(self.plugin,'_replay_export_writer',None)
+        if writer is not None:writer.wait(30.)
+        self.end(shutdown=True)
+        writer=getattr(self.plugin,'_replay_export_writer',None)
+        if writer is not None:writer.wait(30.)
+
+
+def diagnostic_autopilot_begin(plugin):
+    assembler=getattr(plugin,'_diagnostic_part_assembler',None)
+    if assembler is not None:
+        try:assembler.begin()
+        except Exception:pass  # never replace a control result
+
+
+def diagnostic_autopilot_end(plugin):
+    assembler=getattr(plugin,'_diagnostic_part_assembler',None)
+    if assembler is not None:
+        try:assembler.end()
+        except Exception:
+            ring=getattr(getattr(plugin,'_steering_replay',None),'_diagnostic_inputs',None)
+            if ring is not None:ring.failures+=1
+
+
+def diagnostic_autopilot_close(plugin):
+    assembler=getattr(plugin,'_diagnostic_part_assembler',None)
+    if assembler is not None:
+        try:assembler.close()
+        except Exception:
+            ring=getattr(getattr(plugin,'_steering_replay',None),'_diagnostic_inputs',None)
+            if ring is not None:ring.failures+=1
+
+
+def diagnostic_autopilot_locals(plugin, values):
+    """Actual locals even on early wait/launch returns; no new getter calls."""
+    assembler=getattr(plugin,'_diagnostic_part_assembler',None)
+    if assembler is None:return
+    names=('snapshot','accepted_packet','packet_read_finished_at','forward_history',
+        'launch','service_resume','truck','system_state','danger_level','lane_offset',
+        'maneuver_approach','vehicle_snapshot','mode_evidence','acc','traffic','policy',
+        'curve','radius','curve_distance','requests','decision','input_failure',
+        'navigation_unreliable','active_requested','autopilot_engaged')
+    try:
+        assembler.consume('consumer_control_locals',{k:values[k] for k in names if k in values},time.monotonic())
+    except Exception:
+        assembler.local.failures=getattr(assembler.local,'failures',0)+1

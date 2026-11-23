@@ -608,6 +608,9 @@ def signal_drive_write_guard(state, truck, value, binding, *, diagnostic=None,
             return value,'ACC moving traffic unavailable before write'
         if not reason and value.get('observed_motion_ids'):return auxiliary_changed()
         return value, reason
+    # Fresh emergency evidence supersedes an obsolete speed qualification.
+    if traffic.get('traffic_brake',0.)>.7:
+        return auxiliary_changed()
     control = signal_speed_control(traffic, float(truck['speed']))
     cap = signal_approach_speed_limit(traffic, float(truck['speed']))
     if control is not None:
@@ -630,7 +633,26 @@ def signal_drive_write_guard(state, truck, value, binding, *, diagnostic=None,
         moving_cap=min(t['cap_mps'] for t in qualified['targets'])
         cap=min(cap,moving_cap) if cap is not None else moving_cap
     elif original_ids:
-        # Do not accept disappearance between arbitration and positive write.
+        # ACC can consume generation N while this last read sees N+1. Only
+        # the same acquired owner's explicit producer completion may end its
+        # crossing model. Discard old drive; the next producer tick decides.
+        from core.acc_following import observed_crossing_completion, observed_owner_chain
+        following=traffic.get('following') or {}
+        owner=value.get('required_acc_owner')
+        if (isinstance(owner,dict) and owner.get('kind')=='crossing'
+                and set(original_ids)=={owner.get('target_id')}
+                and observed_owner_chain(following,owner)
+                and observed_crossing_completion(following,owner['target_id'],time.monotonic())):
+            result,_=auxiliary_changed()
+            result['lease_dependencies']=[*value.get('lease_dependencies',()),dependency(traffic)]
+            if traffic['expires_at']<result['expires_at']:
+                result.update(expires_at=traffic['expires_at'],deadline_basis=dependency(traffic)['deadline_basis'])
+            if diagnostic is not None:
+                diagnostic['moving_model_completion']=dict(target_id=owner['target_id'],
+                    acquisition=following.get('source_acquisition'),drive_discarded=True,
+                    clearance_confirmed=False)
+            return result,''
+        # Empty lists / ID continuity alone cannot release acquired authority.
         return value,'ACC moving constraint unavailable before write'
     elif value.get('observed_motion_ids'):
         return auxiliary_changed()
@@ -653,8 +675,38 @@ def signal_drive_write_guard(state, truck, value, binding, *, diagnostic=None,
 
 def publish(state, truck, source, **values):
     value = packet(state, truck, source, **values)
-    state.set("longitudinal_" + source, value)
+    publish_candidate(state, "longitudinal_" + source, value)
     return value
+
+
+def publish_candidate(state, key, value):
+    """Discard retired work; the managed state compares/commits in one RPC."""
+    commit = getattr(state, 'publish_longitudinal', None)
+    if callable(commit):
+        return commit(key, value)
+    # Isolated dictionary clients (no concurrent server). Runtime uses the
+    # guarded Manager operation; never fall back after a failed RPC.
+    if publication_rejection(state, key, value):
+        return False
+    state.set(key, value)
+    return True
+
+
+def publication_rejection(state, key, value):
+    """One publication rule, also evaluated under the Manager's local lock."""
+    if (key not in ('longitudinal_acc','longitudinal_policy','longitudinal_eco',
+                    'longitudinal_road','longitudinal_traffic',COMMAND_KEY)
+            or not isinstance(value,dict)
+            or tuple(value.get('context',())) != context(state)):
+        return 'retired longitudinal publication'
+    previous = state.get(key)
+    if (isinstance(previous,dict) and previous.get('context') == value.get('context')
+            and previous.get('source') == value.get('source')
+            and isinstance(previous.get('computed_at'),(int,float))
+            and isinstance(value.get('computed_at'),(int,float))
+            and previous['computed_at'] > value['computed_at']):
+        return 'regressing longitudinal publication'
+    return ''
 
 
 def initialization_record(state, activation, started_at, deadline):
@@ -883,8 +935,11 @@ def finalize(state, truck, throttle, brake, decision, binding):
     try:
         throttle, brake = exclusive(throttle, brake)
     except (TypeError, ValueError, OverflowError):
-        state.set(COMMAND_KEY, {"schema_version": SCHEMA, "valid": False,
-                               "reason": "invalid autopilot pedal values"})
+        invalid = packet(state, truck, 'autopilot', binding=binding,
+            evidence_valid=False, throttle=0., brake=0.,
+            reason='invalid autopilot pedal values')
+        invalid['invalid_reason'] = invalid['reason']
+        publish_candidate(state, COMMAND_KEY, invalid)
         return None
     value = packet(state, truck, "autopilot", binding=binding,
                    throttle=throttle, brake=brake,
@@ -894,6 +949,24 @@ def finalize(state, truck, throttle, brake, decision, binding):
                    dependencies=decision.get('dependencies', ()),
                    refresh_pending=decision.get('refresh_pending', False),
                    expires_at=decision.get("expires_at", float("inf")))
+    if value['valid'] and value['handoff_required'] and not value['refresh_pending']:
+        # Reads can be timely but calculation/IPC can consume the final lease
+        # reserve before publication. Start the SAME bounded zero-drive wait
+        # here, while the original leaf still qualifies; never publish its
+        # practically unusable drive and ask the writer to rescue it later.
+        request = refresh_handoff(state, truck, value, binding,
+            'longitudinal decision needs refresh')
+        if request is not None:
+            original = value
+            value = packet(state, truck, 'autopilot', binding=binding,
+                throttle=0., brake=0., emergency=False, refresh_pending=True,
+                decision_source='decision_refresh', reason='waiting for a new longitudinal decision',
+                expires_at=original['expires_at'])
+            # Do not extend even the AP envelope's old dependency lease. The
+            # physical owner may construct its separate bounded ZERO transition
+            # from the already-started request after that deadline passes.
+            value['deadline_basis'] = original['deadline_basis']
+            value['lease_dependencies'] = original['lease_dependencies']
     request = state.get('longitudinal_refresh_request')
     response_to_publish = False
     publication = None
@@ -938,7 +1011,8 @@ def finalize(state, truck, throttle, brake, decision, binding):
         if isinstance(eco,dict):
             from core.navigation.longitudinal_diagnostics import bounded_input
             value['producer_trace']['eco'] = bounded_input(eco)
-    state.set(COMMAND_KEY, value)
+    if not publish_candidate(state, COMMAND_KEY, value):
+        return value
     returned_at = time.monotonic()
     if response_to_publish:
         if publication is not None or returned_at <= request['expires_at']:
@@ -1557,6 +1631,8 @@ def _engine_decision(state, truck, now=None, *, diagnostic=None, rejection_info=
         # Cache-retention hint for the same already validated owner. No extra
         # IPC, new sensor observation, permission or renewed command lifetime.
         result['required_acc_owner_id']=current_acc.get('following_target_id')
+        if isinstance(current_acc.get('following_owner'),dict):
+            result['required_acc_owner']=dict(current_acc['following_owner'])
     if result['emergency']:
         from core.navigation.longitudinal_diagnostics import emergency_evidence
         result['emergency_evidence'] = emergency_evidence(

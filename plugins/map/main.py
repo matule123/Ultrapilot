@@ -98,7 +98,7 @@ class Plugin(BasePlugin):
     """
 
     NAME = "map"
-    VERSION = "1.1.2"
+    VERSION = "1.1.4"
 
     def on_start(self):
         logging.info("Map (navigation) plugin started.")
@@ -1766,6 +1766,8 @@ class Plugin(BasePlugin):
         turn_events = self._turn_events_payload(trajectory)
         from core.navigation.prefab_signals import prepare_signal_passages
         signal_passages = prepare_signal_passages(self.road_net, trajectory)
+        from core.actor_motion import prepare_prefab_motion
+        actor_motion = prepare_prefab_motion(self.road_net, trajectory)
         control_points = [[float(p.x), float(p.y), float(p.z)]
                           for p in trajectory.points]
         elevation_by_lane = {
@@ -1813,6 +1815,7 @@ class Plugin(BasePlugin):
             "lane_corridor": lane_corridor,
             "turn_events": turn_events,
             "signal_passages": signal_passages,
+            "actor_motion": actor_motion,
             "lane_match": dict(live_match_payload),
             "points": control_points, "display_points": display_points,
             "distance_m": float(trajectory.distance_m), "failure_reason": "",
@@ -2463,6 +2466,43 @@ class Plugin(BasePlugin):
             "steering_observation_failure": reason,
         })
 
+    def _defer_steering_observation(self, snapshot, reason, attempted):
+        """No new calculation: preserve only the previous independently valid one.
+
+        A preparation attempt is not a control packet. Do not mutate its
+        predecessor's validity, frame or clocks merely because the producer
+        has not advanced yet. Consumers still enforce the original deadline,
+        live LaneId, identity and telemetry at the physical write boundary.
+        """
+        packet = self.sdk.get("nav_steering_debug", {}) or {}
+        fields = (("authority_revision", "revision"),
+                  ("navigation_intent_id", "navigation_intent_id"),
+                  ("route_build_id", "route_build_id"),
+                  ("source_game_session_id", "source_game_session_id"),
+                  ("source_map_key", "source_map_key"),
+                  ("source_dataset_fingerprint", "source_dataset_fingerprint"))
+        now = time.monotonic()
+        try:
+            preserve = (self.sdk.get("nav_active", False)
+                and packet.get("authority_valid") is True
+                and packet.get("sdk_frame_us") == self._last_steering_sdk_frame_us
+                and int(attempted['sdk_frame_us']) >= int(packet['sdk_frame_us'])
+                and all(packet.get(a) == snapshot.get(b) for a, b in fields)
+                and 0 <= now - float(packet["observation_timestamp"]) <= .5
+                and 0 <= now - float(packet["computed_at"]) <= .5)
+        except (KeyError, TypeError, ValueError, OverflowError):
+            preserve = False
+        timing = getattr(self, "_map_tick_execution", None)
+        if timing is not None:
+            timing['deferred_calculation'] = dict(reason=reason, checked_at=now,
+                previous_calculation_sequence=packet.get('calculation_sequence'),
+                previous_sdk_frame_us=packet.get('sdk_frame_us'),
+                original_observation_timestamp=packet.get('observation_timestamp'),
+                prior_packet_preserved=bool(preserve),
+                attempts=getattr(self, '_reference_phase_times', {}).get('observation_attempts', []))
+        if not preserve:
+            self._reject_steering_observation(reason)
+
     def _refresh_steering_observation(self, snapshot, prepared, delta_time, *, _retried=False):
         """Re-read one physical frame after preparation; never renew an old pose.
 
@@ -2537,8 +2577,14 @@ class Plugin(BasePlugin):
                 # frame before calculating new work. An already consumed frame
                 # is instead deduplicated below: its existing packet retains
                 # its original timestamp and the normal 500 ms expiry.
-                self._reject_steering_observation(
-                    "SDK frame did not advance after steering preparation")
+                reason = identity_reason()
+                if self.sdk.get("telemetry_generation", 0) != generation_before:
+                    reason = "telemetry generation changed during steering preparation"
+                if reason:
+                    self._reject_steering_observation(reason)
+                else:
+                    self._defer_steering_observation(snapshot,
+                        "SDK frame did not advance after steering preparation", vehicle_observation)
                 return None
             if (vehicle_observation.get("sdk_frame_us") != prepared.get("sdk_frame_us")
                     or vehicle_observation.get("tractor_position") != prepared.get("tractor_position")):
@@ -2577,8 +2623,8 @@ class Plugin(BasePlugin):
             # Retry once with a genuinely newer SDK pose and its own LaneMatch;
             # never relabel the previous pose, or spin while telemetry is lost.
             if _retried:
-                self._reject_steering_observation(
-                    "steering localization exceeded the fresh observation budget")
+                self._defer_steering_observation(snapshot,
+                    "steering localization exceeded the fresh observation budget", vehicle_observation)
                 return None
             return self._refresh_steering_observation(
                 snapshot, vehicle_observation, delta_time, _retried=True)

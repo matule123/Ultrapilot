@@ -20,7 +20,7 @@ This removes the race where multiple processes fought over the virtual joystick.
 """
 
 from typing import Any, Dict
-from core.ipc.shared_state import LaneSnapshotReader, lane_publication_batch
+from core.ipc.shared_state import LaneSnapshotReader, lane_publication_batch, SharedState
 
 
 # --- Control intent keys (the Engine reads these and applies them) ------------
@@ -58,6 +58,9 @@ class _SharedStateView:
 
     def get_all(self) -> Dict[str, Any]:
         return dict(self._state)
+
+    def publish_longitudinal(self, key, value):
+        return SharedState.publish_longitudinal(self, key, value)
 
 
 class _TelemetryView:

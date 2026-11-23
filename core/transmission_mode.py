@@ -213,9 +213,18 @@ def vehicle_control_observation_rejection(state, truck, now=None):
     return ""
 
 
+def _forward_lane_identity(state):
+    """Use the identity transported atomically with each lane publication."""
+    if state.get('lane_trajectory_publication_token'):
+        identity = state.get('lane_trajectory_identity')
+        if isinstance(identity, dict) and all(key in identity for key in _FORWARD_IDENTITY_KEYS):
+            return identity
+    return state.get('lane_trajectory', {}) or {}
+
+
 def simple_auto_context(state):
     evidence = state.get('ets2_transmission_mode', {}) or {}
-    snapshot = state.get('lane_trajectory', {}) or {}
+    snapshot = _forward_lane_identity(state)
     return (state.get('simple_auto_activation_token'), evidence.get('generation'),
             state.get('transmission_mode_preference', 'auto'),
             *(snapshot.get(key) for key in _FORWARD_IDENTITY_KEYS))
@@ -232,12 +241,17 @@ def simple_auto_forward_transition(state, truck, history, now=None):
     evidence = state.get("ets2_transmission_mode", {}) or {}
     preference = state.get("transmission_mode_preference", "auto")
     token = state.get("simple_auto_activation_token")
-    snapshot = state.get("lane_trajectory", {}) or {}
-    context = (token, evidence.get("generation"), preference,
-               *(snapshot.get(key) for key in _FORWARD_IDENTITY_KEYS))
+    authority = (token, evidence.get("generation"), preference)
+    identity = _forward_lane_identity(state)
+    context = (*authority, *(identity.get(key) for key in _FORWARD_IDENTITY_KEYS))
     if token is None:
         return None, "simple automatic activation or route identity changed"
     if history and history.get('context') != context:
+        # A change of route may admit a fresh forward observation only after
+        # checking the original validity flag on the same route identity.
+        snapshot = state.get('lane_trajectory', {}) or {}
+        if (*authority, *(snapshot.get(key) for key in _FORWARD_IDENTITY_KEYS)) != context:
+            return None, "simple automatic activation or route identity changed"
         previous=history.get('context')
         stable=(isinstance(previous,(tuple,list)) and len(previous)==len(context)==9
             and all(previous[i]==context[i] for i in (0,1,2,3,6,7,8)))
@@ -272,6 +286,28 @@ def simple_auto_forward_transition(state, truck, history, now=None):
     producer_forward = producer_forward if isinstance(producer_forward, dict) else {}
     from core.longitudinal import context as longitudinal_context
     hold_binding = longitudinal_context(state) if hold else None
+    if (not hold and history and history.get('phase') == 'continuous_service_brake'
+            and history.get('launch_deadline_at') is None):
+        # Hold may have been released AFTER the caller captured its history.
+        # Use the one Engine publication of the actual admitted transition,
+        # never infer launch permission from a missing brake receipt.
+        transition = state.get('simple_auto_resume_transition') or {}
+        launch = state.get('simple_auto_launch') or {}
+        replacement = transition.get('history') or {}
+        resume = transition.get('resume') or {}
+        if (transition.get('schema') == 1
+                and tuple(transition.get('context', ())) == longitudinal_context(state)
+                and replacement.get('context') == context
+                and transition.get('launch') == launch and launch.get('signal_resume') is True
+                and launch.get('request_id') == resume.get('request_id')
+                and replacement.get('launch_deadline_at') == launch.get('deadline_at')
+                == resume.get('deadline_at')
+                and replacement.get('last_frame', 0) >= history.get('last_frame', 0)
+                and replacement.get('confirmed_frame') == history.get('confirmed_frame')):
+            # Do not pair this newly published history with the caller's old
+            # truck/launch sample. The consumer must recapture its whole input
+            # once. The physical owner already has its committed history.
+            return None, 'simple automatic resume requires input snapshot refresh'
     # All transport reads precede the decision clock. Never compare a newly
     # published timestamp to a time captured before a slow RPC.
     now = time.monotonic() if now is None else now

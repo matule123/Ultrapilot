@@ -8,6 +8,7 @@ import bisect
 import math
 import struct
 import hashlib
+import numpy as np
 
 from core.sdk.ets2la_data import _TRAFFIC_FMT, _PARKED_FMT, _TRAFFIC_SIZE, _PARKED_SIZE, _yaw
 
@@ -36,7 +37,7 @@ def observation(capture, now):
         count = source.get('ego_body_count', 0)
         if (source.get('ego_body_flags') == 1 and type(count) is int and 1 <= count <= 4 and payload
                 and all(math.isfinite(v) for v in source['ego_anchor'])
-                and math.isfinite(source['ego_speed_mps']) and 0 <= source['ego_speed_mps'] <= 70.
+                and math.isfinite(source['ego_speed_mps']) and -70. <= source['ego_speed_mps'] <= 70.
                 and 0 <= now-source['ego_speed_observed_at'] <= .5):
             bodies = []
             for i in range(count):
@@ -149,6 +150,10 @@ class RouteLeadSelector:
         self._constraint_completion = None
         self._completed_crossings = {}
         self._retained_owners = {}
+        self._actor_motion_graph = None
+        self._actor_motion_cache = {}
+        self._actor_body_cache = {}
+        self._native_pair_cache = {}
 
     def reset(self):
         self.target_id = None
@@ -160,18 +165,27 @@ class RouteLeadSelector:
         self._constraint_completion = None
         self._completed_crossings = {}
         self._retained_owners = {}
+        self._actor_motion_cache = {}
+        self._actor_body_cache = {}
+        self._native_pair_cache = {}
 
-    def source_motion(self, actors, source):
+    def source_motion(self, actors, source, *, include_predictions=True):
         """One immutable native frame pair; duplicate reads never advance it."""
         if not source or source.get('valid') is not True:
             self._native_previous = self._native_current = None
+            self._actor_motion_cache = {}
+            self._actor_body_cache = {}
+            self._native_pair_cache = {}
             return {}
         stamp = (source['lifecycle'], source['generation'], source['frame_us'], source['observed_at'])
         current = self._native_current
         if current and stamp == current[0]:
-            return self._native_predictions()
+            return self._native_predictions() if include_predictions else {}
         self._native_previous = current if current and stamp[0] == current[0][0] else None
         self._native_current = (stamp, {a['id']: dict(a) for a in actors})
+        self._actor_motion_cache = {}
+        self._actor_body_cache = {}
+        self._native_pair_cache = {}
         # Original dependency witnesses survive candidate projection changes,
         # not missing/reassigned acquisitions. A broken chain stays broken for
         # this authority; seeing the same short ID later cannot revive it.
@@ -184,7 +198,7 @@ class RouteLeadSelector:
                 owner.setdefault('invalid_reason',reason or 'original_acquisition_chain_broken')
             else:
                 owner['last'] = stamp
-        return self._native_predictions()
+        return self._native_predictions() if include_predictions else {}
 
     def invalidate_owners(self, reason):
         """A consumed complete but ambiguous acquisition cannot be skipped."""
@@ -218,6 +232,19 @@ class RouteLeadSelector:
             continuity_reason=o.get('invalid_reason') or 'qualified') for aid,o in self._retained_owners.items()]
 
     def native_pair_rejection(self, target_id):
+        # These two source tuples own immutable decoded observations. Repeated
+        # owner/prediction/HUD queries in one acquisition need the same proof,
+        # not a fresh scan of every trailer's dimensions on each query.
+        token=(id(self._native_previous),id(self._native_current))
+        cache=self._native_pair_cache
+        key=(token,target_id)
+        if key not in cache:
+            reason=self._native_pair_rejection(target_id)
+            if len(cache)<80:cache[key]=reason
+            return reason
+        return cache[key]
+
+    def _native_pair_rejection(self, target_id):
         """Match unique pointer-map short ID + shape + bounded source motion.
 
         traffic.cpp re-sorts/truncates every acquisition. Slot is descriptive,
@@ -330,7 +357,7 @@ class RouteLeadSelector:
             stop_lock=dict(lock),
             coverage_confirmed=False, game_consumption_verified=False)
 
-    def prepare(self, points, binding, *, preserve_target=False):
+    def prepare(self, points, binding, *, preserve_target=False, actor_motion=None):
         if binding == self.binding:
             return
         previous = (self.target_id, self._last_target_observation, self._target_is_crossing,
@@ -352,10 +379,74 @@ class RouteLeadSelector:
                           1./length, 1./(length*length), arcs[-1]))
             arcs.append(arcs[-1]+length)
         self.points, self.arcs, self.edges, self.binding = pts, tuple(arcs), tuple(edges), binding
+        self._crossing_bounds=np.asarray([(min(a[0],b[0]),max(a[0],b[0]),
+            min(a[2],b[2]),max(a[2],b[2])) for a,b in zip(pts,pts[1:])],dtype=float)
+        self._crossing_values = np.asarray(self.edges, dtype=float)
+        self._crossing_values.flags.writeable = False
+        self._crossing_grid={};self._crossing_unindexed=[];self._crossing_query_cache={};memberships=0
+        for i,edge in enumerate(self.edges):
+            ax,_,az,dx,_,dz,*_=edge
+            x0,x1=sorted((math.floor(ax/5.),math.floor((ax+dx)/5.)))
+            z0,z1=sorted((math.floor(az/5.),math.floor((az+dz)/5.)))
+            count=(x1-x0+1)*(z1-z0+1)
+            if count>64:self._crossing_unindexed.append(i);continue
+            memberships+=count
+            if memberships>65536:
+                self._crossing_grid=None;self._crossing_unindexed=[];break
+            for x in range(x0,x1+1):
+                for z in range(z0,z1+1):self._crossing_grid.setdefault((x,z),set()).add(i)
+        from core.actor_motion import ActorMotionGraph
+        self._actor_motion_graph=ActorMotionGraph(actor_motion)
         if previous:
             (self.target_id, self._last_target_observation, self._target_is_crossing,
              self._native_previous, self._native_current, self._constraint_completion,
              self._completed_crossings,self._retained_owners) = previous
+
+    def actor_motion(self, actor):
+        """Same causal native pair and map hypotheses for crossing/AEB/HUD."""
+        aid=actor['id']
+        if aid not in self._actor_motion_cache:
+            graph=self._actor_motion_graph
+            self._actor_motion_cache[aid]=(graph.hypotheses(actor,
+                history_valid=bool(self._native_previous and not self.native_pair_rejection(aid)))
+                if graph is not None else None)
+        return self._actor_motion_cache[aid]
+
+    def actor_body_motion(self, actor, motion, *, horizontal_only=False):
+        """Only the current exact observed pose/shape, no cross-frame reuse."""
+        from core.actor_motion import projected_bodies
+        bodies=actor.get('bodies') or [actor]
+        key=(id(motion),actor['x'],actor['y'],actor['z'],actor['yaw'],
+            tuple((b['x'],b['y'],b['z'],b['yaw']) for b in bodies))
+        old = self._actor_body_cache.get(actor['id'])
+        horizontal = None
+        if old is not None and old[0] == key:
+            cached = old[1]
+            if cached.shape[-1] == 4:
+                return cached[..., ::2] if horizontal_only else cached
+            if horizontal_only:
+                return cached
+            horizontal = cached
+        result = projected_bodies(actor, bodies, motion, horizontal_only=horizontal_only, horizontal=horizontal)
+        if actor['id'] in self._actor_body_cache or len(self._actor_body_cache)<80:
+            self._actor_body_cache[actor['id']] = (key, result, result.base) if horizontal_only else (key, result)
+        return result
+
+    def crossing_edges(self,xmin,xmax,zmin,zmax,first,last):
+        """Exact finite-segment broad phase, not simplified route geometry."""
+        grid=getattr(self,'_crossing_grid',None)
+        x0,x1=math.floor(xmin/5.),math.floor(xmax/5.)
+        z0,z1=math.floor(zmin/5.),math.floor(zmax/5.)
+        if grid is None or (x1-x0+1)*(z1-z0+1)>64:return range(first,last)
+        key=(x0,x1,z0,z1,first,last)
+        cache=getattr(self,'_crossing_query_cache',None)
+        if cache is not None and key in cache:return cache[key]
+        found=set(self._crossing_unindexed)
+        for x in range(x0,x1+1):
+            for z in range(z0,z1+1):found.update(grid.get((x,z),()))
+        result=tuple(sorted(i for i in found if first<=i<last))
+        if cache is not None and len(cache)<1024:cache[key]=result
+        return result
 
     def _body_clearance(self, body, low, high):
         """Exact native oriented-box/reference distance, not physical lane clearance."""
@@ -391,7 +482,7 @@ class RouteLeadSelector:
                     best=min(best,math.hypot(cx-a[0]-t*delta[0],cz-a[1]-t*delta[1]))
         return best if math.isfinite(best) else None
 
-    def _project(self, actor, low, high, *, aligned=True):
+    def _project(self, actor, low, high, *, aligned=True, max_distance=None):
         x, y, z, yaw = (float(actor[k]) for k in ('x', 'y', 'z', 'yaw'))
         if not all(math.isfinite(v) for v in (x, y, z, yaw)):
             return None
@@ -402,7 +493,14 @@ class RouteLeadSelector:
         projections = []
         forward_x, forward_z = -math.sin(yaw), -math.cos(yaw)
         minimum_alignment = math.cos(math.radians(45.))
-        for i in range(first, last):
+        indices=range(first,last)
+        if max_distance is not None:
+            # Include the ORIGINAL .2 m ambiguity band as well as every
+            # potentially relevant edge. Farther projections cannot alter a
+            # result accepted within max_distance.
+            radius=max_distance+.2
+            indices=self.crossing_edges(x-radius,x+radius,z-radius,z+radius,first,last)
+        for i in indices:
             ax, ay, az, dx, dy, dz, length, inverse, inverse2, start = self.edges[i]
             alignment = (forward_x*dx+forward_z*dz)*inverse
             if aligned and alignment < minimum_alignment:
@@ -421,6 +519,7 @@ class RouteLeadSelector:
             return None
         projections.sort()
         best = projections[0]
+        if max_distance is not None and best[0]>max_distance:return None
         if any(abs(p[1]-best[1]) > 8. and p[0] <= best[0]+.2 for p in projections[1:]):
             return None  # repeated loop/crossing occurrence cannot be resolved
         return best
@@ -607,7 +706,8 @@ class RouteLeadSelector:
                 speed = float(actor['speed'])
                 if not math.isfinite(speed) or not 0 <= speed <= 70.:
                     continue
-                projected = self._project(actor, max(0., ego[1]-5.), ego[1]+HORIZON_M)
+                projected = self._project(actor, max(0., ego[1]-5.), ego[1]+HORIZON_M,
+                    max_distance=PROTECTIVE_REFERENCE_GATE_M)
                 if projected is None or projected[0] > PROTECTIVE_REFERENCE_GATE_M:
                     continue
                 gap = projected[1]-ego[1]
@@ -710,7 +810,7 @@ class RouteLeadSelector:
         try:
             speed = float(truck['speed'])
             if (not self.arcs or not math.isfinite(progress) or not 0 <= progress <= self.arcs[-1]
-                    or not math.isfinite(speed) or speed < 0 or len(actors) > 80):
+                    or not math.isfinite(speed) or speed < -.10 or len(actors) > 80):
                 raise ValueError('invalid route kinematics')
             ego = self._project(dict(truck, yaw=truck['rotation']), max(0.,progress-20.), progress+20.)
             if ego is None or ego[0] > LATERAL_GATE_M:
@@ -722,36 +822,83 @@ class RouteLeadSelector:
             identity = actor_identity(actors)
             if identity['missing_count'] or identity['duplicate_count']:
                 raise ValueError('ambiguous actor identity')
+            geometric_results={}
+            self._crossing_query_cache={}
+            timed = self._native_current is not None
+            parallel_factor = math.sin(math.radians(20.))
+            arrival_windows = None
+            if timed and speed > .1:
+                from core.actor_motion import CrossingWindows
+                arrival_windows = CrossingWindows(self.arcs[first:last + 1], ego[1], speed,
+                                                  HEADWAY_S, self._crossing_bounds[first:last])
             for original in actors:
-                for body_index, body in enumerate(original.get('bodies') or [original]):
+                motion = self.actor_motion(original) if not timed or speed > .1 else None
+                mapped = None
+                bodies = original.get('bodies') or [original]
+                retained_target = str(self.target_id) if timed and self._target_is_crossing else None
+                for body_index, body in enumerate(bodies):
                     actor = dict(original, **body)
                     x,y,z,yaw,v = (float(actor[k]) for k in ('x','y','z','yaw','speed'))
                     if not all(math.isfinite(n) for n in (x,y,z,yaw,v)) or not 0 <= v <= 70.:
                         raise ValueError('invalid actor kinematics')
-                    if v <= .1:
+                    if v <= .1 or (timed and speed <= .1):
                         continue  # standing actors remain the lead/obstacle path
-                    lead = self._project(actor,max(0.,ego[1]-5.),ego[1]+HORIZON_M)
+                    dims=actor.get('dimensions_whl')
+                    retained = str(actor['id']) == retained_target
+                    # Reuse only mathematically identical geometry during this
+                    # one acquisition. Distinct actor/body IDs and witnesses
+                    # remain distinct results, never deduplicated observations.
+                    geometry_key=(original['x'],original['y'],original['z'],original['yaw'],
+                        x,y,z,yaw,v,tuple(dims or ()),bool(motion),retained)
+                    if geometry_key in geometric_results:
+                        cached=geometric_results[geometry_key]
+                        if cached is not None:
+                            result['conflicts'].append(dict(cached,id=actor['id'],body_index=body_index,
+                                actor={k:actor.get(k) for k in ('id','source','slot','record_fingerprint',
+                                    'x','y','z','yaw','speed','dimensions_whl')}))
+                        continue
+                    lead = self._project(actor,max(0.,ego[1]-5.),ego[1]+HORIZON_M,
+                        max_distance=LATERAL_GATE_M)
                     if lead is not None and lead[0] <= LATERAL_GATE_M:
                         continue  # directed same-lane lead already uses ACC
-                    vx,vz = -math.sin(yaw)*v, -math.cos(yaw)*v
-                    dims = actor.get('dimensions_whl')
+                    if motion:
+                        if mapped is None:
+                            from core.actor_motion import crossing_pairs
+                            any_retained = retained_target is not None and any(
+                                str(b.get('id', original['id'])) == retained_target for b in bodies)
+                            mapped = crossing_pairs(original, bodies, motion, self._crossing_bounds[first:last], first,
+                                prepared=self.actor_body_motion(original, motion, horizontal_only=True),
+                                edge_values=self._crossing_values[first:last],
+                                arrival_windows=None if any_retained else arrival_windows)
+                        paired = mapped.get(body_index, ())
+                    else:
+                        paired = (((0., x, y, z, -math.sin(yaw)*v, -math.cos(yaw)*v, 8., None), None),)
                     body_time = (float(dims[2])/(2*v) if dims and len(dims)==3
                         and all(math.isfinite(float(n)) and n > 0 for n in dims) else 0.)
-                    timed = self._native_current is not None
-                    retained = timed and self._target_is_crossing and str(actor['id']) == str(self.target_id)
-                    candidates = []
-                    for i in range(first,last):
+                    best = None
+                    for (piece_at,px,py,pz,vx,vz,duration,branch_index),indices in paired:
+                      earliest_piece=(-HEADWAY_S-body_time if branch_index is None and retained else 0.)
+                      xmin,xmax=sorted((px+vx*earliest_piece,px+vx*duration))
+                      zmin,zmax=sorted((pz+vz*earliest_piece,pz+vz*duration))
+                      parallel_limit=parallel_factor*max(v,1e-6)
+                      for i in (indices if indices is not None else self.crossing_edges(xmin,xmax,zmin,zmax,first,last)):
                         ax,ay,az,dx,dy,dz,length,inv,_,start = self.edges[i]
+                        # Exact finite-segment broad phase; it removes no
+                        # possible intersection from this same hypothesis.
+                        if (max(ax,ax+dx)<xmin or min(ax,ax+dx)>xmax
+                                or max(az,az+dz)<zmin or min(az,az+dz)>zmax):continue
                         den = vx*dz-vz*dx
-                        if abs(den)*inv/v < math.sin(math.radians(20.)):
+                        if abs(den)*inv < parallel_limit:
                             continue  # parallel/oncoming reference is not crossing
-                        ox,oz = ax-x,az-z
-                        t = (ox*dz-oz*dx)/den
+                        ox,oz = ax-px,az-pz
+                        local_t = (ox*dz-oz*dx)/den
+                        t=piece_at+local_t
                         u = (ox*vz-oz*vx)/den
                         distance = start+u*length-ego[1]
-                        if not ((0 <= t <= 8. or retained and -HEADWAY_S-body_time <= t <= 8.)
+                        if not ((0 <= local_t <= duration or branch_index is None and retained
+                                    and -HEADWAY_S-body_time <= local_t <= duration)
                                 and 0 <= u <= 1. and 0 <= distance <= HORIZON_M
-                                and abs(y-ay-u*dy) <= HEIGHT_GATE_M):
+                                and abs(py-ay-u*dy) <= HEIGHT_GATE_M):
                             continue
                         # A guessed +2 m/s² must not turn a stationary cab into
                         # an imminent collider, or latch tiny distant demands.
@@ -773,21 +920,28 @@ class RouteLeadSelector:
                             continue
                         urgency = min(t,earliest)
                         brake = 0. if outside_window else (1. if urgency <= 1. else ((5.-min(5.,urgency))/4.)**2)
-                        candidates.append(dict(id=actor['id'], route_progress_m=start+u*length,
+                        if best is not None and brake <= best['brake']:
+                            continue  # Stable first candidate wins an equal brake tie.
+                        best = dict(id=actor['id'], route_progress_m=start+u*length,
                             point_xyz=[ax+u*dx, ay+u*dy, az+u*dz],
                             distance_m=distance, actor_arrival_s=t, ego_arrival_earliest_s=earliest,
                             ego_arrival_latest_s=latest if math.isfinite(latest) else None,
                             reserve_s=HEADWAY_S, assumed_ego_acceleration_mps2=0. if timed else 2.,
                             ego_motion_basis='observed_speed_constant_motion' if timed else 'untimed_nominal_acceleration_fallback',
-                            dimensions_whl=dims, brake=brake))
-                    if candidates:
-                        conflict = max(candidates,key=lambda c:c['brake'])
+                            dimensions_whl=dims, brake=brake,
+                            hypothesis_index=branch_index)
+                    if best is not None:
+                        conflict = best
                         conflict.update(body_index=body_index,
                             actor={k:actor.get(k) for k in ('id','source','slot','record_fingerprint',
                                 'x','y','z','yaw','speed','dimensions_whl')},
-                            motion_model='constant_tractor_speed_raw_body_heading',
+                            motion_model=motion['model'] if motion else 'constant_tractor_speed_raw_body_heading',
+                            branch_count=motion['branch_count'] if motion else 1,
+                            exit_intent_verified=False,
                             ego_body_envelope_confirmed=False)
                         result['conflicts'].append(conflict)
+                        geometric_results[geometry_key]=conflict
+                    else:geometric_results[geometry_key]=None
             result['conflicts'].sort(key=lambda c:(c['actor_arrival_s'],str(c['id'])))
             result['brake'] = max((c['brake'] for c in result['conflicts']),default=0.)
             if result['conflicts']:
@@ -874,15 +1028,18 @@ def observed_departure(following, target_id, now):
 
 def following_demand(gap_m, lead_speed_mps, ego_speed_mps, *, include_brake=False):
     """Time-gap speed constraint for the existing PID, not another controller."""
-    if not all(math.isfinite(v) and v >= 0 for v in (gap_m, lead_speed_mps, ego_speed_mps)):
+    if (not all(math.isfinite(v) and v >= 0 for v in (gap_m, lead_speed_mps))
+            or not math.isfinite(ego_speed_mps) or ego_speed_mps < -.10):
         raise ValueError('invalid following kinematics')
-    desired = MIN_GAP_M + HEADWAY_S*ego_speed_mps
+    # Preserve signed closing motion. A backward headway contribution must
+    # not subtract the existing standstill reference reserve.
+    desired = MIN_GAP_M + max(0.,HEADWAY_S*ego_speed_mps)
     closing = max(0., ego_speed_mps-lead_speed_mps)
     cap = max(0., lead_speed_mps + (gap_m-desired)/HEADWAY_S)
     # Preserve Engine's existing emergency boundary (>0.7 legacy TTC demand),
     # now measured along the route rather than the straight cab strip. Ordinary
     # distance braking is replaced by the existing speed PID, not safety floors.
-    safety_gap = max(0., gap_m-(6.+.4*ego_speed_mps))
+    safety_gap = max(0., gap_m-(6.+max(0.,.4*ego_speed_mps)))
     if closing >= .5:
         ttc = safety_gap/closing
         legacy_demand = 1. if ttc <= 1. else ((5.-ttc)/4.)**2 if ttc < 5. else 0.
