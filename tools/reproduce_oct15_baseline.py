@@ -19,5 +19,5 @@ if __name__ == '__main__':
     import pytest
     with version(args.ref):
         raise SystemExit(pytest.main([
-            'tests/test_oct15_traffic_refresh.py', '-q',
+            'tests/lifecycle/test_traffic_refresh.py', '-q',
             '-k', 'traffic_expires_after_selection or unrecoverable_late_expiry or source_timed_native']))

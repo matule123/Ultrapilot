@@ -5,7 +5,7 @@ from pathlib import Path
 from core.navigation.longitudinal_diagnostics import PedalJournal
 from core.steering_replay import SteeringReplayBuffer, inspect_replay
 from tests.test_activation_observation_binding import flow  # noqa: F401
-from tests.test_oct4_signal_lifecycle import lifecycle
+from tests.signals.test_signal_lifecycle import lifecycle
 
 
 def bound(journal,t,throttle,brake,*,identity='session',reason='drive',error=False):

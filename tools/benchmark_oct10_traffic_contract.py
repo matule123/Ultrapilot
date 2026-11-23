@@ -19,8 +19,8 @@ from core import acc_following
 from core import longitudinal
 from core.longitudinal import context, publish
 from tests.test_activation_observation_binding import flow
-from tests.test_oct10_traffic_availability import produce
-from tests.test_oct9_traffic_control_contract import setup_route, forward_actor
+from tests.traffic.test_traffic_availability import produce
+from tests.traffic.test_traffic_control_contract import setup_route, forward_actor
 
 
 def stats(values):

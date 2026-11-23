@@ -255,7 +255,7 @@ def test_first_fault_retains_deadline_with_full_runtime_identity(flow):
 
 @pytest.mark.parametrize('mode', [0, 3])
 def test_refresh_preserves_existing_physical_signal_brake_chain(flow, mode):
-    from tests.test_oct4_signal_lifecycle import lifecycle
+    from tests.signals.test_signal_lifecycle import lifecycle
     state, truck, engine, ap, tick, n, clock, writes, _ = lifecycle(flow, mode)
     tick(4, .2, color=2)
     tick(0 if mode == 0 else 4, 0., color=2)
@@ -287,7 +287,7 @@ def test_refresh_preserves_existing_physical_signal_brake_chain(flow, mode):
                                    'regressing_frame', 'retimestamped_frame'])
 def test_signal_refresh_rejects_unverified_replacement(flow, mode, invalid):
     from core.longitudinal import refresh_handoff, HANDOFF_RESERVE_S
-    from tests.test_oct4_signal_lifecycle import lifecycle
+    from tests.signals.test_signal_lifecycle import lifecycle
     state, truck, engine, ap, tick, n, clock, writes, _ = lifecycle(flow, mode)
     tick(4, .2, color=2)
     tick(0 if mode == 0 else 4, 0., color=2)

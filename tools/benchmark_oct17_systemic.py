@@ -50,8 +50,8 @@ def baseline(enabled):
 
 def run(mode,before,seconds=65.,rpc=.00005):
     from tests.test_activation_observation_binding import flow
-    from tests.test_oct11_joint_regressions import joint
-    from tests.test_oct17_systemic_longitudinal import native_producer
+    from tests.lifecycle.test_joint_regressions import joint
+    from tests.lifecycle.test_systemic_longitudinal import native_producer
     from tests.test_longitudinal_handoff_cadence import Mapping
     from core.navigation.longitudinal_diagnostics import PedalJournal
     import core.longitudinal as longitudinal

@@ -336,7 +336,7 @@ def test_actual_map_prefix_rebase_preserves_locked_signal_and_activation(rolling
     for step in range(1,81):
         tick(speed=10.,z=15.+step*.5)
         engine._flush_controls()
-    from tests.test_oct4_signal_lifecycle import install_rolling_signal_test_passage
+    from tests.signals.test_signal_lifecycle import install_rolling_signal_test_passage
     install_rolling_signal_test_passage(state)
     light_tick(1,55.,2.)
     assert state.get('simple_auto_service_hold')['stop_reason']['signal_id'] == 19

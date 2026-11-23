@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from core.sdk.signal_snapshot import LAYOUT,SCOPED_LAYOUT,OWNER_LAYOUT,decode
-from tests.test_oct8_signal_coverage import signal_bytes
+from tests.signals.test_signal_coverage import signal_bytes
 
 ROOT=Path(__file__).resolve().parents[1]
 PROBE=ROOT/'docs/steering-audit/signal-plugin-20261009/scope_probe.exe'

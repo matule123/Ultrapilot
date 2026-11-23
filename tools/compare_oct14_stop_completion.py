@@ -22,10 +22,10 @@ from unittest.mock import patch
 ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT))
 import pytest
-from tests.test_oct14_stop_completion import committed_stop_baseline
-from tests.test_oct14_completion import timed_step
+from tests.lifecycle.test_stop_completion import committed_stop_baseline
+from tests.lifecycle.test_longitudinal_completion import timed_step
 from tests.test_activation_observation_binding import flow, IPCState
-from tests.test_oct11_joint_regressions import joint
+from tests.lifecycle.test_joint_regressions import joint
 from tools.compare_oct14_completion import native_pipeline_cost
 from tools.run_longitudinal_comfort_bench import percentile
 

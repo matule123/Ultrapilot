@@ -33,7 +33,7 @@ def main():
             setattr(importlib.import_module(module.__package__),name.rsplit('.',1)[1],module)
             exec(compile(code,module.__file__,'exec'),module.__dict__)
     import pytest
-    return pytest.main([str(ROOT/'tests/test_oct6_joint_stop_flow.py'),'-q',
+    return pytest.main([str(ROOT/'tests/lifecycle/test_joint_stop_flow.py'),'-q',
         '--tb=short','-p','no:cacheprovider','--basetemp',str(args.basetemp)])
 
 

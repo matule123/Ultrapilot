@@ -7,7 +7,7 @@ from core.longitudinal import context, rejection
 from sdk.plugin_sdk import PluginSDK
 from plugins.drivepolicy.main import Plugin as DrivePolicy
 from tests.test_activation_observation_binding import flow  # noqa: F401
-from tests.test_oct4_signal_lifecycle import lifecycle
+from tests.signals.test_signal_lifecycle import lifecycle
 from tests.test_roundabout_intervention_reporting import pedal
 from tests.test_steering_fresh_handoff import prepared_map
 

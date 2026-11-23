@@ -21,7 +21,7 @@ def physical_flow(points,plan,truck,progress,snapshot,selector_class):
     game control is opened; the real Controller writes to the fixture backend.
     """
     from tests.test_activation_observation_binding import flow
-    from tests.test_oct8_stop_lifecycle import directed_stop
+    from tests.signals.test_stop_lifecycle import directed_stop
     from core.longitudinal import context,publish
     from tests.test_roundabout_intervention_reporting import pedal
     generator=flow.__wrapped__();harness=next(generator)
@@ -123,7 +123,7 @@ def main():
     # from the saved rolling geometry. Preserve the residual instead of making
     # its arc lengths look historically exact.
     matched=[p for p in plan['passages'] if abs(p['entry_progress_m']-ego[1]-head['distance'])<.5]
-    from tests.test_oct10_native_signal_direction import authored_heads
+    from tests.signals.test_native_signal_direction import authored_heads
     _,authored=authored_heads()
     pose_matches=[h for h in authored if h['id']==head['id']
         and math.dist([h[k] for k in ('x','y','z')],[head[k] for k in ('x','y','z')])<.001

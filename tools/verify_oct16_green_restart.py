@@ -80,11 +80,11 @@ def main():
     if a.reproduce:
         import pytest
         with deployed_methods():
-            raise SystemExit(pytest.main(['tests/test_oct16_green_restart.py','-q','-k',
+            raise SystemExit(pytest.main(['tests/signals/test_green_restart.py','-q','-k',
                 'slower_policy or qualified_green or late_braking']))
     if a.retained_memory:
         from tests.test_activation_observation_binding import flow
-        from tests.test_oct10_signal_timing import timing_flow
+        from tests.signals.test_signal_timing import timing_flow
         from tools.benchmark_oct15_crossing_dev_hud import deep_size
         results=[]
         for mode in (0,3):

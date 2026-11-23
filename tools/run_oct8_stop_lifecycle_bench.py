@@ -19,7 +19,7 @@ from core.engine import UltraPilotEngine
 from core import service_brake_hold
 from core.sdk.signal_snapshot import RouteSignalSelector
 from tests.test_activation_observation_binding import flow
-from tests.test_oct8_stop_lifecycle import directed_stop
+from tests.signals.test_stop_lifecycle import directed_stop
 from tests.test_roundabout_intervention_reporting import pedal
 
 

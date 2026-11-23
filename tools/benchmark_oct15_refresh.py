@@ -29,7 +29,7 @@ def stats(values):
 def run(ref, mode, diagnostics):
     import pytest
     from tests.test_activation_observation_binding import flow
-    from tests.test_oct15_traffic_refresh import test_repeated_late_refresh_and_signal_cycles_exceed_a_minute
+    from tests.lifecycle.test_traffic_refresh import test_repeated_late_refresh_and_signal_cycles_exceed_a_minute
     with version(ref):
         from tests.test_drive_engagement_safety import UltraPilotEngine
         generator = flow.__wrapped__()
@@ -89,7 +89,7 @@ def run(ref, mode, diagnostics):
 def steady(ref, diagnostics):
     """Equal-length paired ordinary driving; exclude the mock combined sink."""
     from tests.test_activation_observation_binding import flow
-    from tests.test_oct4_signal_lifecycle import lifecycle
+    from tests.signals.test_signal_lifecycle import lifecycle
     with version(ref):
         generator = flow.__wrapped__()
         fixture = next(generator)

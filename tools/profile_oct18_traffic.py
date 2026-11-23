@@ -36,8 +36,8 @@ class TimedMapping:
 
 def run(manager,before,repeat,samples):
     from tests.test_activation_observation_binding import flow
-    from tests.test_oct11_joint_regressions import joint
-    from tests.test_oct17_systemic_longitudinal import native_producer
+    from tests.lifecycle.test_joint_regressions import joint
+    from tests.lifecycle.test_systemic_longitudinal import native_producer
     import core.navigation.traffic_producer as producer
     generator=flow.__wrapped__();f=next(generator)
     source=joint.__wrapped__(f,SimpleNamespace(param=0));values=next(source)

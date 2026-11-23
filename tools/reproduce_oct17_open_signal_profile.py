@@ -5,7 +5,7 @@ assertion unchanged while fixing the production distance reference; no xfail.
 """
 import pytest
 from tests.test_activation_observation_binding import flow  # noqa: F401
-from tests.test_oct10_signal_timing import timing_flow
+from tests.signals.test_signal_timing import timing_flow
 
 
 @pytest.mark.parametrize('mode',[0,3])

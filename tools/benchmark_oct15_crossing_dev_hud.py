@@ -39,8 +39,8 @@ def deep_size(value, seen=None):
 
 def run(enabled,mode,ticks):
     from tests.test_activation_observation_binding import flow
-    from tests.test_oct11_joint_regressions import joint
-    from tests.test_oct15_crossing_dev_hud import step,crossing
+    from tests.lifecycle.test_joint_regressions import joint
+    from tests.traffic.test_crossing_dev_hud import step,crossing
     gen=flow.__wrapped__(); f=next(gen)
     source=joint.__wrapped__(f,SimpleNamespace(param=mode)); values=next(source)
     state,engine,ap,acc,policy,tick,_,_,physical,writes,clock=values

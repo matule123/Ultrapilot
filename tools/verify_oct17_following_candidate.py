@@ -13,11 +13,11 @@ from tools.prepare_oct17_joint_candidate import RUNTIME
 ROOT=Path(__file__).resolve().parents[1]
 OUT=ROOT/'docs/steering-audit/oct17-following-hold-signals'
 INSTALL=Path(r'C:\Users\PC\AppData\Local\Programs\UltraPilot')
-TARGETED=('tests/test_oct17_following_hold_signals.py','tests/test_oct17_signal_completion.py',
-    'tests/test_oct16_joint_traffic_regressions.py','tests/test_oct14_completion.py',
-    'tests/test_oct10_signal_timing.py','tests/test_signal_stop_resume.py',
+TARGETED=('tests/traffic/test_following_hold_signals.py','tests/signals/test_signal_completion.py',
+    'tests/traffic/test_joint_traffic_regressions.py','tests/lifecycle/test_longitudinal_completion.py',
+    'tests/signals/test_signal_timing.py','tests/test_signal_stop_resume.py',
     'tests/test_continuous_service_stop.py','tests/test_significant_longitudinal_events.py',
-    'tests/test_event_archive_preparation.py','tests/test_oct17_evidence_quota.py')
+    'tests/test_event_archive_preparation.py','tests/diagnostics/test_evidence_quota.py')
 
 
 def digest(raw):return hashlib.sha256(raw).hexdigest()

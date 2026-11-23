@@ -23,8 +23,8 @@ from tools.benchmark_oct15_refresh import stats, steady
 def run(ref, mode, diagnostics):
     import pytest
     from tests.test_activation_observation_binding import flow
-    from tests.test_oct11_joint_regressions import joint
-    from tests.test_oct15_refresh_protocol import run_repeated_response_races
+    from tests.lifecycle.test_joint_regressions import joint
+    from tests.lifecycle.test_refresh_protocol import run_repeated_response_races
     gc.collect()  # Same initial harness condition, outside every measured flush.
     with version(ref), tempfile.TemporaryDirectory(prefix='ultrapilot-refresh-') as directory:
         f = flow.__wrapped__()
@@ -83,8 +83,8 @@ def manager_roundtrip(ref, mode, manager):
     """
     import pytest
     from tests.test_activation_observation_binding import flow
-    from tests.test_oct11_joint_regressions import joint
-    from tests.test_oct15_refresh_protocol import run_repeated_response_races
+    from tests.lifecycle.test_joint_regressions import joint
+    from tests.lifecycle.test_refresh_protocol import run_repeated_response_races
     gc.collect()
     with version(ref):
         f = flow.__wrapped__(); values = next(f)

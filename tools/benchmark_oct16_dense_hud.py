@@ -11,14 +11,14 @@ import time
 from unittest.mock import patch
 
 from tools import benchmark_oct15_crossing_dev_hud as bench
-from tests import test_oct15_crossing_dev_hud as cases
-from tests.test_oct16_joint_traffic_regressions import dense_capture
+from tests.traffic import test_crossing_dev_hud as cases
+from tests.traffic.test_joint_traffic_regressions import dense_capture
 import core.traffic_dev_hud as hud
 
 
 def native_dense_snapshot(*,with_memory=False):
     from tests.test_activation_observation_binding import flow
-    from tests.test_oct11_joint_regressions import joint
+    from tests.lifecycle.test_joint_regressions import joint
     from types import SimpleNamespace
     gen=flow.__wrapped__();fixture=next(gen)
     source=joint.__wrapped__(fixture,SimpleNamespace(param=0));values=next(source)

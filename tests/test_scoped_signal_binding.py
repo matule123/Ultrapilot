@@ -4,8 +4,8 @@ import math
 import pytest
 
 from core.sdk.signal_snapshot import RouteSignalSelector
-from tests.test_oct8_signal_coverage import actual_path
-from tests.test_oct8_signal_coverage import real_flow
+from tests.signals.test_signal_coverage import actual_path
+from tests.signals.test_signal_coverage import real_flow
 from tests.test_activation_observation_binding import flow  # noqa: F401
 from tests.test_roundabout_intervention_reporting import pedal
 

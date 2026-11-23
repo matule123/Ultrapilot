@@ -7,7 +7,7 @@ import math
 from pathlib import Path
 from types import SimpleNamespace
 
-from tests.test_oct10_native_signal_direction import place
+from tests.signals.test_native_signal_direction import place
 from core.longitudinal import stopping_speed_ceiling
 
 

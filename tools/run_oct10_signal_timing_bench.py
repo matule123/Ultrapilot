@@ -16,8 +16,8 @@ from core import longitudinal
 from tools.audit_oct10_native_signal import placed_route
 from tools.run_prefab_signal_bench import run
 from tools import run_prefab_signal_bench as bench
-from tests.test_oct10_native_signal_direction import authored_heads
-from tests.test_oct10_signal_timing import timed_bytes
+from tests.signals.test_native_signal_direction import authored_heads
+from tests.signals.test_signal_timing import timed_bytes
 
 
 def snapshot(now, generation, frame, heads):

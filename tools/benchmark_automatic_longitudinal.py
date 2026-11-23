@@ -19,7 +19,7 @@ sys.path.insert(0,str(ROOT))
 
 def scenario(enabled,samples=360,*,heap=False,events=False):
     from tests.test_activation_observation_binding import flow
-    from tests.test_oct4_signal_lifecycle import lifecycle
+    from tests.signals.test_signal_lifecycle import lifecycle
     from tests.test_signal_stop_resume import source_bytes
     from core.longitudinal import context,publish
     with contextmanager(flow.__wrapped__)() as raw:

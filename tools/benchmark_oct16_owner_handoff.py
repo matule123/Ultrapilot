@@ -46,7 +46,7 @@ def main():
     if a.reproduce_baseline:
         import pytest
         with baseline(a.baseline):
-            raise SystemExit(pytest.main(['tests/test_oct16_brake_owner_handoff.py','-q','-k',
+            raise SystemExit(pytest.main(['tests/traffic/test_brake_owner_handoff.py','-q','-k',
                 'current_crossing_continuity or original_owner_survives']))
     from tools.prepare_oct16_crossing_hud import hashes
     before_hashes=hashes()

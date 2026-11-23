@@ -8,7 +8,7 @@ import pytest
 from core.longitudinal import context,publish
 from core.steering_replay import inspect_replay
 from tests.test_activation_observation_binding import flow  # noqa: F401
-from tests.test_oct8_stop_lifecycle import directed_stop
+from tests.signals.test_stop_lifecycle import directed_stop
 
 
 def test_normal_brake_source_edge_exports_without_disabling_or_arming(flow,tmp_path):

@@ -17,7 +17,7 @@ def demo_snapshot():
     from core.navigation.traffic_producer import capture_traffic
     from core.sdk.traffic_snapshot import TrafficReader
     from tests.test_acc_following import capture
-    from tests.test_oct14_completion import native_bytes
+    from tests.lifecycle.test_longitudinal_completion import native_bytes
     from types import SimpleNamespace
     import math
     at=100.

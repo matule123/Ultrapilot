@@ -60,7 +60,7 @@ def main():
         after=hashes()
         record=dict(full_suite_passed=result.returncode==0 and before==after,exit_code=result.returncode,
             unchanged=before==after,sha256=before,log_sha256=digest(log.read_bytes()),
-            original_signal_reproduction='Both unchanged assertions collected by tests/test_oct17_signal_completion.py',
+            original_signal_reproduction='Both unchanged assertions collected by tests/signals/test_signal_completion.py',
             task_complete=False,game_verified=False,runtime_authorized=False)
         verified.write_text(json.dumps(record,indent=2),encoding='utf-8')
         print(json.dumps({k:v for k,v in record.items() if k!='sha256'},indent=2))

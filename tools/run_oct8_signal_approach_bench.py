@@ -19,8 +19,8 @@ from core.engine import UltraPilotEngine
 from core import longitudinal, service_brake_hold
 from core.sdk.signal_snapshot import RouteSignalSelector
 from tests.test_activation_observation_binding import flow
-from tests.test_oct8_stop_lifecycle import directed_stop
-from tests.test_oct8_signal_approach_consistency import actual_passage
+from tests.signals.test_stop_lifecycle import directed_stop
+from tests.signals.test_signal_approach_consistency import actual_passage
 from tests.test_roundabout_intervention_reporting import pedal
 from tools.run_oct8_stop_lifecycle_bench import load
 from tools.run_prefab_signal_bench import run as stop_model

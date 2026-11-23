@@ -35,7 +35,7 @@ def native_model():
 
 def run(case, baseline):
     import pytest
-    from tests.test_oct14_completion import frozen_production_baseline
+    from tests.lifecycle.test_longitudinal_completion import frozen_production_baseline
     original=following.engine_decision
     ttcs=[]
     def decide(state,truck,*a,**kw):
@@ -85,7 +85,7 @@ def native_pipeline_cost(samples=180):
     import gc
     from tests.test_activation_observation_binding import flow
     from tests.test_rolling_longitudinal_authority import rolling
-    from tests.test_oct14_completion import timed_step
+    from tests.lifecycle.test_longitudinal_completion import timed_step
     f=flow.__wrapped__(); source=next(f)
     r=rolling.__wrapped__(source); values=next(r)
     state,engine,ap,acc,policy,tick,_,_,_,writes,clock=values

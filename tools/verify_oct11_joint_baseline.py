@@ -23,7 +23,7 @@ def module(name, source):
 def run():
     import pytest
     from core import acc_following, engine, plugin_manager
-    import tests.test_oct11_joint_regressions as tests
+    import tests.lifecycle.test_joint_regressions as tests
     fixture = json.loads((ROOT/'tests/fixtures/oct11-joint-original-functions.json').read_text())
     files = fixture['files']
     actors = module('oct11_original_acc', files['core/acc_following.py']['source'])
@@ -55,7 +55,7 @@ def run():
     for replacement in replacements: replacement.start()
     try:
         code = pytest.main([
-            str(ROOT/'tests/test_oct11_joint_regressions.py'), '-q', '--tb=short',
+            str(ROOT/'tests/lifecycle/test_joint_regressions.py'), '-q', '--tb=short',
             '-k', 'observed_lead_departure or trailer_crossing or ui_enable or no_route_turn'],
             plugins=[counter])
     finally:

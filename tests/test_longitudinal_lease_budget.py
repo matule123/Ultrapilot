@@ -95,7 +95,7 @@ def test_roundabout_semantics_limits_real_producers_before_entry(flow):
 
 @pytest.mark.parametrize('mode', [0, 3])
 def test_long_repeated_signal_cycles_retain_continuous_brake_and_fresh_drive(flow, mode):
-    from tests.test_oct4_signal_lifecycle import lifecycle
+    from tests.signals.test_signal_lifecycle import lifecycle
     state, truck, engine, ap, tick, n, clock, writes, _ = lifecycle(flow, mode)
     start = clock[0]
     for _ in range(3):

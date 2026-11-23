@@ -56,7 +56,7 @@ def main(args):
         for cls, attribute, replacement in replacements:
             stack.enter_context(patch.object(cls, attribute, replacement))
         with contextlib.redirect_stdout(captured), contextlib.redirect_stderr(captured):
-            result = pytest.main(['-q', *[f'tests/test_oct9_packet_refresh.py::{name}' for name in tests]])
+            result = pytest.main(['-q', *[f'tests/lifecycle/test_packet_refresh.py::{name}' for name in tests]])
     result = dict(exit_code=int(result), tests=tests, transcript=captured.getvalue(),
         baseline_files={str(p):hashlib.sha256(p.read_bytes()).hexdigest() for p in files},
         scope=('Only deployed Map.on_tick restored in memory with actual one-slot pending evidence worker'

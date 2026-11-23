@@ -12,7 +12,7 @@ import time
 
 from pytest import MonkeyPatch
 from tools.benchmark_oct15_crossing_dev_hud import run, percentiles
-from tests.test_oct17_following_hold_signals import entry_runtime
+from tests.traffic.test_following_hold_signals import entry_runtime
 
 
 def main():

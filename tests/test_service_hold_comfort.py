@@ -1,7 +1,7 @@
 import pytest
 
 from tests.test_activation_observation_binding import flow  # noqa: F401
-from tests.test_oct8_stop_lifecycle import directed_stop
+from tests.signals.test_stop_lifecycle import directed_stop
 from tests.test_roundabout_intervention_reporting import pedal
 
 

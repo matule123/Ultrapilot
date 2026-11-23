@@ -19,7 +19,7 @@ from core.navigation.lane_model import LanePoint, LaneId, LaneSegment, LaneConne
 from core.navigation.lane_trajectory import build_lane_trajectory
 from core.navigation.road_network import RoadNetwork
 from core.sdk import signal_snapshot
-from tests.test_oct10_native_signal_direction import authored_heads, place, selection, scoped_bytes
+from tests.signals.test_native_signal_direction import authored_heads, place, selection, scoped_bytes
 from tools import run_prefab_signal_bench as bench
 
 

@@ -13,8 +13,8 @@ def main():
     p=argparse.ArgumentParser(description=__doc__);p.add_argument('--output',type=Path,required=True)
     a=p.parse_args();a.output.mkdir(parents=True,exist_ok=True)
     from tests.test_activation_observation_binding import flow
-    from tests.test_oct11_joint_regressions import joint
-    from tests.test_oct15_crossing_dev_hud import step
+    from tests.lifecycle.test_joint_regressions import joint
+    from tests.traffic.test_crossing_dev_hud import step
     from tools.benchmark_oct15_crossing_dev_hud import deep_size
     from core.traffic_dev_hud import for_display,FRAME_BUDGET,RECEIPT_BUDGET
     from core.navigation.longitudinal_diagnostics import bounded_copy

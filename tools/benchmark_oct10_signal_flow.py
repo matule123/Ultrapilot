@@ -12,7 +12,7 @@ import time
 from unittest.mock import patch
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 from tools import run_prefab_signal_bench as bench
-from tests.test_oct10_signal_approach import scene
+from tests.signals.test_signal_approach import scene
 from core.sdk.signal_snapshot import RouteSignalSelector
 
 
