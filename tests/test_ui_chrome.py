@@ -527,7 +527,10 @@ class UiChromeTests(unittest.TestCase):
         page.refresh()
         self.assertFalse(page.dl_bar.isVisibleTo(page))
         self.assertEqual(page.dl_status.text(), "")
-        self.assertEqual(len(page.view.map_controls), 3)
+        self.assertEqual(len(page.view.map_controls), 5)
+        self.assertEqual([b.toolTip() for b in page.view.map_controls], [
+            "Priblížiť", "Oddialiť", "Vycentrovať na kamión",
+            "Prepnúť dennú/nočnú mapu", "Prepnúť priestorový/pôdorysný pohľad"])
         page.close()
 
     def test_engine_map_loading_is_presented_by_dynamic_island_only(self):
@@ -619,7 +622,10 @@ class UiChromeTests(unittest.TestCase):
         self.assertEqual(page.view.scene_polygons[0]["colour"], 2)
         self.assertEqual(page.view.scene_features[0]["icon"], "gas_ico")
         self.assertEqual(page._last_live_map_scene_revision, 9)
-        self.assertEqual(page.view.zoom_radius, 1050.0)
+        self.assertEqual(page.view.zoom_radius, 650.0)
+        page.view.zoom_in()
+        page.view.reset_view()
+        self.assertEqual(page.view.zoom_radius, 650.0)
         self.assertEqual(page.view.trip_panel.objectName(), "LiveMapTripPanel")
         page.view.resize(900, 600)
         image = QImage(900, 600, QImage.Format.Format_ARGB32)

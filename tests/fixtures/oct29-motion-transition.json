@@ -1,0 +1,2210 @@
+{
+  "provenance": {
+    "incident": "d8f8382277da40c398b28c5fcf315a11-14102",
+    "engine_replay_sha256": "",
+    "original_records": [
+      16993,
+      16994,
+      16999,
+      17004
+    ]
+  },
+  "old_traffic": {
+    "schema_version": 1,
+    "source": "traffic",
+    "context": [
+      22756441673200,
+      1,
+      "promods-2.84",
+      "dd1873d84deae9eef77db740",
+      "af860aae623c4a31a130d1937ed922c9",
+      9,
+      "266cf87581d04deaaa583c6e07ce6ded",
+      [
+        "lane_path",
+        "e2b4321cfe8d72ee2a2923e886afb651a3ce346f035f94605e4f7cd6bf458256",
+        true
+      ]
+    ],
+    "sdk_frame_us": 147560764,
+    "observation_timestamp": 22771.5007589,
+    "expires_at": 22771.9819228,
+    "computed_at": 22771.5528913,
+    "deadline_basis": {
+      "source": "traffic_capture",
+      "kind": "native_acquisition",
+      "observation_timestamp": 22771.4819228,
+      "sdk_frame_us": 588924234,
+      "expires_at": 22771.9819228
+    },
+    "lease_dependencies": [
+      {
+        "source": "route_projection",
+        "expires_at": 22771.9821473,
+        "deadline_basis": {
+          "source": "route_projection",
+          "kind": "spatial_observation",
+          "sdk_frame_us": 147527432,
+          "observation_timestamp": 22771.4821473,
+          "expires_at": 22771.9821473
+        }
+      },
+      {
+        "source": "traffic_capture",
+        "expires_at": 22772.0177037,
+        "deadline_basis": {
+          "source": "traffic_capture",
+          "kind": "receiver_budget_unverified",
+          "observation_timestamp": null,
+          "sdk_frame_us": null,
+          "expires_at": 22772.0177037
+        }
+      },
+      {
+        "source": "traffic_capture",
+        "expires_at": 22771.9819228,
+        "deadline_basis": {
+          "source": "traffic_capture",
+          "kind": "native_acquisition",
+          "observation_timestamp": 22771.4819228,
+          "sdk_frame_us": 588924234,
+          "expires_at": 22771.9819228
+        }
+      }
+    ],
+    "remaining_at_computation_s": 0.42903149999983725,
+    "invalid_reason": null,
+    "handoff_required": false,
+    "valid": true,
+    "traffic_available": true,
+    "traffic_availability": {
+      "schema_version": 1,
+      "actors_usable": true,
+      "capture_status": "no_candidate_unproven_coverage",
+      "receiver_time": 22771.5177037,
+      "buffers_present": true,
+      "stable_read": true,
+      "atomic": true,
+      "coverage_confirmed": false,
+      "source_timestamp": 22771.4819228,
+      "source_generation": 4250,
+      "actor_identity": null
+    },
+    "traffic_brake": 0.0,
+    "light_brake": 0.0,
+    "light": null,
+    "signal": {
+      "valid": false,
+      "reason": "no prepared regulated passage; nearby heads are detection only",
+      "schema": 3,
+      "lifecycle": 104452067223580,
+      "generation": 4251,
+      "frame_us": 588924234,
+      "observed_at": 22771.4820192,
+      "sequence": 8502,
+      "authority": [
+        22756441673200,
+        1,
+        "promods-2.84",
+        "dd1873d84deae9eef77db740",
+        "af860aae623c4a31a130d1937ed922c9",
+        9,
+        "266cf87581d04deaaa583c6e07ce6ded",
+        [
+          "lane_path",
+          "e2b4321cfe8d72ee2a2923e886afb651a3ce346f035f94605e4f7cd6bf458256",
+          true
+        ]
+      ],
+      "relevance": "detected_only_unassigned",
+      "candidate": null,
+      "prefab_binding_reason": "no prepared regulated passage",
+      "coverage": {
+        "status": "NOT_VERIFIED",
+        "requires_takeover": false
+      },
+      "authority_lane_id": [
+        5337536180542400540,
+        1,
+        1,
+        "blkw_1402t",
+        -1,
+        [
+          0,
+          7,
+          27,
+          21,
+          6,
+          13,
+          32
+        ]
+      ],
+      "route_progress_m": 210.63542908681,
+      "route_publication_token": "3cc69d61db6e4d77a660a9441faab92a"
+    },
+    "lead_distance": null,
+    "display_detection": {
+      "status": "DETECTED_ONLY_UNTIMED",
+      "candidate": null
+    },
+    "following": {
+      "status": "no_candidate_unproven_coverage",
+      "confirmed": false,
+      "emergency_actor_ids": [],
+      "protective_brake": 0.0,
+      "emergency": false,
+      "unassigned_protective_brake": 0.0,
+      "protective_target_id": null,
+      "departure": null,
+      "motion_constraint": {
+        "schema": 1,
+        "kind": "observed_positive_motion_speed_constraint",
+        "targets": [
+          {
+            "id": "66",
+            "speed_mps": 8.466626167297363,
+            "cap_mps": 1.2598660036521165,
+            "source": "moving",
+            "slot": 2,
+            "constraint_kind": "crossing"
+          }
+        ],
+        "complete": true,
+        "source_acquisition": {
+          "lifecycle": 104452067223580,
+          "generation": 4250,
+          "frame_us": 588924234,
+          "observed_at": 22771.4819228
+        },
+        "coverage_confirmed": false,
+        "authority": [
+          22756441673200,
+          1,
+          "promods-2.84",
+          "dd1873d84deae9eef77db740",
+          "af860aae623c4a31a130d1937ed922c9",
+          9,
+          "266cf87581d04deaaa583c6e07ce6ded",
+          [
+            "lane_path",
+            "e2b4321cfe8d72ee2a2923e886afb651a3ce346f035f94605e4f7cd6bf458256",
+            true
+          ]
+        ]
+      },
+      "retained_target_continuity": {
+        "target_id": "66",
+        "source": "moving",
+        "slot": 2,
+        "lifecycle": 104452067223580,
+        "generation": 4250,
+        "frame_us": 588924234,
+        "observed_at": 22771.4819228,
+        "record_fingerprint": "f5ebe9b5a97b61e2ed4081807095fa6046bcdebcaad56bb099e8a9dcd8490af3",
+        "basis": "unique_native_id_shape_bounded_motion_not_clearance"
+      },
+      "retained_target_continuities": [
+        {
+          "target_id": "66",
+          "source": "moving",
+          "slot": 2,
+          "lifecycle": 104452067223580,
+          "generation": 4250,
+          "frame_us": 588924234,
+          "observed_at": 22771.4819228,
+          "record_fingerprint": "f5ebe9b5a97b61e2ed4081807095fa6046bcdebcaad56bb099e8a9dcd8490af3",
+          "basis": "unique_native_id_shape_bounded_motion_not_clearance"
+        }
+      ],
+      "crossing": {
+        "status": "protective_crossing_candidates",
+        "conflicts": [
+          {
+            "id": 66,
+            "route_progress_m": 218.92891302296354,
+            "point_xyz": [
+              46124.74907383631,
+              10.390625,
+              40254.19628722179
+            ],
+            "distance_m": 8.284646475408607,
+            "actor_arrival_s": 4.300883319347977,
+            "ego_arrival_earliest_s": 28.758090987652956,
+            "ego_arrival_latest_s": 28.758090987652956,
+            "reserve_s": 2.0,
+            "assumed_ego_acceleration_mps2": 0.0,
+            "ego_motion_basis": "observed_speed_constant_motion",
+            "dimensions_whl": [
+              1.83217191696167,
+              1.190964937210083,
+              4.655497074127197
+            ],
+            "brake": 0.0,
+            "body_index": 0,
+            "actor": {
+              "id": 66,
+              "source": "moving",
+              "slot": 2,
+              "record_fingerprint": "f5ebe9b5a97b61e2ed4081807095fa6046bcdebcaad56bb099e8a9dcd8490af3",
+              "x": 46118.28125,
+              "y": 11.23324203491211,
+              "z": 40290.03125,
+              "yaw": -0.17856674708731543,
+              "speed": 8.466626167297363,
+              "dimensions_whl": [
+                1.83217191696167,
+                1.190964937210083,
+                4.655497074127197
+              ]
+            },
+            "motion_model": "constant_tractor_speed_raw_body_heading",
+            "ego_body_envelope_confirmed": false
+          }
+        ],
+        "brake": 0.0,
+        "clearance_confirmed": false,
+        "producer_timestamp": null,
+        "coverage_confirmed": false,
+        "confirmed_route_conflict": false
+      },
+      "body_prediction": {
+        "status": "protective_observed_body_prediction",
+        "brake": 0.0,
+        "conflicts": [],
+        "complete_envelope_verified": false,
+        "coverage_confirmed": false,
+        "model": "native_boxes_directed_reference_fixed_articulation_constant_actor_motion",
+        "unsupported_actors": 0,
+        "non_braking_rear_contacts": [],
+        "prediction_duration_s": 3.0,
+        "source_acquisition": {
+          "lifecycle": 104452067223580,
+          "generation": 4250,
+          "frame_us": 588924234,
+          "observed_at": 22771.4819228,
+          "ego_speed_observed_at": 22771.4812576
+        }
+      },
+      "constraint_completion": {
+        "target_id": "51",
+        "source": "moving",
+        "slot": 1,
+        "lifecycle": 104452067223580,
+        "generation": 4250,
+        "frame_us": 588924234,
+        "observed_at": 22771.4819228,
+        "record_fingerprint": "9af604f8ac8f8ad9838b5d4282bc3a758e11b9d3f1975cb9c45e0fdc41f304e1",
+        "basis": "unique_native_id_shape_bounded_motion_not_clearance",
+        "status": "observed_original_crossing_model_ended",
+        "kind": "crossing",
+        "coverage_confirmed": false,
+        "game_consumption_verified": false
+      },
+      "constraint_completions": [
+        {
+          "target_id": "51",
+          "source": "moving",
+          "slot": 1,
+          "lifecycle": 104452067223580,
+          "generation": 4250,
+          "frame_us": 588924234,
+          "observed_at": 22771.4819228,
+          "record_fingerprint": "9af604f8ac8f8ad9838b5d4282bc3a758e11b9d3f1975cb9c45e0fdc41f304e1",
+          "basis": "unique_native_id_shape_bounded_motion_not_clearance",
+          "status": "observed_original_crossing_model_ended",
+          "kind": "crossing",
+          "coverage_confirmed": false,
+          "game_consumption_verified": false
+        },
+        {
+          "target_id": "39",
+          "source": "moving",
+          "slot": 0,
+          "lifecycle": 104452067223580,
+          "generation": 4250,
+          "frame_us": 588924234,
+          "observed_at": 22771.4819228,
+          "record_fingerprint": "47740da384504e5839524dde413230f3ad0d3fca0e86860a2a99e270361d6d3b",
+          "basis": "unique_native_id_shape_bounded_motion_not_clearance",
+          "status": "observed_original_crossing_model_ended",
+          "kind": "crossing",
+          "coverage_confirmed": false,
+          "game_consumption_verified": false
+        }
+      ],
+      "stop_clearance": null,
+      "receiver_time": 22771.5177037,
+      "source_timestamp": 22771.4819228,
+      "source_sequence": 4250,
+      "complete": false,
+      "atomic": true,
+      "deadline_dependencies": [
+        {
+          "schema_version": 1,
+          "source": "route_projection",
+          "valid": true,
+          "context": [
+            22756441673200,
+            1,
+            "promods-2.84",
+            "dd1873d84deae9eef77db740",
+            "af860aae623c4a31a130d1937ed922c9",
+            9,
+            "266cf87581d04deaaa583c6e07ce6ded",
+            [
+              "lane_path",
+              "e2b4321cfe8d72ee2a2923e886afb651a3ce346f035f94605e4f7cd6bf458256",
+              true
+            ]
+          ],
+          "sdk_frame_us": 147527432,
+          "observation_timestamp": 22771.4821473,
+          "computed_at": 22771.5080014,
+          "expires_at": 22771.9821473,
+          "deadline_basis": {
+            "source": "route_projection",
+            "kind": "spatial_observation",
+            "sdk_frame_us": 147527432,
+            "observation_timestamp": 22771.4821473,
+            "expires_at": 22771.9821473
+          }
+        },
+        {
+          "source": "traffic_capture",
+          "expires_at": 22772.0177037,
+          "deadline_basis": {
+            "source": "traffic_capture",
+            "kind": "receiver_budget_unverified",
+            "observation_timestamp": null,
+            "sdk_frame_us": null,
+            "expires_at": 22772.0177037
+          }
+        },
+        {
+          "source": "traffic_capture",
+          "expires_at": 22771.9819228,
+          "deadline_basis": {
+            "source": "traffic_capture",
+            "kind": "native_acquisition",
+            "observation_timestamp": 22771.4819228,
+            "sdk_frame_us": 588924234,
+            "expires_at": 22771.9819228
+          }
+        }
+      ],
+      "expires_at": 22771.9819228,
+      "source_acquisition": {
+        "lifecycle": 104452067223580,
+        "generation": 4250,
+        "frame_us": 588924234,
+        "observed_at": 22771.4819228
+      },
+      "owner_witnesses_schema": 1,
+      "owner_witnesses": [
+        {
+          "target_id": "66",
+          "source": "moving",
+          "slot": 2,
+          "lifecycle": 104452067223580,
+          "acquired_generation": 4220,
+          "current_slot": 2,
+          "kind": "crossing",
+          "chain_valid": true,
+          "continuity_reason": "qualified"
+        }
+      ],
+      "producer_timing": {
+        "sequence": 2387,
+        "started_at": 22771.5081757,
+        "cpu_started": 16.125,
+        "vehicle_read_finished_at": 22771.5081896,
+        "signal_finished_at": 22771.5176963,
+        "native_read_finished_at": 22771.5177544,
+        "projection_finished_at": 22771.5519572,
+        "display_read_finished_at": 22771.5523207,
+        "publish_started_at": 22771.552323,
+        "previous": {
+          "sequence": 2386,
+          "started_at": 22771.3977304,
+          "cpu_started": 16.09375,
+          "vehicle_read_finished_at": 22771.3977408,
+          "signal_finished_at": 22771.410248,
+          "native_read_finished_at": 22771.4103129,
+          "projection_finished_at": 22771.440902,
+          "display_read_finished_at": 22771.4413814,
+          "publish_started_at": 22771.441385,
+          "finished_at": 22771.4516015,
+          "cpu_finished": 16.125
+        }
+      }
+    },
+    "brake_basis": {
+      "kind": "directed_crossing_speed_constraint",
+      "decisive": {
+        "id": 66,
+        "route_progress_m": 218.92891302296354,
+        "point_xyz": [
+          46124.74907383631,
+          10.390625,
+          40254.19628722179
+        ],
+        "distance_m": 8.284646475408607,
+        "actor_arrival_s": 4.300883319347977,
+        "ego_arrival_earliest_s": 28.758090987652956,
+        "ego_arrival_latest_s": 28.758090987652956,
+        "reserve_s": 2.0,
+        "assumed_ego_acceleration_mps2": 0.0,
+        "ego_motion_basis": "observed_speed_constant_motion",
+        "dimensions_whl": [
+          1.83217191696167,
+          1.190964937210083,
+          4.655497074127197
+        ],
+        "brake": 0.0,
+        "body_index": 0,
+        "actor": {
+          "id": 66,
+          "source": "moving",
+          "slot": 2,
+          "record_fingerprint": "f5ebe9b5a97b61e2ed4081807095fa6046bcdebcaad56bb099e8a9dcd8490af3",
+          "x": 46118.28125,
+          "y": 11.23324203491211,
+          "z": 40290.03125,
+          "yaw": -0.17856674708731543,
+          "speed": 8.466626167297363,
+          "dimensions_whl": [
+            1.83217191696167,
+            1.190964937210083,
+            4.655497074127197
+          ]
+        },
+        "motion_model": "constant_tractor_speed_raw_body_heading",
+        "ego_body_envelope_confirmed": false
+      },
+      "source_acquisition": {
+        "lifecycle": 104452067223580,
+        "generation": 4250,
+        "frame_us": 588924234,
+        "observed_at": 22771.4819228
+      },
+      "confirmed_route_conflict": false,
+      "coverage_confirmed": false,
+      "stop_contract": "observed_positive_motion_speed_constraint"
+    },
+    "stop_clearance": null,
+    "motion_constraint": {
+      "schema": 1,
+      "kind": "observed_positive_motion_speed_constraint",
+      "targets": [
+        {
+          "id": "66",
+          "speed_mps": 8.466626167297363,
+          "cap_mps": 1.2598660036521165,
+          "source": "moving",
+          "slot": 2,
+          "constraint_kind": "crossing"
+        }
+      ],
+      "complete": true,
+      "source_acquisition": {
+        "lifecycle": 104452067223580,
+        "generation": 4250,
+        "frame_us": 588924234,
+        "observed_at": 22771.4819228
+      },
+      "coverage_confirmed": false,
+      "authority": [
+        22756441673200,
+        1,
+        "promods-2.84",
+        "dd1873d84deae9eef77db740",
+        "af860aae623c4a31a130d1937ed922c9",
+        9,
+        "266cf87581d04deaaa583c6e07ce6ded",
+        [
+          "lane_path",
+          "e2b4321cfe8d72ee2a2923e886afb651a3ce346f035f94605e4f7cd6bf458256",
+          true
+        ]
+      ]
+    },
+    "producer_timing": {
+      "sequence": 2387,
+      "started_at": 22771.5081757,
+      "cpu_started": 16.125,
+      "vehicle_read_finished_at": 22771.5081896,
+      "signal_finished_at": 22771.5176963,
+      "native_read_finished_at": 22771.5177544,
+      "projection_finished_at": 22771.5519572,
+      "display_read_finished_at": 22771.5523207,
+      "publish_started_at": 22771.552323,
+      "previous": {
+        "sequence": 2386,
+        "started_at": 22771.3977304,
+        "cpu_started": 16.09375,
+        "vehicle_read_finished_at": 22771.3977408,
+        "signal_finished_at": 22771.410248,
+        "native_read_finished_at": 22771.4103129,
+        "projection_finished_at": 22771.440902,
+        "display_read_finished_at": 22771.4413814,
+        "publish_started_at": 22771.441385,
+        "finished_at": 22771.4516015,
+        "cpu_finished": 16.125
+      }
+    },
+    "diagnostic_part_request": {
+      "schema": 2,
+      "incident_id": "d8f8382277da40c398b28c5fcf315a11-11495",
+      "phase": "seal",
+      "start_s": 22697.9027699,
+      "end_s": 22747.895325,
+      "trigger_at_s": 22727.9027699,
+      "shutdown": false,
+      "token": "d8f8382277da40c398b28c5fcf315a11-11495@22697.9027699..22747.895325"
+    }
+  },
+  "acc": {
+    "schema_version": 1,
+    "source": "acc",
+    "context": [
+      22756441673200,
+      1,
+      "promods-2.84",
+      "dd1873d84deae9eef77db740",
+      "af860aae623c4a31a130d1937ed922c9",
+      9,
+      "266cf87581d04deaaa583c6e07ce6ded",
+      [
+        "lane_path",
+        "e2b4321cfe8d72ee2a2923e886afb651a3ce346f035f94605e4f7cd6bf458256",
+        true
+      ]
+    ],
+    "sdk_frame_us": 147677426,
+    "observation_timestamp": 22771.6124355,
+    "expires_at": 22771.9819228,
+    "computed_at": 22771.638775,
+    "deadline_basis": {
+      "source": "traffic_capture",
+      "kind": "native_acquisition",
+      "observation_timestamp": 22771.4819228,
+      "sdk_frame_us": 588924234,
+      "expires_at": 22771.9819228
+    },
+    "lease_dependencies": [
+      {
+        "source": "traffic",
+        "expires_at": 22771.9819228,
+        "deadline_basis": {
+          "source": "traffic_capture",
+          "kind": "native_acquisition",
+          "observation_timestamp": 22771.4819228,
+          "sdk_frame_us": 588924234,
+          "expires_at": 22771.9819228
+        }
+      },
+      {
+        "source": "policy",
+        "expires_at": 22771.9819228,
+        "deadline_basis": {
+          "source": "traffic_capture",
+          "kind": "native_acquisition",
+          "observation_timestamp": 22771.4819228,
+          "sdk_frame_us": 588924234,
+          "expires_at": 22771.9819228
+        }
+      }
+    ],
+    "remaining_at_computation_s": 0.34314780000204337,
+    "invalid_reason": null,
+    "handoff_required": false,
+    "valid": true,
+    "throttle": 0.7280009698320339,
+    "brake": 0.0,
+    "emergency": false,
+    "requested_speed_kmh": 80.0,
+    "constrained_speed_kmh": 4.535517613147619,
+    "control_target_kmh": 4.535517613147619,
+    "speed_control_reason": "speed tracking",
+    "following_status": "observed moving protective speed constraint; coverage unproven",
+    "following_target_id": "66",
+    "following_confirmed": false,
+    "following_kind": "crossing",
+    "following_owner": {
+      "target_id": "66",
+      "source": "moving",
+      "slot": 2,
+      "lifecycle": 104452067223580,
+      "acquired_generation": 4220,
+      "current_slot": 2,
+      "kind": "crossing",
+      "chain_valid": true,
+      "continuity_reason": "qualified"
+    },
+    "braking_actor_ids": [],
+    "braking_acquisition": {
+      "lifecycle": 104452067223580,
+      "generation": 4250,
+      "frame_us": 588924234,
+      "observed_at": 22771.4819228
+    },
+    "leader_prediction": null,
+    "requested_acceleration_ms2": 1.6016021336304747,
+    "selected_acceleration_ms2": 1.6016021336304747,
+    "acceleration_basis": "nominal_actuator_mapping_not_measured_vehicle_acceleration",
+    "signal_stop_control": false,
+    "signal_brake_selected": false,
+    "destination_brake_selected": false,
+    "following_required": true
+  },
+  "new_traffic": {
+    "schema_version": 1,
+    "source": "traffic",
+    "context": [
+      22756441673200,
+      1,
+      "promods-2.84",
+      "dd1873d84deae9eef77db740",
+      "af860aae623c4a31a130d1937ed922c9",
+      9,
+      "266cf87581d04deaaa583c6e07ce6ded",
+      [
+        "lane_path",
+        "e2b4321cfe8d72ee2a2923e886afb651a3ce346f035f94605e4f7cd6bf458256",
+        true
+      ]
+    ],
+    "sdk_frame_us": 147677426,
+    "observation_timestamp": 22771.6124355,
+    "expires_at": 22772.0760269,
+    "computed_at": 22771.6608985,
+    "deadline_basis": {
+      "source": "route_projection",
+      "kind": "spatial_observation",
+      "sdk_frame_us": 147644094,
+      "observation_timestamp": 22771.5760269,
+      "expires_at": 22772.0760269
+    },
+    "lease_dependencies": [
+      {
+        "source": "route_projection",
+        "expires_at": 22772.0760269,
+        "deadline_basis": {
+          "source": "route_projection",
+          "kind": "spatial_observation",
+          "sdk_frame_us": 147644094,
+          "observation_timestamp": 22771.5760269,
+          "expires_at": 22772.0760269
+        }
+      },
+      {
+        "source": "traffic_capture",
+        "expires_at": 22772.1250108,
+        "deadline_basis": {
+          "source": "traffic_capture",
+          "kind": "receiver_budget_unverified",
+          "observation_timestamp": null,
+          "sdk_frame_us": null,
+          "expires_at": 22772.1250108
+        }
+      },
+      {
+        "source": "traffic_capture",
+        "expires_at": 22772.10634,
+        "deadline_basis": {
+          "source": "traffic_capture",
+          "kind": "native_acquisition",
+          "observation_timestamp": 22771.60634,
+          "sdk_frame_us": 589046252,
+          "expires_at": 22772.10634
+        }
+      }
+    ],
+    "remaining_at_computation_s": 0.41512839999995776,
+    "invalid_reason": null,
+    "handoff_required": false,
+    "valid": true,
+    "traffic_available": true,
+    "traffic_availability": {
+      "schema_version": 1,
+      "actors_usable": true,
+      "capture_status": "no_candidate_unproven_coverage",
+      "receiver_time": 22771.6250108,
+      "buffers_present": true,
+      "stable_read": true,
+      "atomic": true,
+      "coverage_confirmed": false,
+      "source_timestamp": 22771.60634,
+      "source_generation": 4253,
+      "actor_identity": null
+    },
+    "traffic_brake": 0.0,
+    "light_brake": 0.0,
+    "light": null,
+    "signal": {
+      "valid": false,
+      "reason": "no prepared regulated passage; nearby heads are detection only",
+      "schema": 3,
+      "lifecycle": 104452067223580,
+      "generation": 4254,
+      "frame_us": 589046252,
+      "observed_at": 22771.6064686,
+      "sequence": 8508,
+      "authority": [
+        22756441673200,
+        1,
+        "promods-2.84",
+        "dd1873d84deae9eef77db740",
+        "af860aae623c4a31a130d1937ed922c9",
+        9,
+        "266cf87581d04deaaa583c6e07ce6ded",
+        [
+          "lane_path",
+          "e2b4321cfe8d72ee2a2923e886afb651a3ce346f035f94605e4f7cd6bf458256",
+          true
+        ]
+      ],
+      "relevance": "detected_only_unassigned",
+      "candidate": null,
+      "prefab_binding_reason": "no prepared regulated passage",
+      "coverage": {
+        "status": "NOT_VERIFIED",
+        "requires_takeover": false
+      },
+      "authority_lane_id": [
+        5337536180542400540,
+        1,
+        1,
+        "blkw_1402t",
+        -1,
+        [
+          0,
+          7,
+          27,
+          21,
+          6,
+          13,
+          32
+        ]
+      ],
+      "route_progress_m": 210.65444999980042,
+      "route_publication_token": "3cc69d61db6e4d77a660a9441faab92a"
+    },
+    "lead_distance": null,
+    "display_detection": {
+      "status": "DETECTED_ONLY_UNTIMED",
+      "candidate": null
+    },
+    "following": {
+      "status": "no_candidate_unproven_coverage",
+      "confirmed": false,
+      "emergency_actor_ids": [],
+      "protective_brake": 0.0,
+      "emergency": false,
+      "unassigned_protective_brake": 0.0,
+      "protective_target_id": null,
+      "departure": null,
+      "motion_constraint": null,
+      "retained_target_continuity": {
+        "target_id": "66",
+        "source": "moving",
+        "slot": 2,
+        "lifecycle": 104452067223580,
+        "generation": 4253,
+        "frame_us": 589046252,
+        "observed_at": 22771.60634,
+        "record_fingerprint": "25801e250967b471d1cf02312fccab8de3e799709b063827f598896086cfc406",
+        "basis": "unique_native_id_shape_bounded_motion_not_clearance"
+      },
+      "retained_target_continuities": [
+        {
+          "target_id": "66",
+          "source": "moving",
+          "slot": 2,
+          "lifecycle": 104452067223580,
+          "generation": 4253,
+          "frame_us": 589046252,
+          "observed_at": 22771.60634,
+          "record_fingerprint": "25801e250967b471d1cf02312fccab8de3e799709b063827f598896086cfc406",
+          "basis": "unique_native_id_shape_bounded_motion_not_clearance"
+        }
+      ],
+      "crossing": {
+        "status": "no_conflict_unproven_coverage",
+        "conflicts": [],
+        "brake": 0.0,
+        "clearance_confirmed": false,
+        "producer_timestamp": null,
+        "coverage_confirmed": false,
+        "confirmed_route_conflict": false
+      },
+      "body_prediction": {
+        "status": "protective_observed_body_prediction",
+        "brake": 0.0,
+        "conflicts": [],
+        "complete_envelope_verified": false,
+        "coverage_confirmed": false,
+        "model": "native_boxes_directed_reference_fixed_articulation_constant_actor_motion",
+        "unsupported_actors": 0,
+        "non_braking_rear_contacts": [],
+        "prediction_duration_s": 3.0,
+        "source_acquisition": {
+          "lifecycle": 104452067223580,
+          "generation": 4253,
+          "frame_us": 589046252,
+          "observed_at": 22771.60634,
+          "ego_speed_observed_at": 22771.6057266
+        }
+      },
+      "constraint_completion": {
+        "target_id": "66",
+        "source": "moving",
+        "slot": 2,
+        "lifecycle": 104452067223580,
+        "generation": 4253,
+        "frame_us": 589046252,
+        "observed_at": 22771.60634,
+        "record_fingerprint": "25801e250967b471d1cf02312fccab8de3e799709b063827f598896086cfc406",
+        "basis": "unique_native_id_shape_bounded_motion_not_clearance",
+        "status": "observed_original_crossing_model_ended",
+        "kind": "crossing",
+        "coverage_confirmed": false,
+        "game_consumption_verified": false
+      },
+      "constraint_completions": [
+        {
+          "target_id": "51",
+          "source": "moving",
+          "slot": 1,
+          "lifecycle": 104452067223580,
+          "generation": 4253,
+          "frame_us": 589046252,
+          "observed_at": 22771.60634,
+          "record_fingerprint": "55fe019b331fa24429a49902dabe7d3b63c369d0c5ad74ca59b1440e2d45c94e",
+          "basis": "unique_native_id_shape_bounded_motion_not_clearance",
+          "status": "observed_original_crossing_model_ended",
+          "kind": "crossing",
+          "coverage_confirmed": false,
+          "game_consumption_verified": false
+        },
+        {
+          "target_id": "39",
+          "source": "moving",
+          "slot": 0,
+          "lifecycle": 104452067223580,
+          "generation": 4253,
+          "frame_us": 589046252,
+          "observed_at": 22771.60634,
+          "record_fingerprint": "89133caf04d95be31f888036c248fcac498ef3ae7ea7c53f89055f0d9e78ee38",
+          "basis": "unique_native_id_shape_bounded_motion_not_clearance",
+          "status": "observed_original_crossing_model_ended",
+          "kind": "crossing",
+          "coverage_confirmed": false,
+          "game_consumption_verified": false
+        },
+        {
+          "target_id": "66",
+          "source": "moving",
+          "slot": 2,
+          "lifecycle": 104452067223580,
+          "generation": 4253,
+          "frame_us": 589046252,
+          "observed_at": 22771.60634,
+          "record_fingerprint": "25801e250967b471d1cf02312fccab8de3e799709b063827f598896086cfc406",
+          "basis": "unique_native_id_shape_bounded_motion_not_clearance",
+          "status": "observed_original_crossing_model_ended",
+          "kind": "crossing",
+          "coverage_confirmed": false,
+          "game_consumption_verified": false
+        }
+      ],
+      "stop_clearance": null,
+      "receiver_time": 22771.6250108,
+      "source_timestamp": 22771.60634,
+      "source_sequence": 4253,
+      "complete": false,
+      "atomic": true,
+      "deadline_dependencies": [
+        {
+          "schema_version": 1,
+          "source": "route_projection",
+          "valid": true,
+          "context": [
+            22756441673200,
+            1,
+            "promods-2.84",
+            "dd1873d84deae9eef77db740",
+            "af860aae623c4a31a130d1937ed922c9",
+            9,
+            "266cf87581d04deaaa583c6e07ce6ded",
+            [
+              "lane_path",
+              "e2b4321cfe8d72ee2a2923e886afb651a3ce346f035f94605e4f7cd6bf458256",
+              true
+            ]
+          ],
+          "sdk_frame_us": 147644094,
+          "observation_timestamp": 22771.5760269,
+          "computed_at": 22771.6078295,
+          "expires_at": 22772.0760269,
+          "deadline_basis": {
+            "source": "route_projection",
+            "kind": "spatial_observation",
+            "sdk_frame_us": 147644094,
+            "observation_timestamp": 22771.5760269,
+            "expires_at": 22772.0760269
+          }
+        },
+        {
+          "source": "traffic_capture",
+          "expires_at": 22772.1250108,
+          "deadline_basis": {
+            "source": "traffic_capture",
+            "kind": "receiver_budget_unverified",
+            "observation_timestamp": null,
+            "sdk_frame_us": null,
+            "expires_at": 22772.1250108
+          }
+        },
+        {
+          "source": "traffic_capture",
+          "expires_at": 22772.10634,
+          "deadline_basis": {
+            "source": "traffic_capture",
+            "kind": "native_acquisition",
+            "observation_timestamp": 22771.60634,
+            "sdk_frame_us": 589046252,
+            "expires_at": 22772.10634
+          }
+        }
+      ],
+      "expires_at": 22772.0760269,
+      "source_acquisition": {
+        "lifecycle": 104452067223580,
+        "generation": 4253,
+        "frame_us": 589046252,
+        "observed_at": 22771.60634
+      },
+      "owner_witnesses_schema": 1,
+      "owner_witnesses": [
+        {
+          "target_id": "66",
+          "source": "moving",
+          "slot": 2,
+          "lifecycle": 104452067223580,
+          "acquired_generation": 4220,
+          "current_slot": 2,
+          "kind": "crossing",
+          "chain_valid": true,
+          "continuity_reason": "qualified"
+        }
+      ],
+      "producer_timing": {
+        "sequence": 2388,
+        "started_at": 22771.6169068,
+        "cpu_started": 16.15625,
+        "vehicle_read_finished_at": 22771.61692,
+        "signal_finished_at": 22771.6250023,
+        "native_read_finished_at": 22771.6250873,
+        "projection_finished_at": 22771.6597546,
+        "display_read_finished_at": 22771.6604111,
+        "publish_started_at": 22771.6604175,
+        "previous": {
+          "sequence": 2387,
+          "started_at": 22771.5081757,
+          "cpu_started": 16.125,
+          "vehicle_read_finished_at": 22771.5081896,
+          "signal_finished_at": 22771.5176963,
+          "native_read_finished_at": 22771.5177544,
+          "projection_finished_at": 22771.5519572,
+          "display_read_finished_at": 22771.5523207,
+          "publish_started_at": 22771.552323,
+          "finished_at": 22771.5631049,
+          "cpu_finished": 16.15625
+        }
+      }
+    },
+    "brake_basis": null,
+    "stop_clearance": null,
+    "motion_constraint": null,
+    "producer_timing": {
+      "sequence": 2388,
+      "started_at": 22771.6169068,
+      "cpu_started": 16.15625,
+      "vehicle_read_finished_at": 22771.61692,
+      "signal_finished_at": 22771.6250023,
+      "native_read_finished_at": 22771.6250873,
+      "projection_finished_at": 22771.6597546,
+      "display_read_finished_at": 22771.6604111,
+      "publish_started_at": 22771.6604175,
+      "previous": {
+        "sequence": 2387,
+        "started_at": 22771.5081757,
+        "cpu_started": 16.125,
+        "vehicle_read_finished_at": 22771.5081896,
+        "signal_finished_at": 22771.5176963,
+        "native_read_finished_at": 22771.5177544,
+        "projection_finished_at": 22771.5519572,
+        "display_read_finished_at": 22771.5523207,
+        "publish_started_at": 22771.552323,
+        "finished_at": 22771.5631049,
+        "cpu_finished": 16.15625
+      }
+    },
+    "diagnostic_part_request": {
+      "schema": 2,
+      "incident_id": "d8f8382277da40c398b28c5fcf315a11-11495",
+      "phase": "seal",
+      "start_s": 22697.9027699,
+      "end_s": 22747.895325,
+      "trigger_at_s": 22727.9027699,
+      "shutdown": false,
+      "token": "d8f8382277da40c398b28c5fcf315a11-11495@22697.9027699..22747.895325"
+    }
+  },
+  "selected": {
+    "throttle": 0.24694000000017696,
+    "brake": 0.0,
+    "source": "acc",
+    "reason": "normal drive",
+    "emergency": false,
+    "context": [
+      22756441673200,
+      1,
+      "promods-2.84",
+      "dd1873d84deae9eef77db740",
+      "af860aae623c4a31a130d1937ed922c9",
+      9,
+      "266cf87581d04deaaa583c6e07ce6ded",
+      [
+        "lane_path",
+        "e2b4321cfe8d72ee2a2923e886afb651a3ce346f035f94605e4f7cd6bf458256",
+        true
+      ]
+    ],
+    "sdk_frame_us": 147594096,
+    "schema_version": 1,
+    "valid": true,
+    "decision_source": "acc",
+    "observation_timestamp": 22771.5403229,
+    "computed_at": 22771.6086782,
+    "refresh_pending": false,
+    "expires_at": 22771.8308795,
+    "moving_target_ids": [
+      "66"
+    ],
+    "observed_motion_ids": [
+      "66"
+    ],
+    "deadline_basis": {
+      "source": "route_projection",
+      "kind": "spatial_observation",
+      "sdk_frame_us": 147377438,
+      "observation_timestamp": 22771.3308795,
+      "expires_at": 22771.8308795
+    },
+    "required_acc_owner_id": "66"
+  },
+  "source": {
+    "sdk_frame_us": 147677426,
+    "sdk_observation": {
+      "schema_version": 1,
+      "sdk_frame_us": 147677426,
+      "observed_at": 22771.6124355,
+      "valid": true,
+      "reason": null
+    },
+    "observation_timestamp": 22771.6124355,
+    "observation_valid": true,
+    "actual_speed_mps": 0.034757982939481735,
+    "observed_gear": 4,
+    "gps_remainder_m": 686.489501953125,
+    "gps_route_time_s": 80.15298461914062,
+    "load_observation": {
+      "schema": 1,
+      "abi_revision": 12,
+      "cargo_mass_kg": 0.0,
+      "unit_mass_kg": 0.0,
+      "chassis_pitch_rad": -0.002245902922300128,
+      "motor_brake": false,
+      "retarder_step": 0,
+      "total_mass_verified": false,
+      "road_grade_verified": false
+    },
+    "powertrain_observation": {
+      "schema": 1,
+      "engine_enabled": true,
+      "engine_rpm": 395.5650329589844,
+      "clutch_unavailable": true,
+      "damage_unavailable": true,
+      "external_input_owner_unverified": true
+    },
+    "sdk_response": {
+      "gameThrottle": 0.0,
+      "gameBrake": 0.0,
+      "userThrottle": 0.12707272171974182,
+      "userBrake": 0.0
+    },
+    "decision_started_at_s": 22771.5941605,
+    "activation": 22756441673200,
+    "route_identity": null,
+    "context": [
+      22756441673200,
+      1,
+      "promods-2.84",
+      "dd1873d84deae9eef77db740",
+      "af860aae623c4a31a130d1937ed922c9",
+      9,
+      "266cf87581d04deaaa583c6e07ce6ded",
+      [
+        "lane_path",
+        "e2b4321cfe8d72ee2a2923e886afb651a3ce346f035f94605e4f7cd6bf458256",
+        true
+      ]
+    ],
+    "control_state": "initializing",
+    "phase": "active",
+    "requested": {
+      "schema_version": 1,
+      "source": "autopilot",
+      "context": [
+        22756441673200,
+        1,
+        "promods-2.84",
+        "dd1873d84deae9eef77db740",
+        "af860aae623c4a31a130d1937ed922c9",
+        9,
+        "266cf87581d04deaaa583c6e07ce6ded",
+        [
+          "lane_path",
+          "e2b4321cfe8d72ee2a2923e886afb651a3ce346f035f94605e4f7cd6bf458256",
+          true
+        ]
+      ],
+      "sdk_frame_us": 147594096,
+      "observation_timestamp": 22771.5403229,
+      "computed_at": 22771.6086782,
+      "expires_at": 22771.8308795,
+      "valid": true,
+      "throttle": 0.24694000000017696,
+      "brake": 0.0,
+      "decision_source": "acc",
+      "reason": "normal drive",
+      "emergency": false,
+      "unavailable_field_schema": 1,
+      "unavailable_field_mask": 268427264,
+      "deadline_basis": {
+        "source": "route_projection",
+        "kind": "spatial_observation",
+        "sdk_frame_us": 147377438,
+        "observation_timestamp": 22771.3308795,
+        "expires_at": 22771.8308795
+      },
+      "invalid_reason": null,
+      "following": null,
+      "producer_trace": {
+        "context": [
+          22756441673200,
+          1,
+          "promods-2.84",
+          "dd1873d84deae9eef77db740",
+          "af860aae623c4a31a130d1937ed922c9",
+          9,
+          "266cf87581d04deaaa583c6e07ce6ded",
+          [
+            "lane_path",
+            "e2b4321cfe8d72ee2a2923e886afb651a3ce346f035f94605e4f7cd6bf458256",
+            true
+          ]
+        ],
+        "inputs": {
+          "acc": {
+            "schema_version": 1,
+            "source": "acc",
+            "context": [
+              22756441673200,
+              1,
+              "promods-2.84",
+              "dd1873d84deae9eef77db740",
+              "af860aae623c4a31a130d1937ed922c9",
+              9,
+              "266cf87581d04deaaa583c6e07ce6ded",
+              [
+                "lane_path",
+                "e2b4321cfe8d72ee2a2923e886afb651a3ce346f035f94605e4f7cd6bf458256",
+                true
+              ]
+            ],
+            "sdk_frame_us": 147594096,
+            "observation_timestamp": 22771.5403229,
+            "computed_at": 22771.5747103,
+            "expires_at": 22771.8308795,
+            "valid": true,
+            "throttle": 0.6950403442402444,
+            "brake": 0.0,
+            "emergency": false,
+            "requested_speed_kmh": 80.0,
+            "constrained_speed_kmh": 4.553783350552463,
+            "control_target_kmh": 4.553783350552463,
+            "speed_control_reason": "speed tracking",
+            "following_status": "observed moving protective speed constraint; coverage unproven",
+            "following_target_id": "66",
+            "following_required": true,
+            "following_confirmed": false,
+            "unavailable_field_schema": 1,
+            "unavailable_field_mask": 266341376,
+            "invalid_reason": null,
+            "destination_brake_selected": false,
+            "signal_stop_control": false,
+            "signal_brake_selected": false,
+            "leader_prediction": null,
+            "requested_acceleration_ms2": 1.5290887573285379,
+            "selected_acceleration_ms2": 1.5290887573285379,
+            "acceleration_basis": "nominal_actuator_mapping_not_measured_vehicle_acceleration",
+            "braking_actor_ids": [],
+            "braking_acquisition": {
+              "lifecycle": 104452067223580,
+              "generation": 4248,
+              "frame_us": 588835172,
+              "observed_at": 22771.4046897
+            },
+            "following_kind": "crossing",
+            "following_owner": {
+              "target_id": "66",
+              "source": "moving",
+              "slot": 2,
+              "lifecycle": 104452067223580,
+              "acquired_generation": 4220,
+              "current_slot": 2,
+              "kind": "crossing",
+              "chain_valid": true,
+              "continuity_reason": "qualified"
+            },
+            "following": null,
+            "deadline_reference": 0
+          },
+          "traffic": {
+            "brake_basis": {
+              "confirmed_route_conflict": false,
+              "coverage_confirmed": false,
+              "decisive": {
+                "actor": {
+                  "dimensions_whl": [
+                    1.83217191696167,
+                    1.190964937210083,
+                    4.655497074127197
+                  ],
+                  "id": 66,
+                  "record_fingerprint": "f5ebe9b5a97b61e2ed4081807095fa6046bcdebcaad56bb099e8a9dcd8490af3",
+                  "slot": 2,
+                  "source": "moving",
+                  "speed": 8.466626167297363,
+                  "x": 46118.28125,
+                  "y": 11.23324203491211,
+                  "yaw": -0.17856674708731543,
+                  "z": 40290.03125
+                },
+                "actor_arrival_s": 4.300883319347977,
+                "assumed_ego_acceleration_mps2": 0.0,
+                "body_index": 0,
+                "brake": 0.0,
+                "dimensions_whl": [
+                  1.83217191696167,
+                  1.190964937210083,
+                  4.655497074127197
+                ],
+                "distance_m": 8.284646475408607,
+                "ego_arrival_earliest_s": 28.758090987652956,
+                "ego_arrival_latest_s": 28.758090987652956,
+                "ego_body_envelope_confirmed": false,
+                "ego_motion_basis": "observed_speed_constant_motion",
+                "id": 66,
+                "motion_model": "constant_tractor_speed_raw_body_heading",
+                "point_xyz": [
+                  46124.74907383631,
+                  10.390625,
+                  40254.19628722179
+                ],
+                "reserve_s": 2.0,
+                "route_progress_m": 218.92891302296354
+              },
+              "kind": "directed_crossing_speed_constraint",
+              "source_acquisition": {
+                "frame_us": 588924234,
+                "generation": 4250,
+                "lifecycle": 104452067223580,
+                "observed_at": 22771.4819228
+              },
+              "stop_contract": "observed_positive_motion_speed_constraint"
+            },
+            "computed_at": 22771.5528913,
+            "context": [
+              22756441673200,
+              1,
+              "promods-2.84",
+              "dd1873d84deae9eef77db740",
+              "af860aae623c4a31a130d1937ed922c9",
+              9,
+              "266cf87581d04deaaa583c6e07ce6ded",
+              [
+                "lane_path",
+                "e2b4321cfe8d72ee2a2923e886afb651a3ce346f035f94605e4f7cd6bf458256",
+                true
+              ]
+            ],
+            "display_detection": {
+              "candidate": null,
+              "status": "DETECTED_ONLY_UNTIMED"
+            },
+            "expires_at": 22771.9819228,
+            "following": {
+              "constraint_completion": {
+                "basis": "unique_native_id_shape_bounded_motion_not_clearance",
+                "coverage_confirmed": false,
+                "frame_us": 588924234,
+                "game_consumption_verified": false,
+                "generation": 4250,
+                "kind": "crossing",
+                "lifecycle": 104452067223580,
+                "observed_at": 22771.4819228,
+                "record_fingerprint": "9af604f8ac8f8ad9838b5d4282bc3a758e11b9d3f1975cb9c45e0fdc41f304e1",
+                "slot": 1,
+                "source": "moving",
+                "status": "observed_original_crossing_model_ended",
+                "target_id": "51"
+              },
+              "emergency": false,
+              "optional_prediction_details_omitted": true,
+              "source_acquisition": {
+                "frame_us": 588924234,
+                "generation": 4250,
+                "lifecycle": 104452067223580,
+                "observed_at": 22771.4819228
+              },
+              "status": "no_candidate_unproven_coverage"
+            },
+            "invalid_reason": null,
+            "light_brake": 0.0,
+            "motion_constraint": {
+              "authority": [
+                22756441673200,
+                1,
+                "promods-2.84",
+                "dd1873d84deae9eef77db740",
+                "af860aae623c4a31a130d1937ed922c9",
+                9,
+                "266cf87581d04deaaa583c6e07ce6ded",
+                [
+                  "lane_path",
+                  "e2b4321cfe8d72ee2a2923e886afb651a3ce346f035f94605e4f7cd6bf458256",
+                  true
+                ]
+              ],
+              "complete": true,
+              "coverage_confirmed": false,
+              "kind": "observed_positive_motion_speed_constraint",
+              "schema": 1,
+              "source_acquisition": {
+                "frame_us": 588924234,
+                "generation": 4250,
+                "lifecycle": 104452067223580,
+                "observed_at": 22771.4819228
+              },
+              "targets": [
+                {
+                  "cap_mps": 1.2598660036521165,
+                  "constraint_kind": "crossing",
+                  "id": "66",
+                  "slot": 2,
+                  "source": "moving",
+                  "speed_mps": 8.466626167297363
+                }
+              ]
+            },
+            "observation_timestamp": 22771.5007589,
+            "producer_timing": {
+              "cpu_started": 16.125,
+              "display_read_finished_at": 22771.5523207,
+              "native_read_finished_at": 22771.5177544,
+              "previous": {
+                "cpu_finished": 16.125,
+                "cpu_started": 16.09375,
+                "display_read_finished_at": 22771.4413814,
+                "finished_at": 22771.4516015,
+                "native_read_finished_at": 22771.4103129,
+                "projection_finished_at": 22771.440902,
+                "publish_started_at": 22771.441385,
+                "sequence": 2386,
+                "signal_finished_at": 22771.410248,
+                "started_at": 22771.3977304,
+                "vehicle_read_finished_at": 22771.3977408
+              },
+              "projection_finished_at": 22771.5519572,
+              "publish_started_at": 22771.552323,
+              "sequence": 2387,
+              "signal_finished_at": 22771.5176963,
+              "started_at": 22771.5081757,
+              "vehicle_read_finished_at": 22771.5081896
+            },
+            "schema_version": 1,
+            "sdk_frame_us": 147560764,
+            "signal": {
+              "authority_lane_id": [
+                5337536180542400540,
+                1,
+                1,
+                "blkw_1402t",
+                -1,
+                [
+                  0,
+                  7,
+                  27,
+                  21,
+                  6,
+                  13,
+                  32
+                ]
+              ],
+              "coverage": {
+                "requires_takeover": false,
+                "status": "NOT_VERIFIED"
+              },
+              "frame_us": 588924234,
+              "generation": 4251,
+              "lifecycle": 104452067223580,
+              "observed_at": 22771.4820192,
+              "prefab_binding_reason": "no prepared regulated passage",
+              "reason": "no prepared regulated passage; nearby heads are detection only",
+              "relevance": "detected_only_unassigned",
+              "route_progress_m": 210.63542908681,
+              "route_publication_token": "3cc69d61db6e4d77a660a9441faab92a",
+              "schema": 3,
+              "valid": false
+            },
+            "source": "traffic",
+            "stop_clearance": null,
+            "traffic_availability": {
+              "actor_identity": null,
+              "actors_usable": true,
+              "atomic": true,
+              "buffers_present": true,
+              "capture_status": "no_candidate_unproven_coverage",
+              "coverage_confirmed": false,
+              "receiver_time": 22771.5177037,
+              "schema_version": 1,
+              "source_generation": 4250,
+              "source_timestamp": 22771.4819228,
+              "stable_read": true
+            },
+            "traffic_brake": 0.0,
+            "unavailable_field_mask": 127926016,
+            "unavailable_field_schema": 1,
+            "valid": true,
+            "deadline_reference": 1
+          },
+          "policy": {
+            "schema_version": 1,
+            "source": "policy",
+            "context": [
+              22756441673200,
+              1,
+              "promods-2.84",
+              "dd1873d84deae9eef77db740",
+              "af860aae623c4a31a130d1937ed922c9",
+              9,
+              "266cf87581d04deaaa583c6e07ce6ded",
+              [
+                "lane_path",
+                "e2b4321cfe8d72ee2a2923e886afb651a3ce346f035f94605e4f7cd6bf458256",
+                true
+              ]
+            ],
+            "sdk_frame_us": 147594096,
+            "observation_timestamp": 22771.5403229,
+            "computed_at": 22771.5532806,
+            "expires_at": 22771.8308795,
+            "valid": true,
+            "brake": 0.0,
+            "planned_speed_ms": 5.978004302313974,
+            "unavailable_field_schema": 1,
+            "unavailable_field_mask": 251657472,
+            "invalid_reason": null,
+            "following": null,
+            "deadline_reference": 0
+          },
+          "curve": {
+            "journal_input_schema": 1,
+            "presence": 843558420735,
+            "values": [
+              1,
+              "curve",
+              [
+                22756441673200,
+                1,
+                "promods-2.84",
+                "dd1873d84deae9eef77db740",
+                "af860aae623c4a31a130d1937ed922c9",
+                9,
+                "266cf87581d04deaaa583c6e07ce6ded",
+                [
+                  "lane_path",
+                  "e2b4321cfe8d72ee2a2923e886afb651a3ce346f035f94605e4f7cd6bf458256",
+                  true
+                ]
+              ],
+              147594096,
+              22771.5403229,
+              22771.5530259,
+              22772.0403229,
+              true,
+              null,
+              1,
+              268435200,
+              2,
+              19.84170204323751,
+              0.0
+            ]
+          }
+        },
+        "brake_requests": [
+          [
+            "acc",
+            "acc",
+            0.0
+          ],
+          [
+            "traffic",
+            "traffic",
+            0.0
+          ],
+          [
+            "traffic_light",
+            "traffic",
+            0.0
+          ],
+          [
+            "collision",
+            "traffic",
+            0.0
+          ],
+          [
+            "speed_policy",
+            "curve",
+            0.0
+          ],
+          [
+            "maneuver",
+            "maneuver",
+            0.0
+          ],
+          [
+            "curve",
+            "curve",
+            0.0
+          ]
+        ],
+        "input_failure": "",
+        "deadline_basis_schema": 1,
+        "deadline_bases": [
+          [
+            "route_projection",
+            "spatial_observation",
+            147377438,
+            22771.3308795,
+            22771.8308795
+          ],
+          [
+            "traffic_capture",
+            "native_acquisition",
+            588924234,
+            22771.4819228,
+            22771.9819228
+          ],
+          [
+            "curve",
+            "spatial_observation",
+            147594096,
+            22771.5403229,
+            22772.0403229
+          ]
+        ],
+        "truck": {
+          "sdk_frame_us": 147594096,
+          "observation_timestamp": 22771.5403229,
+          "observation_valid": true,
+          "gear": 4,
+          "speed_mps": 0.1839102804660797
+        },
+        "decision_sequence": 5860
+      }
+    },
+    "selected": {
+      "throttle": 0.24694000000017696,
+      "brake": 0.0,
+      "source": "acc",
+      "reason": "normal drive",
+      "emergency": false,
+      "context": [
+        22756441673200,
+        1,
+        "promods-2.84",
+        "dd1873d84deae9eef77db740",
+        "af860aae623c4a31a130d1937ed922c9",
+        9,
+        "266cf87581d04deaaa583c6e07ce6ded",
+        [
+          "lane_path",
+          "e2b4321cfe8d72ee2a2923e886afb651a3ce346f035f94605e4f7cd6bf458256",
+          true
+        ]
+      ],
+      "sdk_frame_us": 147594096,
+      "schema_version": 1,
+      "valid": true,
+      "decision_source": "acc",
+      "observation_timestamp": 22771.5403229,
+      "computed_at": 22771.6086782,
+      "refresh_pending": false,
+      "expires_at": 22771.8308795,
+      "moving_target_ids": [
+        "66"
+      ],
+      "observed_motion_ids": [
+        "66"
+      ],
+      "deadline_basis": {
+        "source": "route_projection",
+        "kind": "spatial_observation",
+        "sdk_frame_us": 147377438,
+        "observation_timestamp": 22771.3308795,
+        "expires_at": 22771.8308795
+      },
+      "required_acc_owner_id": "66"
+    },
+    "inputs": {
+      "traffic": {
+        "brake_basis": {
+          "confirmed_route_conflict": false,
+          "coverage_confirmed": false,
+          "decisive": {
+            "actor": {
+              "dimensions_whl": [
+                1.83217191696167,
+                1.190964937210083,
+                4.655497074127197
+              ],
+              "id": 66,
+              "record_fingerprint": "f5ebe9b5a97b61e2ed4081807095fa6046bcdebcaad56bb099e8a9dcd8490af3",
+              "slot": 2,
+              "source": "moving",
+              "speed": 8.466626167297363,
+              "x": 46118.28125,
+              "y": 11.23324203491211,
+              "yaw": -0.17856674708731543,
+              "z": 40290.03125
+            },
+            "actor_arrival_s": 4.300883319347977,
+            "assumed_ego_acceleration_mps2": 0.0,
+            "body_index": 0,
+            "brake": 0.0,
+            "dimensions_whl": [
+              1.83217191696167,
+              1.190964937210083,
+              4.655497074127197
+            ],
+            "distance_m": 8.284646475408607,
+            "ego_arrival_earliest_s": 28.758090987652956,
+            "ego_arrival_latest_s": 28.758090987652956,
+            "ego_body_envelope_confirmed": false,
+            "ego_motion_basis": "observed_speed_constant_motion",
+            "id": 66,
+            "motion_model": "constant_tractor_speed_raw_body_heading",
+            "point_xyz": [
+              46124.74907383631,
+              10.390625,
+              40254.19628722179
+            ],
+            "reserve_s": 2.0,
+            "route_progress_m": 218.92891302296354
+          },
+          "kind": "directed_crossing_speed_constraint",
+          "source_acquisition": {
+            "frame_us": 588924234,
+            "generation": 4250,
+            "lifecycle": 104452067223580,
+            "observed_at": 22771.4819228
+          },
+          "stop_contract": "observed_positive_motion_speed_constraint"
+        },
+        "computed_at": 22771.5528913,
+        "context": [
+          22756441673200,
+          1,
+          "promods-2.84",
+          "dd1873d84deae9eef77db740",
+          "af860aae623c4a31a130d1937ed922c9",
+          9,
+          "266cf87581d04deaaa583c6e07ce6ded",
+          [
+            "lane_path",
+            "e2b4321cfe8d72ee2a2923e886afb651a3ce346f035f94605e4f7cd6bf458256",
+            true
+          ]
+        ],
+        "deadline_basis": {
+          "expires_at": 22771.9819228,
+          "kind": "native_acquisition",
+          "observation_timestamp": 22771.4819228,
+          "sdk_frame_us": 588924234,
+          "source": "traffic_capture"
+        },
+        "display_detection": {
+          "candidate": null,
+          "status": "DETECTED_ONLY_UNTIMED"
+        },
+        "expires_at": 22771.9819228,
+        "following": {
+          "constraint_completion": {
+            "basis": "unique_native_id_shape_bounded_motion_not_clearance",
+            "coverage_confirmed": false,
+            "frame_us": 588924234,
+            "game_consumption_verified": false,
+            "generation": 4250,
+            "kind": "crossing",
+            "lifecycle": 104452067223580,
+            "observed_at": 22771.4819228,
+            "record_fingerprint": "9af604f8ac8f8ad9838b5d4282bc3a758e11b9d3f1975cb9c45e0fdc41f304e1",
+            "slot": 1,
+            "source": "moving",
+            "status": "observed_original_crossing_model_ended",
+            "target_id": "51"
+          },
+          "emergency": false,
+          "optional_prediction_details_omitted": true,
+          "source_acquisition": {
+            "frame_us": 588924234,
+            "generation": 4250,
+            "lifecycle": 104452067223580,
+            "observed_at": 22771.4819228
+          },
+          "status": "no_candidate_unproven_coverage"
+        },
+        "invalid_reason": null,
+        "light_brake": 0.0,
+        "motion_constraint": {
+          "authority": [
+            22756441673200,
+            1,
+            "promods-2.84",
+            "dd1873d84deae9eef77db740",
+            "af860aae623c4a31a130d1937ed922c9",
+            9,
+            "266cf87581d04deaaa583c6e07ce6ded",
+            [
+              "lane_path",
+              "e2b4321cfe8d72ee2a2923e886afb651a3ce346f035f94605e4f7cd6bf458256",
+              true
+            ]
+          ],
+          "complete": true,
+          "coverage_confirmed": false,
+          "kind": "observed_positive_motion_speed_constraint",
+          "schema": 1,
+          "source_acquisition": {
+            "frame_us": 588924234,
+            "generation": 4250,
+            "lifecycle": 104452067223580,
+            "observed_at": 22771.4819228
+          },
+          "targets": [
+            {
+              "cap_mps": 1.2598660036521165,
+              "constraint_kind": "crossing",
+              "id": "66",
+              "slot": 2,
+              "source": "moving",
+              "speed_mps": 8.466626167297363
+            }
+          ]
+        },
+        "observation_timestamp": 22771.5007589,
+        "producer_timing": {
+          "cpu_started": 16.125,
+          "display_read_finished_at": 22771.5523207,
+          "native_read_finished_at": 22771.5177544,
+          "previous": {
+            "cpu_finished": 16.125,
+            "cpu_started": 16.09375,
+            "display_read_finished_at": 22771.4413814,
+            "finished_at": 22771.4516015,
+            "native_read_finished_at": 22771.4103129,
+            "projection_finished_at": 22771.440902,
+            "publish_started_at": 22771.441385,
+            "sequence": 2386,
+            "signal_finished_at": 22771.410248,
+            "started_at": 22771.3977304,
+            "vehicle_read_finished_at": 22771.3977408
+          },
+          "projection_finished_at": 22771.5519572,
+          "publish_started_at": 22771.552323,
+          "sequence": 2387,
+          "signal_finished_at": 22771.5176963,
+          "started_at": 22771.5081757,
+          "vehicle_read_finished_at": 22771.5081896
+        },
+        "schema_version": 1,
+        "sdk_frame_us": 147560764,
+        "signal": {
+          "authority_lane_id": [
+            5337536180542400540,
+            1,
+            1,
+            "blkw_1402t",
+            -1,
+            [
+              0,
+              7,
+              27,
+              21,
+              6,
+              13,
+              32
+            ]
+          ],
+          "coverage": {
+            "requires_takeover": false,
+            "status": "NOT_VERIFIED"
+          },
+          "frame_us": 588924234,
+          "generation": 4251,
+          "lifecycle": 104452067223580,
+          "observed_at": 22771.4820192,
+          "prefab_binding_reason": "no prepared regulated passage",
+          "reason": "no prepared regulated passage; nearby heads are detection only",
+          "relevance": "detected_only_unassigned",
+          "route_progress_m": 210.63542908681,
+          "route_publication_token": "3cc69d61db6e4d77a660a9441faab92a",
+          "schema": 3,
+          "valid": false
+        },
+        "source": "traffic",
+        "stop_clearance": null,
+        "traffic_availability": {
+          "actor_identity": null,
+          "actors_usable": true,
+          "atomic": true,
+          "buffers_present": true,
+          "capture_status": "no_candidate_unproven_coverage",
+          "coverage_confirmed": false,
+          "receiver_time": 22771.5177037,
+          "schema_version": 1,
+          "source_generation": 4250,
+          "source_timestamp": 22771.4819228,
+          "stable_read": true
+        },
+        "traffic_brake": 0.0,
+        "unavailable_field_mask": 127926016,
+        "unavailable_field_schema": 1,
+        "valid": true
+      },
+      "acc": {
+        "schema_version": 1,
+        "source": "acc",
+        "context": [
+          22756441673200,
+          1,
+          "promods-2.84",
+          "dd1873d84deae9eef77db740",
+          "af860aae623c4a31a130d1937ed922c9",
+          9,
+          "266cf87581d04deaaa583c6e07ce6ded",
+          [
+            "lane_path",
+            "e2b4321cfe8d72ee2a2923e886afb651a3ce346f035f94605e4f7cd6bf458256",
+            true
+          ]
+        ],
+        "sdk_frame_us": 147677426,
+        "observation_timestamp": 22771.6124355,
+        "computed_at": 22771.638775,
+        "expires_at": 22771.9819228,
+        "valid": true,
+        "throttle": 0.7280009698320339,
+        "brake": 0.0,
+        "emergency": false,
+        "requested_speed_kmh": 80.0,
+        "constrained_speed_kmh": 4.535517613147619,
+        "control_target_kmh": 4.535517613147619,
+        "speed_control_reason": "speed tracking",
+        "following_status": "observed moving protective speed constraint; coverage unproven",
+        "following_target_id": "66",
+        "following_required": true,
+        "following_confirmed": false,
+        "unavailable_field_schema": 1,
+        "unavailable_field_mask": 266341376,
+        "deadline_basis": {
+          "source": "traffic_capture",
+          "kind": "native_acquisition",
+          "observation_timestamp": 22771.4819228,
+          "sdk_frame_us": 588924234,
+          "expires_at": 22771.9819228
+        },
+        "invalid_reason": null,
+        "destination_brake_selected": false,
+        "signal_stop_control": false,
+        "signal_brake_selected": false,
+        "leader_prediction": null,
+        "requested_acceleration_ms2": 1.6016021336304747,
+        "selected_acceleration_ms2": 1.6016021336304747,
+        "acceleration_basis": "nominal_actuator_mapping_not_measured_vehicle_acceleration",
+        "braking_actor_ids": [],
+        "braking_acquisition": {
+          "lifecycle": 104452067223580,
+          "generation": 4250,
+          "frame_us": 588924234,
+          "observed_at": 22771.4819228
+        },
+        "following_kind": "crossing",
+        "following_owner": {
+          "target_id": "66",
+          "source": "moving",
+          "slot": 2,
+          "lifecycle": 104452067223580,
+          "acquired_generation": 4220,
+          "current_slot": 2,
+          "kind": "crossing",
+          "chain_valid": true,
+          "continuity_reason": "qualified"
+        },
+        "following": null
+      },
+      "policy": {
+        "schema_version": 1,
+        "source": "policy",
+        "context": [
+          22756441673200,
+          1,
+          "promods-2.84",
+          "dd1873d84deae9eef77db740",
+          "af860aae623c4a31a130d1937ed922c9",
+          9,
+          "266cf87581d04deaaa583c6e07ce6ded",
+          [
+            "lane_path",
+            "e2b4321cfe8d72ee2a2923e886afb651a3ce346f035f94605e4f7cd6bf458256",
+            true
+          ]
+        ],
+        "sdk_frame_us": 147644094,
+        "observation_timestamp": 22771.5760269,
+        "computed_at": 22771.6231929,
+        "expires_at": 22771.9819228,
+        "valid": true,
+        "brake": 0.0,
+        "planned_speed_ms": 5.975655818456513,
+        "unavailable_field_schema": 1,
+        "unavailable_field_mask": 251657472,
+        "deadline_basis": {
+          "source": "traffic_capture",
+          "kind": "native_acquisition",
+          "observation_timestamp": 22771.4819228,
+          "sdk_frame_us": 588924234,
+          "expires_at": 22771.9819228
+        },
+        "invalid_reason": null,
+        "following": null
+      }
+    },
+    "service_hold": null,
+    "launch": null,
+    "decision_sequence": 7604,
+    "autopilot_active": true,
+    "forward_history": {
+      "phase": "forward_confirmed",
+      "confirmed_frame": 147677426,
+      "confirmed_at": 22771.6124355,
+      "last_frame": 147677426,
+      "last_observed_at": 22771.6124355,
+      "zero_deadline_at": null,
+      "launch_deadline_at": null,
+      "brake_only": false,
+      "coast_only": false
+    },
+    "input_read_timing": {
+      "traffic": [
+        22771.644864,
+        22771.6452612,
+        22771.6452691,
+        0,
+        147560764,
+        22771.5007589,
+        22771.5528913,
+        22771.9819228
+      ],
+      "acc": [
+        22771.6463147,
+        22771.6468386,
+        22771.6468392,
+        0,
+        147677426,
+        22771.6124355,
+        22771.638775,
+        22771.9819228
+      ],
+      "policy": [
+        22771.6687922,
+        22771.6743323,
+        22771.6743336,
+        0,
+        147710758,
+        22771.6494303,
+        22771.666726,
+        22771.9819228
+      ],
+      "road": [
+        22771.6667642,
+        22771.668654,
+        22771.6686554,
+        0,
+        147677426,
+        22771.6124355,
+        22771.6458273,
+        22772.1124355
+      ]
+    },
+    "input_rejections": {
+      "traffic": "",
+      "acc": "",
+      "policy": "",
+      "road": ""
+    },
+    "traffic_cause": {
+      "kind": "directed_crossing_speed_constraint",
+      "stop_contract": "observed_positive_motion_speed_constraint",
+      "sdk_frame_us": 147560764,
+      "observation_timestamp": 22771.5007589,
+      "source_acquisition": {
+        "lifecycle": 104452067223580,
+        "generation": 4250,
+        "frame_us": 588924234,
+        "observed_at": 22771.4819228
+      },
+      "decisive": {
+        "id": 66,
+        "distance_m": 8.284646475408607,
+        "route_progress_m": 218.92891302296354,
+        "actor_arrival_s": 4.300883319347977,
+        "ego_arrival_earliest_s": 28.758090987652956,
+        "ego_arrival_latest_s": 28.758090987652956,
+        "assumed_ego_acceleration_mps2": 0.0,
+        "ego_motion_basis": "observed_speed_constant_motion",
+        "predicted_contact_s": null,
+        "contact_basis": null,
+        "brake": 0.0
+      },
+      "actor": {
+        "id": 66,
+        "source": "moving",
+        "slot": 2,
+        "record_fingerprint": "f5ebe9b5a97b61e2ed4081807095fa6046bcdebcaad56bb099e8a9dcd8490af3",
+        "x": 46118.28125,
+        "y": 11.23324203491211,
+        "z": 40290.03125,
+        "yaw": -0.17856674708731543,
+        "speed": 8.466626167297363,
+        "dimensions_whl": [
+          1.83217191696167,
+          1.190964937210083,
+          4.655497074127197
+        ]
+      }
+    },
+    "regulator_mode": "speed tracking",
+    "regulator_mode_status": "PRODUCER_SPEED_CONTROL_REASON",
+    "limits": {
+      "road": {
+        "source": "road",
+        "context": [
+          22756441673200,
+          1,
+          "promods-2.84",
+          "dd1873d84deae9eef77db740",
+          "af860aae623c4a31a130d1937ed922c9",
+          9,
+          "266cf87581d04deaaa583c6e07ce6ded",
+          [
+            "lane_path",
+            "e2b4321cfe8d72ee2a2923e886afb651a3ce346f035f94605e4f7cd6bf458256",
+            true
+          ]
+        ],
+        "sdk_frame_us": 147677426,
+        "observation_timestamp": 22771.6124355,
+        "computed_at": 22771.6458273,
+        "expires_at": 22772.1124355,
+        "valid": true,
+        "speed_cap_kmh": 60.0
+      },
+      "policy": {
+        "source": "policy",
+        "context": [
+          22756441673200,
+          1,
+          "promods-2.84",
+          "dd1873d84deae9eef77db740",
+          "af860aae623c4a31a130d1937ed922c9",
+          9,
+          "266cf87581d04deaaa583c6e07ce6ded",
+          [
+            "lane_path",
+            "e2b4321cfe8d72ee2a2923e886afb651a3ce346f035f94605e4f7cd6bf458256",
+            true
+          ]
+        ],
+        "sdk_frame_us": 147710758,
+        "observation_timestamp": 22771.6494303,
+        "computed_at": 22771.666726,
+        "expires_at": 22771.9819228,
+        "valid": true,
+        "planned_speed_ms": 5.975655818456513
+      }
+    },
+    "speed_ceiling_mps": 5.975655818456513,
+    "output_intent": {
+      "throttle": 0.24694000000017696,
+      "brake": 0.0,
+      "source": "engine",
+      "reason": "normal drive"
+    },
+    "traffic_producer_runtime": {
+      "sequence": 2388,
+      "active_stage": "finished",
+      "phases": {
+        "started_at": 22771.6169068,
+        "cpu_started": 16.15625,
+        "vehicle_read_finished_at": 22771.61692,
+        "signal_finished_at": 22771.6250023,
+        "native_read_finished_at": 22771.6250873,
+        "projection_finished_at": 22771.6597546,
+        "display_read_finished_at": 22771.6604111,
+        "publish_started_at": 22771.6604175,
+        "finished_at": 22771.6766788,
+        "cpu_finished": 16.203125
+      },
+      "previous": {
+        "sequence": 2387,
+        "started_at": 22771.5081757,
+        "cpu_started": 16.125,
+        "vehicle_read_finished_at": 22771.5081896,
+        "signal_finished_at": 22771.5176963,
+        "native_read_finished_at": 22771.5177544,
+        "projection_finished_at": 22771.5519572,
+        "display_read_finished_at": 22771.5523207,
+        "publish_started_at": 22771.552323,
+        "finished_at": 22771.5631049,
+        "cpu_finished": 16.15625
+      }
+    }
+  },
+  "checked_at": 22771.7560637
+}

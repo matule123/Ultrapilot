@@ -1,0 +1,1462 @@
+[
+  {
+    "at_s": 22767.2993955,
+    "kind": "regular",
+    "raw_bytes": 4193,
+    "largest": [
+      [
+        "traffic_cause",
+        1037
+      ],
+      [
+        "traffic_departure",
+        672
+      ],
+      [
+        "aggregate",
+        604
+      ],
+      [
+        "motion_constraint",
+        531
+      ],
+      [
+        "load_observation",
+        222
+      ]
+    ],
+    "row": {
+      "sdk_frame_us": 143277602,
+      "observation_timestamp": 22767.2092597,
+      "activation": 22756441673200,
+      "decision_sequence": 7570,
+      "command_sequence": 5802,
+      "command_sdk_frame_us": 143177606,
+      "command_observation_timestamp": 22767.0992456,
+      "command_computed_at": 22767.1732227,
+      "command_expires_at": 22767.4498833,
+      "command_valid": true,
+      "speed_mps": 6.274430751800537,
+      "gear": 8,
+      "observation_valid": true,
+      "phase": "active",
+      "control_state": "initializing",
+      "requested_speed_kmh": 80.0,
+      "constrained_speed_kmh": 20.47816910673639,
+      "control_target_kmh": 20.47816910673639,
+      "speed_ceiling_mps": 6.050830800386404,
+      "selected_source": "acc",
+      "reason": "acc brake demand",
+      "throttle": 0.0,
+      "brake": 0.056308608674866374,
+      "pedal_mode": "brake",
+      "requested_throttle": 0.0,
+      "requested_brake": 0.056308608674866374,
+      "selected_throttle": 0.0,
+      "selected_brake": 0.056308608674866374,
+      "brake_requests": [
+        [
+          "acc",
+          "acc",
+          0.056308608674866374
+        ],
+        [
+          "traffic",
+          "traffic",
+          0.0
+        ],
+        [
+          "traffic_light",
+          "traffic",
+          0.0
+        ],
+        [
+          "collision",
+          "traffic",
+          0.0
+        ],
+        [
+          "speed_policy",
+          "curve",
+          0.0
+        ],
+        [
+          "maneuver",
+          "maneuver",
+          0.0
+        ],
+        [
+          "curve",
+          "curve",
+          0.0
+        ]
+      ],
+      "acc_throttle": 0.0,
+      "acc_brake": 0.09359091373926987,
+      "acc_target_id": "39",
+      "acc_status": "observed crossing constraint ended; coverage remains unproven",
+      "acc_gap_m": null,
+      "acc_confirmed": false,
+      "traffic_target_id": null,
+      "traffic_target_status": "no_candidate_unproven_coverage",
+      "traffic_gap_m": null,
+      "traffic_target_confirmed": null,
+      "traffic_departure": {
+        "schema_version": 1,
+        "target_id": "39",
+        "status": "observed_body_outside_route",
+        "confirmed": false,
+        "observation_kind": "changed_receiver_record_not_producer_timestamp",
+        "previous_receiver_time": 22767.0089828,
+        "receiver_time": 22767.1161222,
+        "previous_record": "8bbbaab94aad06a819a9bd3a7724dc33abf2284c85327a529780f26b75110774",
+        "record": "ab1ba3a74442c9fc28dda6ad25b3f490d06ba7c78bd42646ff74b7ade688c2c6",
+        "previous_position_xyz": [
+          46099.53125,
+          11.184584617614746,
+          40232.47265625
+        ],
+        "position_xyz": [
+          46100.41015625,
+          11.184584617614746,
+          40233.05078125
+        ],
+        "minimum_body_reference_clearance_m": 3.637690704796841,
+        "source": "moving",
+        "slot": 0,
+        "coverage_confirmed": false
+      },
+      "traffic_cause": {
+        "kind": "directed_crossing_heuristic",
+        "stop_contract": "observed_positive_motion_speed_constraint",
+        "sdk_frame_us": 143177606,
+        "observation_timestamp": 22767.0992456,
+        "source_acquisition": {
+          "lifecycle": 104452067223580,
+          "generation": 4143,
+          "frame_us": 584542559,
+          "observed_at": 22767.0854563
+        },
+        "decisive": {
+          "id": 51,
+          "distance_m": 29.70203777647609,
+          "route_progress_m": 222.97762722705022,
+          "actor_arrival_s": 2.6755286873962976,
+          "ego_arrival_earliest_s": 4.7629022366799125,
+          "ego_arrival_latest_s": 4.7629022366799125,
+          "assumed_ego_acceleration_mps2": 0.0,
+          "ego_motion_basis": "observed_speed_constant_motion",
+          "predicted_contact_s": null,
+          "contact_basis": null,
+          "brake": 0.33769793019484873
+        },
+        "actor": {
+          "id": 51,
+          "source": "moving",
+          "slot": 1,
+          "record_fingerprint": "22263c6d017437a1f8564ebb83a44399f10d772d8b5739c517ed4ddec3c17178",
+          "x": 46112.65234375,
+          "y": 11.517284393310547,
+          "z": 40241.9609375,
+          "yaw": -2.216693811300841,
+          "speed": 7.554080486297607,
+          "dimensions_whl": [
+            2.2803690433502197,
+            1.7107124328613281,
+            4.891513824462891
+          ]
+        }
+      },
+      "speed_control_reason": "speed service brake",
+      "traffic_brake": 0.0,
+      "light_brake": 0.0,
+      "policy_brake": 0.0,
+      "curve_brake": 0.0,
+      "curve_radius_m": 20.902754496964583,
+      "curve_distance_m": 20.0,
+      "signal_id": null,
+      "signal_color": null,
+      "signal_relevance": "detected_only_unassigned",
+      "signal_valid": false,
+      "signal_reason": "no prepared regulated passage; nearby heads are detection only",
+      "signal_native_state": null,
+      "signal_time_left_s": null,
+      "signal_phase_plan": null,
+      "signal_observed_at": 22767.0856581,
+      "signal_frame_us": 584542559,
+      "signal_generation": 4144,
+      "signal_lifecycle": 104452067223580,
+      "signal_lock": null,
+      "stop_target": null,
+      "forward_phase": "forward_confirmed",
+      "coast_only": false,
+      "hold_phase": null,
+      "hold_chain": null,
+      "hold_brake": null,
+      "motion_constraint": {
+        "complete": true,
+        "coverage_confirmed": false,
+        "kind": "observed_positive_motion_speed_constraint",
+        "schema": 1,
+        "source_acquisition": {
+          "frame_us": 584542559,
+          "generation": 4143,
+          "lifecycle": 104452067223580,
+          "observed_at": 22767.0854563
+        },
+        "targets": [
+          {
+            "cap_mps": 5.688380307426775,
+            "constraint_kind": "crossing",
+            "id": "39",
+            "slot": 0,
+            "source": "moving",
+            "speed_mps": 10.440269470214844
+          },
+          {
+            "cap_mps": 5.9412452507300895,
+            "constraint_kind": "crossing",
+            "id": "51",
+            "slot": 1,
+            "source": "moving",
+            "speed_mps": 7.554080486297607
+          }
+        ]
+      },
+      "hold_reason": null,
+      "sdk_game_throttle": 7.531731171184219e-06,
+      "sdk_game_brake": 0.0,
+      "load_observation": {
+        "schema": 1,
+        "abi_revision": 12,
+        "cargo_mass_kg": 0.0,
+        "unit_mass_kg": 0.0,
+        "chassis_pitch_rad": 0.0012233256535666421,
+        "motor_brake": false,
+        "retarder_step": 0,
+        "total_mass_verified": false,
+        "road_grade_verified": false
+      },
+      "powertrain_observation": {
+        "schema": 1,
+        "engine_enabled": true,
+        "engine_rpm": 1410.501953125,
+        "clutch_unavailable": true,
+        "damage_unavailable": true,
+        "external_input_owner_unverified": true
+      },
+      "sdk_user_throttle": 0.0,
+      "sdk_user_brake": 0.0,
+      "first_reason": null,
+      "first_reason_observed_at": null,
+      "write_first_sequence": 480,
+      "write_last_sequence": 482,
+      "write_count": 3,
+      "write_success_count": 3,
+      "write_error_count": 0,
+      "write_unverified_count": 0,
+      "write_first_started_at_s": 22767.2838072,
+      "write_last_returned_at_s": 22767.2915904,
+      "last_backend_status": "MAPPING_WRITE_RETURNED",
+      "last_backend_error": null,
+      "backend_throttle_min": 0.0,
+      "backend_throttle_max": 0.0,
+      "backend_brake_min": 0.05630860850214958,
+      "backend_brake_max": 0.05630860850214958,
+      "backend_pair_mode_changes": 0,
+      "write_source_changes": 0,
+      "monotonic_s": 22767.2993955,
+      "aggregate": {
+        "last_mode": "brake",
+        "decision_count": 1,
+        "state_changes": 1,
+        "pedal_mode_changes": 0,
+        "write_count": 3,
+        "write_error_count": 0,
+        "backend_pair_mode_changes": 0,
+        "write_source_changes": 0,
+        "backend_throttle_min": 0.0,
+        "backend_throttle_max": 0.0,
+        "backend_brake_min": 0.05630860850214958,
+        "backend_brake_max": 0.05630860850214958,
+        "throttle_min": 0.0,
+        "throttle_max": 0.0,
+        "brake_min": 0.056308608674866374,
+        "brake_max": 0.056308608674866374,
+        "speed_mps_min": 6.274430751800537,
+        "speed_mps_max": 6.274430751800537,
+        "started_at_s": 22767.2993955,
+        "ended_at_s": 22767.2993955,
+        "exact_write_timing": false
+      }
+    }
+  },
+  {
+    "at_s": 22767.4065936,
+    "kind": "regular",
+    "raw_bytes": 4256,
+    "largest": [
+      [
+        "traffic_cause",
+        1035
+      ],
+      [
+        "traffic_departure",
+        675
+      ],
+      [
+        "aggregate",
+        602
+      ],
+      [
+        "motion_constraint",
+        530
+      ],
+      [
+        "brake_requests",
+        236
+      ]
+    ],
+    "row": {
+      "sdk_frame_us": 143377598,
+      "observation_timestamp": 22767.3185197,
+      "activation": 22756441673200,
+      "decision_sequence": 7571,
+      "command_sequence": 5804,
+      "command_sdk_frame_us": 143327600,
+      "command_observation_timestamp": 22767.2633014,
+      "command_computed_at": 22767.3182447,
+      "command_expires_at": 22767.5274199,
+      "command_valid": true,
+      "speed_mps": 6.283269882202148,
+      "gear": 8,
+      "observation_valid": true,
+      "phase": "active",
+      "control_state": "initializing",
+      "requested_speed_kmh": 80.0,
+      "constrained_speed_kmh": 19.956313184885527,
+      "control_target_kmh": 19.956313184885527,
+      "speed_ceiling_mps": 5.991155577648041,
+      "selected_source": "acc",
+      "reason": "acc brake demand",
+      "throttle": 0.0,
+      "brake": 0.12492266874960319,
+      "pedal_mode": "brake",
+      "requested_throttle": 0.0,
+      "requested_brake": 0.12492266874960319,
+      "selected_throttle": 0.0,
+      "selected_brake": 0.12492266874960319,
+      "brake_requests": [
+        [
+          "acc",
+          "acc",
+          0.12492266874960319
+        ],
+        [
+          "traffic",
+          "traffic",
+          0.0
+        ],
+        [
+          "traffic_light",
+          "traffic",
+          0.0
+        ],
+        [
+          "collision",
+          "traffic",
+          0.0
+        ],
+        [
+          "speed_policy",
+          "curve",
+          0.0
+        ],
+        [
+          "maneuver",
+          "maneuver",
+          0.0
+        ],
+        [
+          "curve",
+          "curve",
+          0.04228807038347675
+        ]
+      ],
+      "acc_throttle": 0.0,
+      "acc_brake": 0.12490158145793909,
+      "acc_target_id": "39",
+      "acc_status": "observed crossing constraint ended; coverage remains unproven",
+      "acc_gap_m": null,
+      "acc_confirmed": false,
+      "traffic_target_id": null,
+      "traffic_target_status": "no_candidate_unproven_coverage",
+      "traffic_gap_m": null,
+      "traffic_target_confirmed": null,
+      "traffic_departure": {
+        "schema_version": 1,
+        "target_id": "39",
+        "status": "observed_body_outside_route",
+        "confirmed": false,
+        "observation_kind": "changed_receiver_record_not_producer_timestamp",
+        "previous_receiver_time": 22767.1161222,
+        "receiver_time": 22767.2260377,
+        "previous_record": "ab1ba3a74442c9fc28dda6ad25b3f490d06ba7c78bd42646ff74b7ade688c2c6",
+        "record": "0b68036799aed1f7e5fe15bc832a833ea000d852821b2bda5137929021a24356",
+        "previous_position_xyz": [
+          46100.41015625,
+          11.184584617614746,
+          40233.05078125
+        ],
+        "position_xyz": [
+          46101.41015625,
+          11.184584617614746,
+          40233.7265625
+        ],
+        "minimum_body_reference_clearance_m": 3.6577330907576693,
+        "source": "moving",
+        "slot": 0,
+        "coverage_confirmed": false
+      },
+      "traffic_cause": {
+        "kind": "directed_crossing_heuristic",
+        "stop_contract": "observed_positive_motion_speed_constraint",
+        "sdk_frame_us": 143277602,
+        "observation_timestamp": 22767.2092597,
+        "source_acquisition": {
+          "lifecycle": 104452067223580,
+          "generation": 4146,
+          "frame_us": 584654032,
+          "observed_at": 22767.2020496
+        },
+        "decisive": {
+          "id": 51,
+          "distance_m": 29.07106607108659,
+          "route_progress_m": 222.97286305741315,
+          "actor_arrival_s": 2.600065110715479,
+          "ego_arrival_earliest_s": 4.633259529200196,
+          "ego_arrival_latest_s": 4.633259529200196,
+          "assumed_ego_acceleration_mps2": 0.0,
+          "ego_motion_basis": "observed_speed_constant_motion",
+          "predicted_contact_s": null,
+          "contact_basis": null,
+          "brake": 0.35998046705031916
+        },
+        "actor": {
+          "id": 51,
+          "source": "moving",
+          "slot": 1,
+          "record_fingerprint": "88331a79630fc97fcdcadfe5136c63ce4f7a956bbacc9c26562e2c77f41fcc0f",
+          "x": 46113.3515625,
+          "y": 11.517284393310547,
+          "z": 40242.48828125,
+          "yaw": -2.2168531075782827,
+          "speed": 7.435184001922607,
+          "dimensions_whl": [
+            2.2803690433502197,
+            1.7107124328613281,
+            4.891513824462891
+          ]
+        }
+      },
+      "speed_control_reason": "speed service brake",
+      "traffic_brake": 0.0,
+      "light_brake": 0.0,
+      "policy_brake": 0.0,
+      "curve_brake": 0.04228807038347675,
+      "curve_radius_m": 20.490487444908016,
+      "curve_distance_m": 16.0,
+      "signal_id": null,
+      "signal_color": null,
+      "signal_relevance": "detected_only_unassigned",
+      "signal_valid": false,
+      "signal_reason": "no prepared regulated passage; nearby heads are detection only",
+      "signal_native_state": null,
+      "signal_time_left_s": null,
+      "signal_phase_plan": null,
+      "signal_observed_at": 22767.2022025,
+      "signal_frame_us": 584654032,
+      "signal_generation": 4147,
+      "signal_lifecycle": 104452067223580,
+      "signal_lock": null,
+      "stop_target": null,
+      "forward_phase": "forward_confirmed",
+      "coast_only": false,
+      "hold_phase": null,
+      "hold_chain": null,
+      "hold_brake": null,
+      "motion_constraint": {
+        "complete": true,
+        "coverage_confirmed": false,
+        "kind": "observed_positive_motion_speed_constraint",
+        "schema": 1,
+        "source_acquisition": {
+          "frame_us": 584654032,
+          "generation": 4146,
+          "lifecycle": 104452067223580,
+          "observed_at": 22767.2020496
+        },
+        "targets": [
+          {
+            "cap_mps": 5.543420329134869,
+            "constraint_kind": "crossing",
+            "id": "39",
+            "slot": 0,
+            "source": "moving",
+            "speed_mps": 10.249420166015625
+          },
+          {
+            "cap_mps": 5.897953768425347,
+            "constraint_kind": "crossing",
+            "id": "51",
+            "slot": 1,
+            "source": "moving",
+            "speed_mps": 7.435184001922607
+          }
+        ]
+      },
+      "hold_reason": null,
+      "sdk_game_throttle": 1.1768329954975343e-07,
+      "sdk_game_brake": 0.02127992734313011,
+      "load_observation": {
+        "schema": 1,
+        "abi_revision": 12,
+        "cargo_mass_kg": 0.0,
+        "unit_mass_kg": 0.0,
+        "chassis_pitch_rad": 0.00043725967647778726,
+        "motor_brake": false,
+        "retarder_step": 0,
+        "total_mass_verified": false,
+        "road_grade_verified": false
+      },
+      "powertrain_observation": {
+        "schema": 1,
+        "engine_enabled": true,
+        "engine_rpm": 1412.74169921875,
+        "clutch_unavailable": true,
+        "damage_unavailable": true,
+        "external_input_owner_unverified": true
+      },
+      "sdk_user_throttle": 0.0,
+      "sdk_user_brake": 0.02127992734313011,
+      "first_reason": null,
+      "first_reason_observed_at": null,
+      "write_first_sequence": 483,
+      "write_last_sequence": 485,
+      "write_count": 3,
+      "write_success_count": 3,
+      "write_error_count": 0,
+      "write_unverified_count": 0,
+      "write_first_started_at_s": 22767.400942,
+      "write_last_returned_at_s": 22767.4027053,
+      "last_backend_status": "MAPPING_WRITE_RETURNED",
+      "last_backend_error": null,
+      "backend_throttle_min": 0.0,
+      "backend_throttle_max": 0.0,
+      "backend_brake_min": 0.12492267042398453,
+      "backend_brake_max": 0.12492267042398453,
+      "backend_pair_mode_changes": 0,
+      "write_source_changes": 0,
+      "monotonic_s": 22767.4065936,
+      "aggregate": {
+        "last_mode": "brake",
+        "decision_count": 1,
+        "state_changes": 0,
+        "pedal_mode_changes": 0,
+        "write_count": 3,
+        "write_error_count": 0,
+        "backend_pair_mode_changes": 0,
+        "write_source_changes": 0,
+        "backend_throttle_min": 0.0,
+        "backend_throttle_max": 0.0,
+        "backend_brake_min": 0.12492267042398453,
+        "backend_brake_max": 0.12492267042398453,
+        "throttle_min": 0.0,
+        "throttle_max": 0.0,
+        "brake_min": 0.12492266874960319,
+        "brake_max": 0.12492266874960319,
+        "speed_mps_min": 6.283269882202148,
+        "speed_mps_max": 6.283269882202148,
+        "started_at_s": 22767.4065936,
+        "ended_at_s": 22767.4065936,
+        "exact_write_timing": false
+      }
+    }
+  },
+  {
+    "at_s": 22767.5230544,
+    "kind": "regular",
+    "raw_bytes": 4248,
+    "largest": [
+      [
+        "traffic_cause",
+        1033
+      ],
+      [
+        "traffic_departure",
+        674
+      ],
+      [
+        "aggregate",
+        600
+      ],
+      [
+        "motion_constraint",
+        530
+      ],
+      [
+        "brake_requests",
+        236
+      ]
+    ],
+    "row": {
+      "sdk_frame_us": 143477594,
+      "observation_timestamp": 22767.4071177,
+      "activation": 22756441673200,
+      "decision_sequence": 7572,
+      "command_sequence": 5805,
+      "command_sdk_frame_us": 143377598,
+      "command_observation_timestamp": 22767.3185197,
+      "command_computed_at": 22767.3866911,
+      "command_expires_at": 22767.6357447,
+      "command_valid": true,
+      "speed_mps": 6.252967834472656,
+      "gear": 8,
+      "observation_valid": true,
+      "phase": "active",
+      "control_state": "initializing",
+      "requested_speed_kmh": 80.0,
+      "constrained_speed_kmh": 19.48795886980861,
+      "control_target_kmh": 19.48795886980861,
+      "speed_ceiling_mps": 5.97100263634929,
+      "selected_source": "acc",
+      "reason": "acc brake demand",
+      "throttle": 0.0,
+      "brake": 0.1248560735218958,
+      "pedal_mode": "brake",
+      "requested_throttle": 0.0,
+      "requested_brake": 0.1248560735218958,
+      "selected_throttle": 0.0,
+      "selected_brake": 0.1248560735218958,
+      "brake_requests": [
+        [
+          "acc",
+          "acc",
+          0.1248560735218958
+        ],
+        [
+          "traffic",
+          "traffic",
+          0.0
+        ],
+        [
+          "traffic_light",
+          "traffic",
+          0.0
+        ],
+        [
+          "collision",
+          "traffic",
+          0.0
+        ],
+        [
+          "speed_policy",
+          "curve",
+          0.0
+        ],
+        [
+          "maneuver",
+          "maneuver",
+          0.0
+        ],
+        [
+          "curve",
+          "curve",
+          0.058422860910821404
+        ]
+      ],
+      "acc_throttle": 0.0,
+      "acc_brake": 0.1362777653763657,
+      "acc_target_id": "39",
+      "acc_status": "observed crossing constraint ended; coverage remains unproven",
+      "acc_gap_m": null,
+      "acc_confirmed": false,
+      "traffic_target_id": null,
+      "traffic_target_status": "no_candidate_unproven_coverage",
+      "traffic_gap_m": null,
+      "traffic_target_confirmed": null,
+      "traffic_departure": {
+        "schema_version": 1,
+        "target_id": "39",
+        "status": "observed_body_outside_route",
+        "confirmed": false,
+        "observation_kind": "changed_receiver_record_not_producer_timestamp",
+        "previous_receiver_time": 22767.2260377,
+        "receiver_time": 22767.3300748,
+        "previous_record": "0b68036799aed1f7e5fe15bc832a833ea000d852821b2bda5137929021a24356",
+        "record": "a523487a54715b322099b00fff62d9cd7e7e923b730335e9ab52b53aae9acd56",
+        "previous_position_xyz": [
+          46101.41015625,
+          11.184584617614746,
+          40233.7265625
+        ],
+        "position_xyz": [
+          46102.3828125,
+          11.184584617614746,
+          40234.39453125
+        ],
+        "minimum_body_reference_clearance_m": 3.7118824527841663,
+        "source": "moving",
+        "slot": 0,
+        "coverage_confirmed": false
+      },
+      "traffic_cause": {
+        "kind": "directed_crossing_heuristic",
+        "stop_contract": "observed_positive_motion_speed_constraint",
+        "sdk_frame_us": 143377598,
+        "observation_timestamp": 22767.3185197,
+        "source_acquisition": {
+          "lifecycle": 104452067223580,
+          "generation": 4149,
+          "frame_us": 584770760,
+          "observed_at": 22767.3188138
+        },
+        "decisive": {
+          "id": 51,
+          "distance_m": 28.4473847818289,
+          "route_progress_m": 222.97717121674728,
+          "actor_arrival_s": 2.5249551497210745,
+          "ego_arrival_earliest_s": 4.527480963758749,
+          "ego_arrival_latest_s": 4.527480963758749,
+          "assumed_ego_acceleration_mps2": 0.0,
+          "ego_motion_basis": "observed_speed_constant_motion",
+          "predicted_contact_s": null,
+          "contact_basis": null,
+          "brake": 0.3828654381807643
+        },
+        "actor": {
+          "id": 51,
+          "source": "moving",
+          "slot": 1,
+          "record_fingerprint": "d80dcdeb81ae19c5532477eba36bfeac6fe4c07975635659e6e5763572e8e950",
+          "x": 46114.0390625,
+          "y": 11.517284393310547,
+          "z": 40243.0078125,
+          "yaw": -2.2166403926345564,
+          "speed": 7.316298007965088,
+          "dimensions_whl": [
+            2.2803690433502197,
+            1.7107124328613281,
+            4.891513824462891
+          ]
+        }
+      },
+      "speed_control_reason": "speed service brake",
+      "traffic_brake": 0.0,
+      "light_brake": 0.0,
+      "policy_brake": 0.0,
+      "curve_brake": 0.058422860910821404,
+      "curve_radius_m": 19.941080641990688,
+      "curve_distance_m": 16.0,
+      "signal_id": null,
+      "signal_color": null,
+      "signal_relevance": "detected_only_unassigned",
+      "signal_valid": false,
+      "signal_reason": "no prepared regulated passage; nearby heads are detection only",
+      "signal_native_state": null,
+      "signal_time_left_s": null,
+      "signal_phase_plan": null,
+      "signal_observed_at": 22767.3189221,
+      "signal_frame_us": 584770760,
+      "signal_generation": 4150,
+      "signal_lifecycle": 104452067223580,
+      "signal_lock": null,
+      "stop_target": null,
+      "forward_phase": "forward_confirmed",
+      "coast_only": false,
+      "hold_phase": null,
+      "hold_chain": null,
+      "hold_brake": null,
+      "motion_constraint": {
+        "complete": true,
+        "coverage_confirmed": false,
+        "kind": "observed_positive_motion_speed_constraint",
+        "schema": 1,
+        "source_acquisition": {
+          "frame_us": 584770760,
+          "generation": 4149,
+          "lifecycle": 104452067223580,
+          "observed_at": 22767.3188138
+        },
+        "targets": [
+          {
+            "cap_mps": 5.41332190828017,
+            "constraint_kind": "crossing",
+            "id": "39",
+            "slot": 0,
+            "source": "moving",
+            "speed_mps": 10.059486389160156
+          },
+          {
+            "cap_mps": 5.8542820100282205,
+            "constraint_kind": "crossing",
+            "id": "51",
+            "slot": 1,
+            "source": "moving",
+            "speed_mps": 7.316298007965088
+          }
+        ]
+      },
+      "hold_reason": null,
+      "sdk_game_throttle": 1.8388015554648973e-09,
+      "sdk_game_brake": 0.05630860850214958,
+      "load_observation": {
+        "schema": 1,
+        "abi_revision": 12,
+        "cargo_mass_kg": 0.0,
+        "unit_mass_kg": 0.0,
+        "chassis_pitch_rad": -0.00015401839262712538,
+        "motor_brake": false,
+        "retarder_step": 0,
+        "total_mass_verified": false,
+        "road_grade_verified": false
+      },
+      "powertrain_observation": {
+        "schema": 1,
+        "engine_enabled": true,
+        "engine_rpm": 1403.368896484375,
+        "clutch_unavailable": true,
+        "damage_unavailable": true,
+        "external_input_owner_unverified": true
+      },
+      "sdk_user_throttle": 0.0,
+      "sdk_user_brake": 0.05630860850214958,
+      "first_reason": null,
+      "first_reason_observed_at": null,
+      "write_first_sequence": 486,
+      "write_last_sequence": 488,
+      "write_count": 3,
+      "write_success_count": 3,
+      "write_error_count": 0,
+      "write_unverified_count": 0,
+      "write_first_started_at_s": 22767.5112213,
+      "write_last_returned_at_s": 22767.5135492,
+      "last_backend_status": "MAPPING_WRITE_RETURNED",
+      "last_backend_error": null,
+      "backend_throttle_min": 0.0,
+      "backend_throttle_max": 0.0,
+      "backend_brake_min": 0.12485607713460922,
+      "backend_brake_max": 0.12485607713460922,
+      "backend_pair_mode_changes": 0,
+      "write_source_changes": 0,
+      "monotonic_s": 22767.5230544,
+      "aggregate": {
+        "last_mode": "brake",
+        "decision_count": 1,
+        "state_changes": 0,
+        "pedal_mode_changes": 0,
+        "write_count": 3,
+        "write_error_count": 0,
+        "backend_pair_mode_changes": 0,
+        "write_source_changes": 0,
+        "backend_throttle_min": 0.0,
+        "backend_throttle_max": 0.0,
+        "backend_brake_min": 0.12485607713460922,
+        "backend_brake_max": 0.12485607713460922,
+        "throttle_min": 0.0,
+        "throttle_max": 0.0,
+        "brake_min": 0.1248560735218958,
+        "brake_max": 0.1248560735218958,
+        "speed_mps_min": 6.252967834472656,
+        "speed_mps_max": 6.252967834472656,
+        "started_at_s": 22767.5230544,
+        "ended_at_s": 22767.5230544,
+        "exact_write_timing": false
+      }
+    }
+  },
+  {
+    "at_s": 22767.7313853,
+    "kind": "regular",
+    "raw_bytes": 4214,
+    "largest": [
+      [
+        "traffic_cause",
+        1032
+      ],
+      [
+        "traffic_departure",
+        672
+      ],
+      [
+        "aggregate",
+        602
+      ],
+      [
+        "motion_constraint",
+        530
+      ],
+      [
+        "load_observation",
+        223
+      ]
+    ],
+    "row": {
+      "sdk_frame_us": 143694252,
+      "observation_timestamp": 22767.632355,
+      "activation": 22756441673200,
+      "decision_sequence": 7574,
+      "command_sequence": 5808,
+      "command_sdk_frame_us": 143627588,
+      "command_observation_timestamp": 22767.5563529,
+      "command_computed_at": 22767.6111774,
+      "command_expires_at": 22767.9071177,
+      "command_valid": true,
+      "speed_mps": 5.948508262634277,
+      "gear": 8,
+      "observation_valid": true,
+      "phase": "active",
+      "control_state": "initializing",
+      "requested_speed_kmh": 80.0,
+      "constrained_speed_kmh": 18.468918897646915,
+      "control_target_kmh": 18.468918897646915,
+      "speed_ceiling_mps": 5.993435862181439,
+      "selected_source": "acc",
+      "reason": "acc brake demand",
+      "throttle": 0.0,
+      "brake": 0.12792083852921401,
+      "pedal_mode": "brake",
+      "requested_throttle": 0.0,
+      "requested_brake": 0.12792083852921401,
+      "selected_throttle": 0.0,
+      "selected_brake": 0.12792083852921401,
+      "brake_requests": [
+        [
+          "acc",
+          "acc",
+          0.12792083852921401
+        ],
+        [
+          "traffic",
+          "traffic",
+          0.0
+        ],
+        [
+          "traffic_light",
+          "traffic",
+          0.0
+        ],
+        [
+          "collision",
+          "traffic",
+          0.0
+        ],
+        [
+          "speed_policy",
+          "curve",
+          0.0
+        ],
+        [
+          "maneuver",
+          "maneuver",
+          0.0
+        ],
+        [
+          "curve",
+          "curve",
+          0.0
+        ]
+      ],
+      "acc_throttle": 0.0,
+      "acc_brake": 0.14908149002517992,
+      "acc_target_id": "39",
+      "acc_status": "observed crossing constraint ended; coverage remains unproven",
+      "acc_gap_m": null,
+      "acc_confirmed": false,
+      "traffic_target_id": null,
+      "traffic_target_status": "no_candidate_unproven_coverage",
+      "traffic_gap_m": null,
+      "traffic_target_confirmed": null,
+      "traffic_departure": {
+        "schema_version": 1,
+        "target_id": "39",
+        "status": "observed_body_outside_route",
+        "confirmed": false,
+        "observation_kind": "changed_receiver_record_not_producer_timestamp",
+        "previous_receiver_time": 22767.4461554,
+        "receiver_time": 22767.5649263,
+        "previous_record": "891a0c8f3398eadef1b7c320761bacd867d4d849da4ac332c93cfd8ae285e41b",
+        "record": "7595177cb8aa3bb453aca8a29ffac957ea171d919d910b980a985d0b9c800e66",
+        "previous_position_xyz": [
+          46103.3359375,
+          11.184584617614746,
+          40235.06640625
+        ],
+        "position_xyz": [
+          46104.265625,
+          11.184584617614746,
+          40235.7265625
+        ],
+        "minimum_body_reference_clearance_m": 3.8519520320716483,
+        "source": "moving",
+        "slot": 0,
+        "coverage_confirmed": false
+      },
+      "traffic_cause": {
+        "kind": "directed_crossing_heuristic",
+        "stop_contract": "observed_positive_motion_speed_constraint",
+        "sdk_frame_us": 143627588,
+        "observation_timestamp": 22767.5563529,
+        "source_acquisition": {
+          "lifecycle": 104452067223580,
+          "generation": 4155,
+          "frame_us": 584994933,
+          "observed_at": 22767.5461785
+        },
+        "decisive": {
+          "id": 51,
+          "distance_m": 26.97087526146896,
+          "route_progress_m": 223.04856122891238,
+          "actor_arrival_s": 2.379701928206887,
+          "ego_arrival_earliest_s": 4.433476328963779,
+          "ego_arrival_latest_s": 4.433476328963779,
+          "assumed_ego_acceleration_mps2": 0.0,
+          "ego_motion_basis": "observed_speed_constant_motion",
+          "predicted_contact_s": null,
+          "contact_basis": null,
+          "brake": 0.42912262406516904
+        },
+        "actor": {
+          "id": 51,
+          "source": "moving",
+          "slot": 1,
+          "record_fingerprint": "0883d6deb3fb1a3a44c303af236adc84f4b28b289c2e74ac7024a03b573c374a",
+          "x": 46115.3828125,
+          "y": 11.517284393310547,
+          "z": 40244.015625,
+          "yaw": -2.213916734494201,
+          "speed": 7.078550815582275,
+          "dimensions_whl": [
+            2.2803690433502197,
+            1.7107124328613281,
+            4.891513824462891
+          ]
+        }
+      },
+      "speed_control_reason": "speed service brake",
+      "traffic_brake": 0.0,
+      "light_brake": 0.0,
+      "policy_brake": 0.0,
+      "curve_brake": 0.0,
+      "curve_radius_m": 20.1311205566973,
+      "curve_distance_m": 16.0,
+      "signal_id": null,
+      "signal_color": null,
+      "signal_relevance": "detected_only_unassigned",
+      "signal_valid": false,
+      "signal_reason": "no prepared regulated passage; nearby heads are detection only",
+      "signal_native_state": null,
+      "signal_time_left_s": null,
+      "signal_phase_plan": null,
+      "signal_observed_at": 22767.546251,
+      "signal_frame_us": 584994933,
+      "signal_generation": 4156,
+      "signal_lifecycle": 104452067223580,
+      "signal_lock": null,
+      "stop_target": null,
+      "forward_phase": "forward_confirmed",
+      "coast_only": false,
+      "hold_phase": null,
+      "hold_chain": null,
+      "hold_brake": null,
+      "motion_constraint": {
+        "complete": true,
+        "coverage_confirmed": false,
+        "kind": "observed_positive_motion_speed_constraint",
+        "schema": 1,
+        "source_acquisition": {
+          "frame_us": 584994933,
+          "generation": 4155,
+          "lifecycle": 104452067223580,
+          "observed_at": 22767.5461785
+        },
+        "targets": [
+          {
+            "cap_mps": 5.130255249346365,
+            "constraint_kind": "crossing",
+            "id": "39",
+            "slot": 0,
+            "source": "moving",
+            "speed_mps": 9.682382583618164
+          },
+          {
+            "cap_mps": 5.7078577463918645,
+            "constraint_kind": "crossing",
+            "id": "51",
+            "slot": 1,
+            "source": "moving",
+            "speed_mps": 7.078550815582275
+          }
+        ]
+      },
+      "hold_reason": null,
+      "sdk_game_throttle": 2.244630805010861e-13,
+      "sdk_game_brake": 0.12485607713460922,
+      "load_observation": {
+        "schema": 1,
+        "abi_revision": 12,
+        "cargo_mass_kg": 0.0,
+        "unit_mass_kg": 0.0,
+        "chassis_pitch_rad": -0.0008265971739473209,
+        "motor_brake": false,
+        "retarder_step": 0,
+        "total_mass_verified": false,
+        "road_grade_verified": false
+      },
+      "powertrain_observation": {
+        "schema": 1,
+        "engine_enabled": true,
+        "engine_rpm": 1330.42529296875,
+        "clutch_unavailable": true,
+        "damage_unavailable": true,
+        "external_input_owner_unverified": true
+      },
+      "sdk_user_throttle": 0.0,
+      "sdk_user_brake": 0.12485607713460922,
+      "first_reason": null,
+      "first_reason_observed_at": null,
+      "write_first_sequence": 492,
+      "write_last_sequence": 494,
+      "write_count": 3,
+      "write_success_count": 3,
+      "write_error_count": 0,
+      "write_unverified_count": 0,
+      "write_first_started_at_s": 22767.7013163,
+      "write_last_returned_at_s": 22767.7174526,
+      "last_backend_status": "MAPPING_WRITE_RETURNED",
+      "last_backend_error": null,
+      "backend_throttle_min": 0.0,
+      "backend_throttle_max": 0.0,
+      "backend_brake_min": 0.12792083621025085,
+      "backend_brake_max": 0.12792083621025085,
+      "backend_pair_mode_changes": 0,
+      "write_source_changes": 0,
+      "monotonic_s": 22767.7313853,
+      "aggregate": {
+        "last_mode": "brake",
+        "decision_count": 1,
+        "state_changes": 0,
+        "pedal_mode_changes": 0,
+        "write_count": 3,
+        "write_error_count": 0,
+        "backend_pair_mode_changes": 0,
+        "write_source_changes": 0,
+        "backend_throttle_min": 0.0,
+        "backend_throttle_max": 0.0,
+        "backend_brake_min": 0.12792083621025085,
+        "backend_brake_max": 0.12792083621025085,
+        "throttle_min": 0.0,
+        "throttle_max": 0.0,
+        "brake_min": 0.12792083852921401,
+        "brake_max": 0.12792083852921401,
+        "speed_mps_min": 5.948508262634277,
+        "speed_mps_max": 5.948508262634277,
+        "started_at_s": 22767.7313853,
+        "ended_at_s": 22767.7313853,
+        "exact_write_timing": false
+      }
+    }
+  },
+  {
+    "at_s": 22767.8418286,
+    "kind": "regular",
+    "raw_bytes": 4223,
+    "largest": [
+      [
+        "traffic_cause",
+        1035
+      ],
+      [
+        "traffic_departure",
+        673
+      ],
+      [
+        "aggregate",
+        602
+      ],
+      [
+        "motion_constraint",
+        529
+      ],
+      [
+        "load_observation",
+        223
+      ]
+    ],
+    "row": {
+      "sdk_frame_us": 143810914,
+      "observation_timestamp": 22767.742234,
+      "activation": 22756441673200,
+      "decision_sequence": 7575,
+      "command_sequence": 5810,
+      "command_sdk_frame_us": 143777582,
+      "command_observation_timestamp": 22767.7038307,
+      "command_computed_at": 22767.7512825,
+      "command_expires_at": 22768.0198984,
+      "command_valid": true,
+      "speed_mps": 5.640702247619629,
+      "gear": 8,
+      "observation_valid": true,
+      "phase": "active",
+      "control_state": "initializing",
+      "requested_speed_kmh": 80.0,
+      "constrained_speed_kmh": 18.230598112645325,
+      "control_target_kmh": 18.230598112645325,
+      "speed_ceiling_mps": 6.016835767615045,
+      "selected_source": "acc",
+      "reason": "acc brake demand",
+      "throttle": 0.0,
+      "brake": 0.08344438849280288,
+      "pedal_mode": "brake",
+      "requested_throttle": 0.0,
+      "requested_brake": 0.08344438849280288,
+      "selected_throttle": 0.0,
+      "selected_brake": 0.08344438849280288,
+      "brake_requests": [
+        [
+          "acc",
+          "acc",
+          0.08344438849280288
+        ],
+        [
+          "traffic",
+          "traffic",
+          0.0
+        ],
+        [
+          "traffic_light",
+          "traffic",
+          0.0
+        ],
+        [
+          "collision",
+          "traffic",
+          0.0
+        ],
+        [
+          "speed_policy",
+          "curve",
+          0.0
+        ],
+        [
+          "maneuver",
+          "maneuver",
+          0.0
+        ],
+        [
+          "curve",
+          "curve",
+          0.0
+        ]
+      ],
+      "acc_throttle": 0.0,
+      "acc_brake": 0.08026360665890314,
+      "acc_target_id": "39",
+      "acc_status": "observed crossing constraint ended; coverage remains unproven",
+      "acc_gap_m": null,
+      "acc_confirmed": false,
+      "traffic_target_id": null,
+      "traffic_target_status": "no_candidate_unproven_coverage",
+      "traffic_gap_m": null,
+      "traffic_target_confirmed": null,
+      "traffic_departure": {
+        "schema_version": 1,
+        "target_id": "39",
+        "status": "observed_body_outside_route",
+        "confirmed": false,
+        "observation_kind": "changed_receiver_record_not_producer_timestamp",
+        "previous_receiver_time": 22767.5649263,
+        "receiver_time": 22767.6822001,
+        "previous_record": "7595177cb8aa3bb453aca8a29ffac957ea171d919d910b980a985d0b9c800e66",
+        "record": "3a00522919adb219c7bdb19727264a0b358092ceddaad6b73a31a4346e9ab1d8",
+        "previous_position_xyz": [
+          46104.265625,
+          11.184584617614746,
+          40235.7265625
+        ],
+        "position_xyz": [
+          46105.04296875,
+          11.184584617614746,
+          40236.28515625
+        ],
+        "minimum_body_reference_clearance_m": 3.9222987126798547,
+        "source": "moving",
+        "slot": 0,
+        "coverage_confirmed": false
+      },
+      "traffic_cause": {
+        "kind": "directed_crossing_heuristic",
+        "stop_contract": "observed_positive_motion_speed_constraint",
+        "sdk_frame_us": 143694252,
+        "observation_timestamp": 22767.632355,
+        "source_acquisition": {
+          "lifecycle": 104452067223580,
+          "generation": 4158,
+          "frame_us": 585108821,
+          "observed_at": 22767.6556282
+        },
+        "decisive": {
+          "id": 51,
+          "distance_m": 26.847660481872197,
+          "route_progress_m": 223.32305077497236,
+          "actor_arrival_s": 2.342055580278421,
+          "ego_arrival_earliest_s": 4.5133433957747915,
+          "ego_arrival_latest_s": 4.5133433957747915,
+          "assumed_ego_acceleration_mps2": 0.0,
+          "ego_motion_basis": "observed_speed_constant_motion",
+          "predicted_contact_s": null,
+          "contact_basis": null,
+          "brake": 0.44154178364556756
+        },
+        "actor": {
+          "id": 51,
+          "source": "moving",
+          "slot": 1,
+          "record_fingerprint": "699426bde51695ff97564b18f9289f7c8af250a7ee0381ad553570311e4ef742",
+          "x": 46115.95703125,
+          "y": 11.517284393310547,
+          "z": 40244.421875,
+          "yaw": -2.203406269719999,
+          "speed": 6.976670742034912,
+          "dimensions_whl": [
+            2.2803690433502197,
+            1.7107124328613281,
+            4.891513824462891
+          ]
+        }
+      },
+      "speed_control_reason": "speed service brake",
+      "traffic_brake": 0.0,
+      "light_brake": 0.0,
+      "policy_brake": 0.0,
+      "curve_brake": 0.0,
+      "curve_radius_m": 20.429682220774797,
+      "curve_distance_m": 16.0,
+      "signal_id": null,
+      "signal_color": null,
+      "signal_relevance": "detected_only_unassigned",
+      "signal_valid": false,
+      "signal_reason": "no prepared regulated passage; nearby heads are detection only",
+      "signal_native_state": null,
+      "signal_time_left_s": null,
+      "signal_phase_plan": null,
+      "signal_observed_at": 22767.6557545,
+      "signal_frame_us": 585108821,
+      "signal_generation": 4159,
+      "signal_lifecycle": 104452067223580,
+      "signal_lock": null,
+      "stop_target": null,
+      "forward_phase": "forward_confirmed",
+      "coast_only": false,
+      "hold_phase": null,
+      "hold_chain": null,
+      "hold_brake": null,
+      "motion_constraint": {
+        "complete": true,
+        "coverage_confirmed": false,
+        "kind": "observed_positive_motion_speed_constraint",
+        "schema": 1,
+        "source_acquisition": {
+          "frame_us": 585108821,
+          "generation": 4158,
+          "lifecycle": 104452067223580,
+          "observed_at": 22767.6556282
+        },
+        "targets": [
+          {
+            "cap_mps": 5.064055031290368,
+            "constraint_kind": "crossing",
+            "id": "39",
+            "slot": 0,
+            "source": "moving",
+            "speed_mps": 9.521947860717773
+          },
+          {
+            "cap_mps": 5.721254499517227,
+            "constraint_kind": "crossing",
+            "id": "51",
+            "slot": 1,
+            "source": "moving",
+            "speed_mps": 6.976670742034912
+          }
+        ]
+      },
+      "hold_reason": null,
+      "sdk_game_throttle": 1.7536178164147351e-15,
+      "sdk_game_brake": 0.13627776503562927,
+      "load_observation": {
+        "schema": 1,
+        "abi_revision": 12,
+        "cargo_mass_kg": 0.0,
+        "unit_mass_kg": 0.0,
+        "chassis_pitch_rad": -0.0008997917199368145,
+        "motor_brake": false,
+        "retarder_step": 0,
+        "total_mass_verified": false,
+        "road_grade_verified": false
+      },
+      "powertrain_observation": {
+        "schema": 1,
+        "engine_enabled": true,
+        "engine_rpm": 1260.0208740234375,
+        "clutch_unavailable": true,
+        "damage_unavailable": true,
+        "external_input_owner_unverified": true
+      },
+      "sdk_user_throttle": 0.0,
+      "sdk_user_brake": 0.13627776503562927,
+      "first_reason": null,
+      "first_reason_observed_at": null,
+      "write_first_sequence": 495,
+      "write_last_sequence": 497,
+      "write_count": 3,
+      "write_success_count": 3,
+      "write_error_count": 0,
+      "write_unverified_count": 0,
+      "write_first_started_at_s": 22767.8064064,
+      "write_last_returned_at_s": 22767.8250651,
+      "last_backend_status": "MAPPING_WRITE_RETURNED",
+      "last_backend_error": null,
+      "backend_throttle_min": 0.0,
+      "backend_throttle_max": 0.0,
+      "backend_brake_min": 0.08344438672065735,
+      "backend_brake_max": 0.08344438672065735,
+      "backend_pair_mode_changes": 0,
+      "write_source_changes": 0,
+      "monotonic_s": 22767.8418286,
+      "aggregate": {
+        "last_mode": "brake",
+        "decision_count": 1,
+        "state_changes": 0,
+        "pedal_mode_changes": 0,
+        "write_count": 3,
+        "write_error_count": 0,
+        "backend_pair_mode_changes": 0,
+        "write_source_changes": 0,
+        "backend_throttle_min": 0.0,
+        "backend_throttle_max": 0.0,
+        "backend_brake_min": 0.08344438672065735,
+        "backend_brake_max": 0.08344438672065735,
+        "throttle_min": 0.0,
+        "throttle_max": 0.0,
+        "brake_min": 0.08344438849280288,
+        "brake_max": 0.08344438849280288,
+        "speed_mps_min": 5.640702247619629,
+        "speed_mps_max": 5.640702247619629,
+        "started_at_s": 22767.8418286,
+        "ended_at_s": 22767.8418286,
+        "exact_write_timing": false
+      }
+    }
+  }
+]

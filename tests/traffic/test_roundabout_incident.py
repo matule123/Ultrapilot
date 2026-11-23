@@ -66,6 +66,10 @@ def test_inactive_engine_cannot_reannounce_traffic_modes(joint):
 def test_emergency_reason_survives_large_optional_evidence(joint,tmp_path):
     from core.steering_replay import inspect_replay
     state,engine,ap,acc,policy,tick,_,_,physical,writes,clock=joint
+    # This test verifies the legacy automatic replay/64 KiB journal contract.
+    # Temporary incident mode replaces that export with a multi-part dossier;
+    # its corresponding first-cause/integrity contract has separate tests.
+    engine.controller._pedal_journal._incident_window=None
     engine._automatic_replay_directory=str(tmp_path)
     actor=dict(id=71,x=8.,y=10.,z=20.,yaw=math.pi/2,speed=5.)
     following=timed_step(joint,[actor],generation=1,speed=10.)
@@ -91,6 +95,10 @@ def test_quota_failure_keeps_pending_receipt_for_fault_and_does_not_retry(joint,
     for i in range(8):
         (tmp_path/f'steering-replay-{i}-significant_event.json').write_bytes(b'original')
     journal=engine.controller._pedal_journal
+    # Explicit legacy quota mode, also when testing a frozen temporary build.
+    # A full diagnostic dossier intentionally has a different disk quota and
+    # is not this test's significant_event export path.
+    journal._incident_window=None
     journal.significant('AVOID_OBSTACLE',dict(context=list(__import__('core.longitudinal',fromlist=['context']).context(state)),actor=dict(id=42)),clock[0])
     engine._finish_significant_longitudinal_event(journal,shutdown=True)
     result=engine._automatic_replay_writer.wait(5.)

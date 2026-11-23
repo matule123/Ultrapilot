@@ -113,6 +113,8 @@ def test_invalid_acc_cause_survives_compact_fault_receipt(joint,kind,monkeypatch
     from core.navigation.longitudinal_diagnostics import bounded_fault_details
     state,engine,ap,acc,policy,tick,_,_,physical,writes,clock=joint
     step(joint,[],1)
+    prior=state.get('longitudinal_acc')
+    retired=[]
     truck=state.get('telemetry')['truck']
     if kind=='target':state.set('acc_target_speed',float('nan'))
     elif kind=='regression':
@@ -127,12 +129,33 @@ def test_invalid_acc_cause_survives_compact_fault_receipt(joint,kind,monkeypatch
         original=module.publish
         def changed(*args,**kwargs):
             state.set('game_session_id','foreign')
-            return original(*args,**kwargs)
+            result=original(*args,**kwargs)
+            retired.append(result)
+            return result
         monkeypatch.setattr(module,'publish',changed)
         # Force a real new producer decision, not a duplicate-frame no-op.
         tick(gear=4,speed=7.7,z=15.,pedals=False)
     acc.on_tick(.7 if kind=='interval' else .033)
-    value=state.get('longitudinal_acc')
+    value=retired[0] if kind=='identity' else state.get('longitudinal_acc')
+    if kind=='identity':
+        # The worktree's compare/commit producer and the installed diagnostic26
+        # plain-slot producer have different publication contracts. The latter
+        # publishes the rejected calculation as explicitly INVALID. Both must
+        # deny all physical drive; an invalid retired packet is never authority.
+        # Keep the stronger no-publication assertion on runtimes implementing
+        # it. October 29 reproduces this difference unchanged on the installed
+        # baseline, before loading any candidate correction.
+        import core.longitudinal as contract
+        if callable(getattr(contract,'publish_candidate',None)):
+            assert state.get('longitudinal_acc')==prior
+        else:
+            assert state.get('longitudinal_acc')==value
+            assert value['valid'] is False
+            assert value['context']==prior['context']
+        assert tuple(prior['context'])!=context(state)
+        engine._flush_controls()
+        assert physical('aforward')==0.
+        assert state.get('autopilot_intervention') or state.get('autopilot_control_state')=='controlled_stop'
     assert value['valid'] is False
     assert value['invalid_reason']
     fault=rejection_details(value,context(state),clock[0])

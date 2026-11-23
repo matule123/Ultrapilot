@@ -1,0 +1,4 @@
+LIBRARY UltraPilot161ReadOnlyProbe
+EXPORTS
+scs_telemetry_init
+scs_telemetry_shutdown

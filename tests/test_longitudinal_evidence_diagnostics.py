@@ -83,6 +83,7 @@ class Captures:
 
     def offer(self, value):
         self.samples.append(value)
+        return True  # Same admission acknowledgement as the real bounded collector.
 
 
 def attach(engine):
