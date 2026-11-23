@@ -97,7 +97,7 @@ class UpdateStagingTests(unittest.TestCase):
             args, kwargs = request.call_args
             self.assertEqual(
                 args[0],
-                "https://github.com/matule123/ets2la/archive/abcdef0.zip")
+                "https://github.com/matule123/Ultrapilot/archive/abcdef0.zip")
             self.assertEqual(kwargs["headers"]["Cache-Control"], "no-cache")
             self.assertEqual(kwargs["headers"]["Accept-Encoding"], "identity")
 

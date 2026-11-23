@@ -31,7 +31,7 @@ from core.paths import app_dir
 BUNDLED_CODES = ("sk", "en")          # always present, ship with the app
 DEFAULT_LANG = "sk"
 
-REPO = "matule123/ets2la"
+REPO = "matule123/Ultrapilot"
 RAW_BASE = "https://raw.githubusercontent.com/" + REPO + "/main/languages/"
 
 

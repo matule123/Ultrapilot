@@ -299,7 +299,7 @@ class CameraSnapshotTests(unittest.TestCase):
                 self.assertTrue(update_check._zip_update(target_commit="abcdef0"))
             self.assertEqual(
                 request.call_args.args[0],
-                "https://github.com/matule123/ets2la/archive/abcdef0.zip")
+                "https://github.com/matule123/Ultrapilot/archive/abcdef0.zip")
             self.assertEqual(Path(root, "core", "camera.py").read_bytes(), b"camera")
             self.assertEqual(Path(root, "core", "navigation",
                                   "runtime_preflight.py").read_bytes(), b"preflight")

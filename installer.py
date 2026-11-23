@@ -11,7 +11,7 @@ Build it into a single UltraPilot_Installer.exe with build_installer.py.
 
 NOTE: the source files are no longer read from the PyInstaller bundle
 (_MEIPASS / payload). They are always fetched from the GitHub repository
-``matule123/ets2la``. If the repo is private, set the ``GITHUB_TOKEN``
+``matule123/Ultrapilot``. If the repo is private, set the ``GITHUB_TOKEN``
 environment variable before launching the installer — without it, all three
 download strategies (git clone / zip archive / raw file-by-file) will fail with
 404. The permanent fix is to make the repository public (see Task 2).
@@ -45,10 +45,11 @@ INSTALLER_VERSION = "1.3"
 _NO_WIN = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
 
 # GitHub source — files are ALWAYS fetched from here.
-REPO = "matule123/ets2la"
+REPO = "matule123/Ultrapilot"
 REPO_URL = "https://github.com/" + REPO + ".git"
 ARCHIVE_URL = "https://github.com/" + REPO + "/archive/refs/heads/main.zip"
 CODELOAD_URL = "https://codeload.github.com/" + REPO + "/zip/refs/heads/main"
+ZIPBALL_API = "https://api.github.com/repos/" + REPO + "/zipball/main"
 CONTENTS_API = "https://api.github.com/repos/" + REPO + "/git/trees/main?recursive=1"
 RAW_BASE = "https://raw.githubusercontent.com/" + REPO + "/main/"
 COMMIT_API = "https://api.github.com/repos/" + REPO + "/commits/main"
@@ -738,7 +739,10 @@ class InstallWorker(QThread):
 
             # Try both GitHub endpoints. The regular archive URL may be blocked
             # by a redirect/proxy while codeload works directly (and vice versa).
-            for url in (CODELOAD_URL, ARCHIVE_URL):
+            github_headers = _github_headers()
+            archive_urls = ((ZIPBALL_API,) if "Authorization" in github_headers
+                            else (CODELOAD_URL, ARCHIVE_URL))
+            for url in archive_urls:
                 self.log.emit("  [INF] Zdroj: " + url)
                 try:
                     chunks = bytearray()

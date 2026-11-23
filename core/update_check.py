@@ -31,7 +31,7 @@ import tempfile
 
 VERSION = "0.5.0"
 _LATEST_COMMIT_INFO = {}
-REPO = "matule123/ets2la"
+REPO = "matule123/Ultrapilot"
 API_URL = f"https://api.github.com/repos/{REPO}/releases/latest"
 ARCHIVE_URL = f"https://github.com/{REPO}/archive/refs/heads/main.zip"
 
@@ -64,6 +64,22 @@ def _archive_url_for_target(target: str | None) -> str:
     if _looks_like_sha(target):
         return f"https://github.com/{REPO}/archive/{target}.zip"
     return ARCHIVE_URL
+
+
+def _github_token() -> str:
+    return os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN") or ""
+
+
+def _archive_request(target: str | None) -> tuple:
+    headers = {"Cache-Control": "no-cache", "Accept-Encoding": "identity"}
+    token = _github_token()
+    if not token:
+        return _archive_url_for_target(target), headers
+    ref = str(target or "").strip()
+    ref = ref if _looks_like_sha(ref) else "main"
+    headers.update(Accept="application/vnd.github+json",
+                   Authorization=f"Bearer {token}")
+    return f"https://api.github.com/repos/{REPO}/zipball/{ref}", headers
 
 
 def _format_prepared_update_size(info: dict) -> str:
@@ -145,7 +161,7 @@ def latest_release() -> str | None:
     can show a clear status instead of silently reporting „up to date“."""
     import requests
     headers = {"Accept": "application/vnd.github+json"}
-    token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
+    token = _github_token()
     if token:
         headers["Authorization"] = f"Bearer {token}"
     try:
@@ -167,7 +183,16 @@ def latest_release() -> str | None:
             # Keep remote and local revisions identical in presentation and
             # comparison: one conventional seven-character short SHA.
             return _display_commit(rc.json().get("sha", "")) or None
-        elif rc.status_code in (403, 429):
+        elif rc.status_code == 401:
+            logging.warning("update check: GitHub rejected the update token (HTTP 401). "
+                            "Check GITHUB_TOKEN / GH_TOKEN.")
+            return None
+        elif rc.status_code == 404:
+            logging.warning("update check: %s@main not visible (HTTP 404). "
+                            "Check the repository, branch and token Contents read access "
+                            "(token configured: %s).", REPO, bool(token))
+        elif rc.status_code == 429 or (rc.status_code == 403 and
+                rc.headers.get("X-RateLimit-Remaining") == "0"):
             logging.warning("update check: GitHub commits API rate-limited (HTTP %s).",
                             rc.status_code)
         else:
@@ -414,9 +439,8 @@ def prepare_update(progress_cb=None, target_commit=None) -> bool:
         # Pin SHA updates and request an identity-encoded, uncached response so
         # Content-Length describes this exact transfer rather than a stale CDN
         # or content-encoded representation.
-        response = requests.get(
-            _archive_url_for_target(target), timeout=180, stream=True,
-            headers={"Cache-Control": "no-cache", "Accept-Encoding": "identity"})
+        url, headers = _archive_request(target)
+        response = requests.get(url, timeout=180, stream=True, headers=headers)
         if response.status_code != 200:
             if progress_cb:
                 progress_cb(1.0, "Sťahovanie zlyhalo (HTTP "
@@ -569,9 +593,8 @@ def _zip_update(progress_cb=None, target_commit=None) -> bool:
         import requests
         if progress_cb:
             progress_cb(0.1, "Sťahujem balík aktualizácie…")
-        response = requests.get(
-            _archive_url_for_target(target_commit), timeout=180, stream=True,
-            headers={"Cache-Control": "no-cache", "Accept-Encoding": "identity"})
+        url, headers = _archive_request(target_commit)
+        response = requests.get(url, timeout=180, stream=True, headers=headers)
         if response.status_code != 200:
             if progress_cb:
                 progress_cb(1.0, "download HTTP " + str(response.status_code))
