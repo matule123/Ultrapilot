@@ -40,3 +40,6 @@ STAGE5E_REAL_EVIDENCE_PREPARATION.md
 Thumbs.db
 .vscode/
 .idea/
+
+# Locally extracted visual game data
+assets/map_buildings/**/*.sqlite
