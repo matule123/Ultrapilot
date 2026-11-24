@@ -11,7 +11,7 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtGui import QPainter, QColor, QPen, QPolygonF, QPainterPath, QPixmap, QPainterPathStroker, QTransform, QImage
 from PyQt6.QtCore import (Qt, QTimer, QPointF, QPoint, QRectF, QThread,
                           pyqtSignal)
-from UI.map_projection import MapCamera
+from .map_projection import MapCamera
 from core.navigation.navigation_intent import snapshot_matches_navigation_intent
 
 
@@ -846,7 +846,7 @@ class MapView(QWidget):
         self._building_job_pending=True
         def work():
             try:
-                from UI.building_layer import query_buildings
+                from .building_layer import query_buildings
                 from core.paths import app_dir
                 root=Path(app_dir())/"assets"/"map_buildings"
                 payload=query_buildings(root,identity[0],identity[1],centre,radius)
